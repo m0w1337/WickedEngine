@@ -7,7 +7,6 @@
 #include "ShaderInterop_Renderer.h"
 #include "wiJobSystem.h"
 #include "wiAudio.h"
-#include "wiRenderer.h"
 #include "wiResourceManager.h"
 #include "wiSpinLock.h"
 
@@ -52,10 +51,14 @@ namespace wiScene
 		uint32_t _flags = DIRTY;
 
 		XMFLOAT3 scale_local = XMFLOAT3(1, 1, 1);
-		XMFLOAT4 rotation_local = XMFLOAT4(0, 0, 0, 1);
+		XMFLOAT4 rotation_local = XMFLOAT4(0, 0, 0, 1);	// this is a quaternion
 		XMFLOAT3 translation_local = XMFLOAT3(0, 0, 0);
 
 		// Non-serialized attributes:
+
+		// The world matrix can be computed from local scale, rotation, translation
+		//	- by calling UpdateTransform()
+		//	- or by calling SetDirty() and letting the TransformUpdateSystem handle the updating
 		XMFLOAT4X4 world = IDENTITYMATRIX;
 
 		inline void SetDirty(bool value = true) { if (value) { _flags |= DIRTY; } else { _flags &= ~DIRTY; } }
@@ -67,10 +70,15 @@ namespace wiScene
 		XMVECTOR GetPositionV() const;
 		XMVECTOR GetRotationV() const;
 		XMVECTOR GetScaleV() const;
+		// Computes the local space matrix from scale, rotation, translation and returns it
 		XMMATRIX GetLocalMatrix() const;
+		// Applies the local space to the world space matrix. This overwrites world matrix
 		void UpdateTransform();
+		// Apply a parent transform relative to the loacl space. This overwrites world matrix
 		void UpdateTransform_Parented(const TransformComponent& parent);
+		// Apply the world matrix to the local space. This overwrites scale, rotation, translation
 		void ApplyTransform();
+		// Clears the local space. This overwrites scale, rotation, translation
 		void ClearTransform();
 		void Translate(const XMFLOAT3& value);
 		void Translate(const XMVECTOR& value);
@@ -119,7 +127,7 @@ namespace wiScene
 			OCCLUSION_SECONDARY = 1 << 8,
 			USE_WIND = 1 << 9,
 		};
-		uint32_t _flags = DIRTY | CAST_SHADOW;
+		uint32_t _flags = CAST_SHADOW;
 
 		enum SHADERTYPE
 		{
@@ -176,6 +184,8 @@ namespace wiScene
 		uint32_t uvset_emissiveMap = 0;
 		uint32_t uvset_occlusionMap = 0;
 
+		int customShaderID = -1;
+
 		// Non-serialized attributes:
 		std::shared_ptr<wiResource> baseColorMap;
 		std::shared_ptr<wiResource> surfaceMap;
@@ -185,18 +195,13 @@ namespace wiScene
 		std::shared_ptr<wiResource> occlusionMap;
 		wiGraphics::GPUBuffer constantBuffer;
 
-		int customShaderID = -1; // for now, this is not serialized; need to consider actual proper use case first
-
 		// User stencil value can be in range [0, 15]
 		inline void SetUserStencilRef(uint8_t value)
 		{
 			assert(value < 16);
 			userStencilRef = value & 0x0F;
 		}
-		inline uint32_t GetStencilRef() const
-		{
-			return wiRenderer::CombineStencilrefs(engineStencilRef, userStencilRef);
-		}
+		uint32_t GetStencilRef() const;
 
 		const wiGraphics::Texture* GetBaseColorMap() const;
 		const wiGraphics::Texture* GetNormalMap() const;
@@ -252,9 +257,13 @@ namespace wiScene
 		inline void SetUVSet_EmissiveMap(uint32_t value) { uvset_emissiveMap = value; SetDirty(); }
 		inline void SetUVSet_OcclusionMap(uint32_t value) { uvset_occlusionMap = value; SetDirty(); }
 
+		// The MaterialComponent will be written to ShaderMaterial (a struct that is optimized for GPU use)
 		void WriteShaderMaterial(ShaderMaterial* dest) const;
+
+		// Returns the bitwise OR of all the RENDERTYPE flags applicable to this material
 		uint32_t GetRenderTypes() const;
 
+		// Create constant buffer and texture resources for GPU
 		void CreateRenderData(const std::string& content_dir = "");
 
 		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
@@ -352,7 +361,9 @@ namespace wiScene
 		inline size_t GetIndexStride() const { return GetIndexFormat() == wiGraphics::INDEXFORMAT_32BIT ? sizeof(uint32_t) : sizeof(uint16_t); }
 		inline bool IsSkinned() const { return armatureID != wiECS::INVALID_ENTITY; }
 
+		// Recreates GPU resources for index/vertex buffers
 		void CreateRenderData();
+
 		enum COMPUTE_NORMALS
 		{
 			COMPUTE_NORMALS_HARD,		// hard face normals, can result in additional vertices generated
@@ -575,8 +586,8 @@ namespace wiScene
 
 		// occlusion result history bitfield (32 bit->32 frame history)
 		uint32_t occlusionHistory = ~0;
-		// occlusion query pool index
-		int occlusionQueryID = -1;
+		wiGraphics::GPUQuery occlusionQueries[wiGraphics::GraphicsDevice::GetBackBufferCount()];
+		int queryIndex = 0;
 
 		inline bool IsOccluded() const
 		{
@@ -584,7 +595,7 @@ namespace wiScene
 			// If it is visible in any frames in the history, it is determined visible in this frame
 			// But if all queries failed in the history, it is occluded.
 			// If it pops up for a frame after occluded, it is visible again for some frames
-			return ((occlusionQueryID >= 0) && (occlusionHistory & 0xFFFFFFFF) == 0);
+			return (occlusionQueries[queryIndex].IsValid() && occlusionHistory == 0);
 		}
 
 		inline void SetRenderable(bool value) { if (value) { _flags |= RENDERABLE; } else { _flags &= ~RENDERABLE; } }
@@ -795,12 +806,8 @@ namespace wiScene
 
 		inline float GetRange() const { return range_global; }
 
-		inline void SetType(LightType val) {
-			type = val;
-		}
+		inline void SetType(LightType val) { type = val; }
 		inline LightType GetType() const { return type; }
-
-		void LoadAssets(const std::string& content_dir);
 
 		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
@@ -830,7 +837,7 @@ namespace wiScene
 		Frustum frustum;
 		XMFLOAT4X4 InvView, InvProjection, InvVP;
 		XMFLOAT2 jitter;
-		XMFLOAT4 clipPlane = XMFLOAT4(0, 0, 0, 0); // deafult: no clip plane
+		XMFLOAT4 clipPlane = XMFLOAT4(0, 0, 0, 0); // default: no clip plane
 
 		void CreatePerspective(float newWidth, float newHeight, float newNear, float newFar, float newFOV = XM_PI / 3.0f);
 		void UpdateCamera();
@@ -1222,10 +1229,12 @@ namespace wiScene
 		std::atomic<uint32_t> geometryOffset;
 
 		// Update all components by a given timestep (in seconds):
+		//	This is an expensive function, prefer to call it only once per frame!
 		void Update(float dt);
 		// Remove everything from the scene that it owns:
 		void Clear();
-		// Merge with an other scene.
+		// Merge an other scene into this.
+		//	The contents of the other scene will be lost (and moved to this)!
 		void Merge(Scene& other);
 
 		// Removes a specific entity from the scene (if it exists):
@@ -1252,7 +1261,8 @@ namespace wiScene
 			const XMFLOAT3& position = XMFLOAT3(0, 0, 0), 
 			const XMFLOAT3& color = XMFLOAT3(1, 1, 1), 
 			float energy = 1, 
-			float range = 10
+			float range = 10,
+			LightComponent::LightType type = LightComponent::POINT
 		);
 		wiECS::Entity Entity_CreateForce(
 			const std::string& name,

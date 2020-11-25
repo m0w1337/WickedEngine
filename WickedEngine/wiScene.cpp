@@ -8,6 +8,7 @@
 #include "wiJobSystem.h"
 #include "wiSpinLock.h"
 #include "wiHelper.h"
+#include "wiRenderer.h"
 
 #include <functional>
 #include <unordered_map>
@@ -336,12 +337,6 @@ namespace wiScene
 	}
 	void MaterialComponent::CreateRenderData(const std::string& content_dir)
 	{
-		GPUBufferDesc desc;
-		desc.Usage = USAGE_DEFAULT;
-		desc.BindFlags = BIND_CONSTANT_BUFFER;
-		desc.ByteWidth = sizeof(MaterialCB);
-		wiRenderer::GetDevice()->CreateBuffer(&desc, nullptr, &constantBuffer);
-
 		if (!baseColorMapName.empty())
 		{
 			baseColorMap = wiResourceManager::Load(content_dir + baseColorMapName);
@@ -366,6 +361,23 @@ namespace wiScene
 		{
 			occlusionMap = wiResourceManager::Load(content_dir + occlusionMapName);
 		}
+
+
+		ShaderMaterial shadermat;
+		WriteShaderMaterial(&shadermat);
+
+		SubresourceData data;
+		data.pSysMem = &shadermat;
+
+		GPUBufferDesc desc;
+		desc.Usage = USAGE_DEFAULT;
+		desc.BindFlags = BIND_CONSTANT_BUFFER;
+		desc.ByteWidth = sizeof(MaterialCB);
+		wiRenderer::GetDevice()->CreateBuffer(&desc, &data, &constantBuffer);
+	}
+	uint32_t MaterialComponent::GetStencilRef() const
+	{
+		return wiRenderer::CombineStencilrefs(engineStencilRef, userStencilRef);
 	}
 
 	void MeshComponent::CreateRenderData()
@@ -1621,7 +1633,8 @@ namespace wiScene
 		const XMFLOAT3& position,
 		const XMFLOAT3& color,
 		float energy,
-		float range)
+		float range,
+		LightComponent::LightType type)
 	{
 		Entity entity = CreateEntity();
 
@@ -1640,7 +1653,7 @@ namespace wiScene
 		light.range_local = range;
 		light.fov = XM_PIDIV4;
 		light.color = color;
-		light.SetType(LightComponent::POINT);
+		light.SetType(type);
 
 		return entity;
 	}
@@ -2458,6 +2471,9 @@ namespace wiScene
 			    }
 
 			    mesh.aabb = AABB(_min, _max);
+
+				mesh.SetDirtyMorph(false);
+				wiRenderer::AddDeferredMorphUpdate(args.jobIndex);
 			}
 
 		});
@@ -2496,6 +2512,12 @@ namespace wiScene
 			else if (material.subsurfaceProfile == MaterialComponent::SUBSURFACE_SNOW)
 			{
 				material.engineStencilRef = STENCILREF_SNOW;
+			}
+
+			if (material.IsDirty())
+			{
+				material.SetDirty(false);
+				wiRenderer::AddDeferredMaterialUpdate(args.jobIndex);
 			}
 
 		});

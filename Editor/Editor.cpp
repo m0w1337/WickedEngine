@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "Editor.h"
 #include "wiRenderer.h"
 
@@ -791,7 +791,7 @@ void EditorComponent::Load()
 	clearButton.SetColor(wiColor(255, 235, 173, 255), wiWidget::WIDGETSTATE::FOCUS);
 	clearButton.OnClick([&](wiEventArgs args) {
 		translator.selected.clear();
-		wiRenderer::ClearWorld();
+		wiRenderer::ClearWorld(wiScene::GetScene());
 		objectWnd.SetEntity(INVALID_ENTITY);
 		meshWnd.SetEntity(INVALID_ENTITY);
 		lightWnd.SetEntity(INVALID_ENTITY);
@@ -986,13 +986,18 @@ void EditorComponent::Start()
 {
 	RenderPath2D::Start();
 }
+void EditorComponent::PreUpdate()
+{
+	RenderPath2D::PreUpdate();
+
+	renderPath->PreUpdate();
+}
 void EditorComponent::FixedUpdate()
 {
 	RenderPath2D::FixedUpdate();
 
 	renderPath->FixedUpdate();
 }
-
 void EditorComponent::Update(float dt)
 {
 	wiProfiler::range_id profrange = wiProfiler::BeginRangeCPU("Editor Update");
@@ -1688,6 +1693,12 @@ void EditorComponent::Update(float dt)
 	RenderPath2D::Update(dt);
 
 	renderPath->Update(dt);
+}
+void EditorComponent::PostUpdate()
+{
+	RenderPath2D::PostUpdate();
+
+	renderPath->PostUpdate();
 }
 void EditorComponent::Render() const
 {

@@ -3,6 +3,7 @@
 #include "wiRenderer.h"
 #include "wiGraphicsDevice.h"
 #include "wiResourceManager.h"
+#include "wiScene.h"
 
 #include <memory>
 
@@ -186,6 +187,15 @@ protected:
 	virtual void RenderPostprocessChain(wiGraphics::CommandList cmd) const;
 	
 public:
+
+	wiScene::CameraComponent* camera = &wiRenderer::GetCamera();
+	wiScene::CameraComponent camera_previous;
+	wiScene::CameraComponent camera_reflection;
+
+	wiScene::Scene* scene = &wiScene::GetScene();
+	wiRenderer::Visibility visibility_main;
+	wiRenderer::Visibility visibility_reflection;
+
 	const wiGraphics::Texture* GetDepthStencil() const override { return &depthBuffer; }
 	const wiGraphics::Texture* GetGUIBlurredBackground() const override { return &rtGUIBlurredBackground[2]; }
 
@@ -272,6 +282,7 @@ public:
 
 	virtual void setMSAASampleCount(uint32_t value) { if (msaaSampleCount != value) { msaaSampleCount = value; ResizeBuffers(); } }
 
+	void PreUpdate() override;
 	void Update(float dt) override;
 	void Render() const override;
 	void Compose(wiGraphics::CommandList cmd) const override;
