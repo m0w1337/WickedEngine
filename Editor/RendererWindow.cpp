@@ -42,9 +42,15 @@ void RendererWindow::Create(EditorComponent* editor)
 	resolutionScaleSlider.SetTooltip("Adjust the internal rendering resolution.");
 	resolutionScaleSlider.SetSize(XMFLOAT2(100, itemheight));
 	resolutionScaleSlider.SetPos(XMFLOAT2(x, y += step));
-	resolutionScaleSlider.SetValue(wiRenderer::GetResolutionScale());
-	resolutionScaleSlider.OnSlide([&](wiEventArgs args) {
-		wiRenderer::SetResolutionScale(args.fValue);
+	resolutionScaleSlider.SetValue(editor->resolutionScale);
+	resolutionScaleSlider.OnSlide([editor](wiEventArgs args) {
+		if (editor->resolutionScale != args.fValue)
+		{
+			editor->resolutionScale = args.fValue;
+			editor->ResizeBuffers();
+			editor->renderPath->resolutionScale = args.fValue;
+			editor->renderPath->ResizeBuffers();
+		}
 	});
 	AddWidget(&resolutionScaleSlider);
 
@@ -262,25 +268,25 @@ void RendererWindow::Create(EditorComponent* editor)
 		switch (args.iValue)
 		{
 		case 0:
-			wiRenderer::SetShadowProps2D(0, -1, -1);
+			wiRenderer::SetShadowProps2D(0, -1);
 			break;
 		case 1:
-			wiRenderer::SetShadowProps2D(128, -1, -1);
+			wiRenderer::SetShadowProps2D(128, -1);
 			break;
 		case 2:
-			wiRenderer::SetShadowProps2D(256, -1, -1);
+			wiRenderer::SetShadowProps2D(256, -1);
 			break;
 		case 3:
-			wiRenderer::SetShadowProps2D(512, -1, -1);
+			wiRenderer::SetShadowProps2D(512, -1);
 			break;
 		case 4:
-			wiRenderer::SetShadowProps2D(1024, -1, -1);
+			wiRenderer::SetShadowProps2D(1024, -1);
 			break;
 		case 5:
-			wiRenderer::SetShadowProps2D(2048, -1, -1);
+			wiRenderer::SetShadowProps2D(2048, -1);
 			break;
 		case 6:
-			wiRenderer::SetShadowProps2D(4096, -1, -1);
+			wiRenderer::SetShadowProps2D(4096, -1);
 			break;
 		default:
 			break;

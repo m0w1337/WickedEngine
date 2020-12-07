@@ -272,19 +272,19 @@ void main(PSInput input)
 					{
 					case ENTITY_TYPE_DIRECTIONALLIGHT:
 					{
-						float3 L = light.directionWS;
+						float3 L = light.GetDirection();
 						const float NdotL = saturate(dot(L, N));
 
 						[branch]
 						if (NdotL > 0)
 						{
-							float3 lightColor = light.GetColor().rgb * light.energy * NdotL;
+							float3 lightColor = light.GetColor().rgb * light.GetEnergy() * NdotL;
 
 							[branch]
 							if (light.IsCastingShadow() >= 0)
 							{
 								const uint cascade = g_xFrame_ShadowCascadeCount - 1; // biggest cascade (coarsest resolution) will be used to voxelize
-								float3 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + cascade], float4(P, 1)).xyz; // ortho matrix, no divide by .w
+								float3 ShPos = mul(MatrixArray[light.GetMatrixIndex() + cascade], float4(P, 1)).xyz; // ortho matrix, no divide by .w
 								float3 ShTex = ShPos.xyz * float3(0.5f, -0.5f, 0.5f) + 0.5f;
 
 								[branch] if ((saturate(ShTex.x) == ShTex.x) && (saturate(ShTex.y) == ShTex.y) && (saturate(ShTex.z) == ShTex.z))
@@ -299,9 +299,9 @@ void main(PSInput input)
 					break;
 					case ENTITY_TYPE_POINTLIGHT:
 					{
-						float3 L = light.positionWS - P;
+						float3 L = light.position - P;
 						const float dist2 = dot(L, L);
-						const float range2 = light.range * light.range;
+						const float range2 = light.GetRange() * light.GetRange();
 
 						[branch]
 						if (dist2 < range2)
@@ -317,11 +317,11 @@ void main(PSInput input)
 								const float att = saturate(1.0 - (dist2 / range2));
 								const float attenuation = att * att;
 
-								float3 lightColor = light.GetColor().rgb * light.energy * NdotL * attenuation;
+								float3 lightColor = light.GetColor().rgb * light.GetEnergy() * NdotL * attenuation;
 
 								[branch]
 								if (light.IsCastingShadow() >= 0) {
-									lightColor *= shadowCube(light, Lunnormalized);
+									lightColor *= shadowCube(light, L, Lunnormalized);
 								}
 
 								lighting.direct.diffuse += lightColor;
@@ -331,9 +331,9 @@ void main(PSInput input)
 					break;
 					case ENTITY_TYPE_SPOTLIGHT:
 					{
-						float3 L = light.positionWS - P;
+						float3 L = light.position - P;
 						const float dist2 = dot(L, L);
-						const float range2 = light.range * light.range;
+						const float range2 = light.GetRange() * light.GetRange();
 
 						[branch]
 						if (dist2 < range2)
@@ -345,23 +345,23 @@ void main(PSInput input)
 							[branch]
 							if (NdotL > 0)
 							{
-								const float SpotFactor = dot(L, light.directionWS);
-								const float spotCutOff = light.coneAngleCos;
+								const float SpotFactor = dot(L, light.GetDirection());
+								const float spotCutOff = light.GetConeAngleCos();
 
 								[branch]
 								if (SpotFactor > spotCutOff)
 								{
-									const float range2 = light.range * light.range;
+									const float range2 = light.GetRange() * light.GetRange();
 									const float att = saturate(1.0 - (dist2 / range2));
 									float attenuation = att * att;
 									attenuation *= saturate((1.0 - (1.0 - SpotFactor) * 1.0 / (1.0 - spotCutOff)));
 
-									float3 lightColor = light.GetColor().rgb * light.energy * NdotL * attenuation;
+									float3 lightColor = light.GetColor().rgb * light.GetEnergy() * NdotL * attenuation;
 
 									[branch]
 									if (light.IsCastingShadow() >= 0)
 									{
-										float4 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + 0], float4(P, 1));
+										float4 ShPos = mul(MatrixArray[light.GetMatrixIndex() + 0], float4(P, 1));
 										ShPos.xyz /= ShPos.w;
 										float2 ShTex = ShPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
 										[branch]

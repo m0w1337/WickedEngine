@@ -5,6 +5,7 @@
 #include "wiScene.h"
 #include "wiECS.h"
 #include "wiIntersect.h"
+#include "ShaderInterop_Renderer.h"
 
 #include <memory>
 
@@ -49,15 +50,11 @@ namespace wiRenderer
 
 	bool LoadShader(wiGraphics::SHADERSTAGE stage, wiGraphics::Shader& shader, const std::string& filename);
 
-	// Returns the main camera that is currently being used in rendering (and also for post processing)
-	wiScene::CameraComponent& GetCamera();
-	// Attach camera to entity for the current frame
-	void AttachCamera(wiECS::Entity entity);
-
 
 	struct Visibility
 	{
 		// User fills these:
+		uint32_t layerMask = ~0u;
 		const wiScene::Scene* scene = nullptr;
 		const wiScene::CameraComponent* camera = nullptr;
 		enum FLAGS
@@ -78,11 +75,20 @@ namespace wiRenderer
 		// wiRenderer::UpdateVisibility() fills these:
 		Frustum frustum;
 		std::vector<uint32_t> visibleObjects;
-		std::vector<uint32_t> visibleLights;
 		std::vector<uint32_t> visibleDecals;
 		std::vector<uint32_t> visibleEnvProbes;
 		std::vector<uint32_t> visibleEmitters;
 		std::vector<uint32_t> visibleHairs;
+
+		struct VisibleLight
+		{
+			uint16_t index;
+			uint16_t distance;
+			bool operator<(const VisibleLight& other) {
+				return uint32_t(index | (uint32_t(distance) << 16)) < uint32_t(other.index | (uint32_t(other.distance) << 16));
+			}
+		};
+		std::vector<VisibleLight> visibleLights;
 
 		std::atomic<uint32_t> object_counter;
 		std::atomic<uint32_t> light_counter;
@@ -92,6 +98,7 @@ namespace wiRenderer
 		bool planar_reflection_visible = false;
 		float closestRefPlane = FLT_MAX;
 		XMFLOAT4 reflectionPlane = XMFLOAT4(0, 1, 0, 0);
+		std::atomic_bool volumetriclight_request{ false };
 
 		void Clear()
 		{
@@ -108,22 +115,43 @@ namespace wiRenderer
 
 			closestRefPlane = FLT_MAX;
 			planar_reflection_visible = false;
+			volumetriclight_request.store(false);
+		}
+
+		bool IsRequestedPlanarReflections() const
+		{
+			return planar_reflection_visible;
+		}
+		bool IsRequestedVolumetricLights() const
+		{
+			return volumetriclight_request.load();
 		}
 	};
 
-	// Performs frustum culling. Specify layerMask to only include specific layers in rendering
-	void UpdateVisibility(Visibility& vis, uint32_t layerMask = ~0);
+	// Performs frustum culling.
+	void UpdateVisibility(Visibility& vis);
 	// Prepares the scene for rendering
-	void UpdatePerFrameData(wiScene::Scene& scene, const Visibility& vis, float dt);
+	void UpdatePerFrameData(
+		wiScene::Scene& scene,
+		const Visibility& vis,
+		FrameCB& frameCB,
+		XMUINT2 internalResolution,
+		float dt
+	);
 	// Updates the GPU state according to the previously called UpdatePerFrameData()
-	void UpdateRenderData(const Visibility& vis, wiGraphics::CommandList cmd);
+	void UpdateRenderData(
+		const Visibility& vis,
+		const FrameCB& frameCB,
+		wiGraphics::CommandList cmd
+	);
 	// Updates all acceleration structures for raytracing API
-	void UpdateRaytracingAccelerationStructures(const wiScene::Scene& scene, wiGraphics::CommandList cmd);
+	void UpdateRaytracingAccelerationStructures(
+		const wiScene::Scene& scene,
+		wiGraphics::CommandList cmd
+	);
 
 	// Binds all common constant buffers and samplers that may be used in all shaders
 	void BindCommonResources(wiGraphics::CommandList cmd);
-	// Updates the per frame constant buffer (need to call at least once per frame)
-	void UpdateFrameCB(const wiScene::Scene& scene, wiGraphics::CommandList cmd);
 	// Updates the per camera constant buffer need to call for each different camera that is used when calling DrawScene() and the like
 	//	camera_previous : camera from previous frame, used for reprojection effects.
 	//	camera_reflection : camera that renders planar reflection
@@ -166,8 +194,7 @@ namespace wiRenderer
 	// Draw shadow maps for each visible light that has associated shadow maps
 	void DrawShadowmaps(
 		const Visibility& vis,
-		wiGraphics::CommandList cmd,
-		uint32_t layerMask = ~0
+		wiGraphics::CommandList cmd
 	);
 	// Draw debug world. You must also enable what parts to draw, eg. SetToDrawGridHelper, etc, see implementation for details what can be enabled.
 	void DrawDebugWorld(
@@ -225,12 +252,6 @@ namespace wiRenderer
 		const wiGraphics::Texture gbuffer[GBUFFER_COUNT],
 		const wiGraphics::Texture& lineardepth,
 		const wiGraphics::Texture& output,
-		wiGraphics::CommandList cmd
-	);
-
-	void DeferredComposition(
-		const wiGraphics::Texture gbuffer[GBUFFER_COUNT],
-		const wiGraphics::Texture& depth,
 		wiGraphics::CommandList cmd
 	);
 
@@ -303,15 +324,6 @@ namespace wiRenderer
 		const wiGraphics::Texture gbuffer[GBUFFER_COUNT],
 		const wiGraphics::Texture& output,
 		wiGraphics::CommandList cmd
-	);
-	void Postprocess_SSS(
-		const wiGraphics::Texture& lineardepth,
-		const wiGraphics::Texture gbuffer[GBUFFER_COUNT],
-		const wiGraphics::RenderPass& input_output_lightbuffer_diffuse,
-		const wiGraphics::RenderPass& input_output_temp1,
-		const wiGraphics::RenderPass& input_output_temp2,
-		wiGraphics::CommandList cmd,
-		float amount = 1.0f
 	);
 	void Postprocess_LightShafts(
 		const wiGraphics::Texture& input,
@@ -419,15 +431,6 @@ namespace wiRenderer
 		const wiGraphics::Texture& output,
 		wiGraphics::CommandList cmd
 	);
-	void Postprocess_Denoise(
-		const wiGraphics::Texture& input_output_current,
-		const wiGraphics::Texture& temporal_history,
-		const wiGraphics::Texture& temporal_current,
-		const wiGraphics::Texture& velocity,
-		const wiGraphics::Texture& lineardepth,
-		const wiGraphics::Texture& depth_history,
-		wiGraphics::CommandList cmd
-	);
 
 	// Build the scene BVH on GPU that can be used by ray traced rendering
 	void BuildSceneBVH(const wiScene::Scene& scene, wiGraphics::CommandList cmd);
@@ -442,7 +445,7 @@ namespace wiRenderer
 		void Create(uint32_t newRayCapacity);
 	};
 	// Generate rays for every pixel of the internal resolution
-	RayBuffers* GenerateScreenRayBuffers(const wiScene::CameraComponent& camera, wiGraphics::CommandList cmd);
+	RayBuffers* GenerateScreenRayBuffers(const wiScene::CameraComponent& camera, uint32_t width, uint32_t height, wiGraphics::CommandList cmd);
 	// Render the scene with ray tracing. You provide the ray buffer, where each ray maps to one pixel of the result testure
 	void RayTraceScene(
 		const wiScene::Scene& scene,
@@ -458,8 +461,6 @@ namespace wiRenderer
 	void OcclusionCulling_Render(const wiScene::CameraComponent& camera_previous, const Visibility& vis, wiGraphics::CommandList cmd);
 	// Read the occlusion culling results of the previous call to OcclusionCulling_Render. This must be done on the main thread!
 	void OcclusionCulling_Read(wiScene::Scene& scene, const Visibility& vis);
-	// Issue end-of frame operations
-	void EndFrame();
 
 
 	enum MIPGENFILTER
@@ -502,12 +503,12 @@ namespace wiRenderer
 
 	void PutWaterRipple(const std::string& image, const XMFLOAT3& pos);
 	void ManageWaterRipples();
-	void DrawWaterRipples(wiGraphics::CommandList cmd);
+	void DrawWaterRipples(const Visibility& vis, wiGraphics::CommandList cmd);
 
 
 
 	// Set any param to -1 if don't want to modify
-	void SetShadowProps2D(int resolution, int count, int softShadowQuality);
+	void SetShadowProps2D(int resolution, int count);
 	// Set any param to -1 if don't want to modify
 	void SetShadowPropsCube(int resolution, int count);
 
@@ -518,11 +519,8 @@ namespace wiRenderer
 
 
 
-	void SetResolutionScale(float value);
-	float GetResolutionScale();
 	void SetTransparentShadowsEnabled(float value);
 	float GetTransparentShadowsEnabled();
-	XMUINT2 GetInternalResolution();
 	void SetGamma(float value);
 	float GetGamma();
 	void SetWireRender(bool value);
@@ -576,7 +574,6 @@ namespace wiRenderer
 	int GetVoxelRadianceNumCones();
 	float GetVoxelRadianceRayStepSize();
 	void SetVoxelRadianceRayStepSize(float value);
-	bool IsRequestedVolumetricLightRendering();
 	void SetGameSpeed(float value);
 	float GetGameSpeed();
 	void OceanRegenerate(const wiScene::WeatherComponent& weather); // regeenrates ocean if it is already created
@@ -589,11 +586,12 @@ namespace wiRenderer
 	bool GetRaytracedShadowsEnabled();
 	void SetTessellationEnabled(bool value);
 	bool GetTessellationEnabled();
+	bool IsWaterrippleRendering();
 
 	const wiGraphics::Texture* GetGlobalLightmap();
 
 	// Gets pick ray according to the current screen resolution and pointer coordinates. Can be used as input into RayIntersectWorld()
-	RAY GetPickRay(long cursorX, long cursorY, const wiScene::CameraComponent& camera = GetCamera());
+	RAY GetPickRay(long cursorX, long cursorY, const wiScene::CameraComponent& camera = wiScene::GetCamera());
 
 
 	// Add box to render in next frame. It will be rendered in DrawDebugWorld()

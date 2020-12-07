@@ -44,9 +44,9 @@ float4 main(Input input) : SV_TARGET
 			{
 			case ENTITY_TYPE_DIRECTIONALLIGHT:
 			{
-				dist = INFINITE_RAYHIT;
+				dist = FLT_MAX;
 
-				L = light.directionWS.xyz; 
+				L = light.GetDirection().xyz; 
 				NdotL = saturate(dot(L, N));
 
 				[branch]
@@ -59,7 +59,7 @@ float4 main(Input input) : SV_TARGET
 						atmosphereTransmittance = GetAtmosphericLightTransmittance(Atmosphere, P, L, texture_transmittancelut);
 					}
 					
-					float3 lightColor = light.GetColor().rgb * light.energy * atmosphereTransmittance;
+					float3 lightColor = light.GetColor().rgb * light.GetEnergy() * atmosphereTransmittance;
 
 					lighting.direct.diffuse = lightColor;
 				}
@@ -67,9 +67,9 @@ float4 main(Input input) : SV_TARGET
 			break;
 			case ENTITY_TYPE_POINTLIGHT:
 			{
-				L = light.positionWS - P;
+				L = light.position - P;
 				const float dist2 = dot(L, L);
-				const float range2 = light.range * light.range;
+				const float range2 = light.GetRange() * light.GetRange();
 
 				[branch]
 				if (dist2 < range2)
@@ -81,11 +81,11 @@ float4 main(Input input) : SV_TARGET
 					[branch]
 					if (NdotL > 0)
 					{
-						const float3 lightColor = light.GetColor().rgb * light.energy;
+						const float3 lightColor = light.GetColor().rgb * light.GetEnergy();
 
 						lighting.direct.diffuse = lightColor;
 
-						const float range2 = light.range * light.range;
+						const float range2 = light.GetRange() * light.GetRange();
 						const float att = saturate(1.0 - (dist2 / range2));
 						const float attenuation = att * att;
 
@@ -96,9 +96,9 @@ float4 main(Input input) : SV_TARGET
 			break;
 			case ENTITY_TYPE_SPOTLIGHT:
 			{
-				L = light.positionWS - P;
+				L = light.position - P;
 				const float dist2 = dot(L, L);
-				const float range2 = light.range * light.range;
+				const float range2 = light.GetRange() * light.GetRange();
 
 				[branch]
 				if (dist2 < range2)
@@ -110,17 +110,17 @@ float4 main(Input input) : SV_TARGET
 					[branch]
 					if (NdotL > 0)
 					{
-						const float SpotFactor = dot(L, light.directionWS);
-						const float spotCutOff = light.coneAngleCos;
+						const float SpotFactor = dot(L, light.GetDirection());
+						const float spotCutOff = light.GetConeAngleCos();
 
 						[branch]
 						if (SpotFactor > spotCutOff)
 						{
-							const float3 lightColor = light.GetColor().rgb * light.energy;
+							const float3 lightColor = light.GetColor().rgb * light.GetEnergy();
 
 							lighting.direct.diffuse = lightColor;
 
-							const float range2 = light.range * light.range;
+							const float range2 = light.GetRange() * light.GetRange();
 							const float att = saturate(1.0 - (dist2 / range2));
 							float attenuation = att * att;
 							attenuation *= saturate((1.0 - (1.0 - SpotFactor) * 1.0 / (1.0 - spotCutOff)));
@@ -129,22 +129,6 @@ float4 main(Input input) : SV_TARGET
 						}
 					}
 				}
-			}
-			break;
-			case ENTITY_TYPE_SPHERELIGHT:
-			{
-			}
-			break;
-			case ENTITY_TYPE_DISCLIGHT:
-			{
-			}
-			break;
-			case ENTITY_TYPE_RECTANGLELIGHT:
-			{
-			}
-			break;
-			case ENTITY_TYPE_TUBELIGHT:
-			{
 			}
 			break;
 			}
@@ -169,7 +153,7 @@ float4 main(Input input) : SV_TARGET
 		// Sample primary ray (scene materials, sky, etc):
 		RayHit hit = TraceRay_Closest(ray);
 
-		if (hit.distance >= INFINITE_RAYHIT - 1)
+		if (hit.distance >= FLT_MAX - 1)
 		{
 			float3 envColor;
 			[branch]

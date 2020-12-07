@@ -221,7 +221,8 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		{
 		case ENTITY_TYPE_POINTLIGHT:
 		{
-			Sphere sphere = { entity.positionVS.xyz, entity.range };
+			float3 positionVS = mul(g_xCamera_View, float4(entity.position, 1)).xyz;
+			Sphere sphere = { positionVS.xyz, entity.GetRange() };
 			if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 			{
 				AppendEntity_Transparent(i);
@@ -240,9 +241,11 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		break;
 		case ENTITY_TYPE_SPOTLIGHT:
 		{
+			float3 positionVS = mul(g_xCamera_View, float4(entity.position, 1)).xyz;
+			float3 directionVS = mul((float3x3)g_xCamera_View, entity.GetDirection());
 			// Construct a tight fitting sphere around the spotlight cone:
-			const float r = entity.range * 0.5f / (entity.coneAngleCos * entity.coneAngleCos);
-			Sphere sphere = { entity.positionVS.xyz - entity.directionVS * r, r };
+			const float r = entity.GetRange() * 0.5f / (entity.GetConeAngleCos() * entity.GetConeAngleCos());
+			Sphere sphere = { positionVS - directionVS * r, r };
 			if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 			{
 				AppendEntity_Transparent(i);
@@ -261,10 +264,6 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		}
 		break;
 		case ENTITY_TYPE_DIRECTIONALLIGHT:
-		case ENTITY_TYPE_SPHERELIGHT:
-		case ENTITY_TYPE_DISCLIGHT:
-		case ENTITY_TYPE_RECTANGLELIGHT:
-		case ENTITY_TYPE_TUBELIGHT:
 		{
 			AppendEntity_Transparent(i);
 			AppendEntity_Opaque(i);
@@ -273,7 +272,8 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		case ENTITY_TYPE_DECAL:
 		case ENTITY_TYPE_ENVMAP:
 		{
-			Sphere sphere = { entity.positionVS.xyz, entity.range };
+			float3 positionVS = mul(g_xCamera_View, float4(entity.position, 1)).xyz;
+			Sphere sphere = { positionVS.xyz, entity.GetRange() };
 			if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 			{
 				AppendEntity_Transparent(i);
@@ -285,7 +285,7 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 
 				// frustum AABB in world space transformed into the space of the probe/decal OBB:
 				AABB b = GroupAABB_WS;
-				AABBtransform(b, MatrixArray[entity.userdata]);
+				AABBtransform(b, MatrixArray[entity.GetMatrixIndex()]);
 
 				if (IntersectAABB(a, b))
 				{
