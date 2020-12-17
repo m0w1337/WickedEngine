@@ -14,7 +14,7 @@
 
 #include "Utility/D3D12MemAlloc.h"
 
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
 #include <d3d12.h>
 #include <wrl/client.h> // ComPtr
 
@@ -30,6 +30,8 @@ namespace wiGraphics
 	{
 	private:
 		Microsoft::WRL::ComPtr<ID3D12Device5> device;
+		Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter;
+		Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> directQueue;
 		Microsoft::WRL::ComPtr<ID3D12Fence> frameFence;
 		HANDLE frameFenceEvent;
@@ -67,16 +69,17 @@ namespace wiGraphics
 		D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptor_heap_start = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE dsv_descriptor_heap_start = {};
 
+		Microsoft::WRL::ComPtr<ID3D12CommandQueue> copyQueue;
 		std::mutex copyQueueLock;
 		bool copyQueueUse = false;
 		Microsoft::WRL::ComPtr<ID3D12Fence> copyFence; // GPU only
+		UINT64 copyFenceValue = 0;
 
 		struct FrameResources
 		{
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[COMMANDLIST_COUNT];
 			Microsoft::WRL::ComPtr<ID3D12CommandList> commandLists[COMMANDLIST_COUNT];
 
-			Microsoft::WRL::ComPtr<ID3D12CommandQueue> copyQueue;
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> copyAllocator;
 			Microsoft::WRL::ComPtr<ID3D12CommandList> copyCommandList;
 
@@ -178,11 +181,7 @@ namespace wiGraphics
 
 		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) override;
 		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) override;
-		bool CreateInputLayout(const InputLayoutDesc *pInputElementDescs, uint32_t NumElements, const Shader* shader, InputLayout *pInputLayout) override;
 		bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) override;
-		bool CreateBlendState(const BlendStateDesc *pBlendStateDesc, BlendState *pBlendState) override;
-		bool CreateDepthStencilState(const DepthStencilStateDesc *pDepthStencilStateDesc, DepthStencilState *pDepthStencilState) override;
-		bool CreateRasterizerState(const RasterizerStateDesc *pRasterizerStateDesc, RasterizerState *pRasterizerState) override;
 		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) override;
 		bool CreateQuery(const GPUQueryDesc *pDesc, GPUQuery *pQuery) override;
 		bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) override;

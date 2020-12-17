@@ -58,6 +58,7 @@ TEXTURE2D(texture_blend3_surfacemap, float4, TEXSLOT_RENDERER_BLEND3_SURFACEMAP)
 TEXTURE2D(texture_blend3_emissivemap, float4, TEXSLOT_RENDERER_BLEND3_EMISSIVEMAP);		// rgba: emissive
 
 // These are bound by RenderPath (based on Render Path):
+STRUCTUREDBUFFER(EntityTiles, uint, TEXSLOT_RENDERPATH_ENTITYTILES);
 TEXTURE2D(texture_reflection, float4, TEXSLOT_RENDERPATH_REFLECTION);		// rgba: scene color from reflected camera angle
 TEXTURE2D(texture_refraction, float4, TEXSLOT_RENDERPATH_REFRACTION);		// rgba: scene color from primary camera angle
 TEXTURE2D(texture_waterriples, float4, TEXSLOT_RENDERPATH_WATERRIPPLES);	// rgb: snorm8 water ripple normal map
@@ -722,7 +723,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 
 	float4 color;
 	[branch]
-	if (g_xMaterial.uvset_baseColorMap >= 0)
+	if (g_xMaterial.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 	{
 		const float2 UV_baseColorMap = g_xMaterial.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
 		color = texture_basecolormap.Sample(sampler_objectshader, UV_baseColorMap);
@@ -804,7 +805,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 	if (blend_weights.x > 0)
 	{
 		[branch]
-		if (g_xMaterial.uvset_baseColorMap >= 0)
+		if (g_xMaterial.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 		{
 			float2 uv = g_xMaterial.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
 			sam = texture_basecolormap.Sample(sampler_objectshader, uv);
@@ -851,7 +852,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 	if (blend_weights.y > 0)
 	{
 		[branch]
-		if (g_xMaterial_blend1.uvset_baseColorMap >= 0)
+		if (g_xMaterial_blend1.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 		{
 			float2 uv = g_xMaterial_blend1.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
 			sam = texture_blend1_basecolormap.Sample(sampler_objectshader, uv);
@@ -898,7 +899,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 	if (blend_weights.z > 0)
 	{
 		[branch]
-		if (g_xMaterial_blend2.uvset_baseColorMap >= 0)
+		if (g_xMaterial_blend2.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 		{
 			float2 uv = g_xMaterial_blend2.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
 			sam = texture_blend2_basecolormap.Sample(sampler_objectshader, uv);
@@ -945,7 +946,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 	if (blend_weights.w > 0)
 	{
 		[branch]
-		if (g_xMaterial_blend3.uvset_baseColorMap >= 0)
+		if (g_xMaterial_blend3.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 		{
 			float2 uv = g_xMaterial_blend3.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
 			sam = texture_blend3_basecolormap.Sample(sampler_objectshader, uv);

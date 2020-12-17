@@ -65,6 +65,7 @@ public:
 	wiComboBox shadowProps2DComboBox;
 	wiComboBox shadowPropsCubeComboBox;
 	wiComboBox MSAAComboBox;
+	wiSlider raytracedShadowsSlider;
 	wiCheckBox temporalAACheckBox;
 	wiCheckBox temporalAADebugCheckBox;
 	wiComboBox textureQualityComboBox;
@@ -72,6 +73,7 @@ public:
 	wiSlider raytraceBounceCountSlider;
 
 	wiCheckBox freezeCullingCameraCheckBox;
+	wiCheckBox disableAlbedoMapsCheckBox;
 
     uint32_t GetPickType() const;
 };

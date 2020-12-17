@@ -16,7 +16,6 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif // _WIN32
 
-#define VK_ENABLE_BETA_EXTENSIONS
 #include <vulkan/vulkan.h>
 
 #include "Utility/vk_mem_alloc.h"
@@ -62,13 +61,16 @@ namespace wiGraphics
 		VkPhysicalDeviceProperties2 device_properties = {};
 		VkPhysicalDeviceVulkan11Properties device_properties_1_1 = {};
 		VkPhysicalDeviceVulkan12Properties device_properties_1_2 = {};
-		VkPhysicalDeviceRayTracingPropertiesKHR raytracing_properties = {};
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR raytracing_properties = {};
 		VkPhysicalDeviceMeshShaderPropertiesNV mesh_shader_properties = {};
 
 		VkPhysicalDeviceFeatures2 device_features2 = {};
 		VkPhysicalDeviceVulkan11Features features_1_1 = {};
 		VkPhysicalDeviceVulkan12Features features_1_2 = {};
-		VkPhysicalDeviceRayTracingFeaturesKHR raytracing_features = {};
+		VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {};
+		VkPhysicalDeviceRayTracingPipelineFeaturesKHR raytracing_features = {};
+		VkPhysicalDeviceRayQueryFeaturesKHR raytracing_query_features = {};
 		VkPhysicalDeviceMeshShaderFeaturesNV mesh_shader_features = {};
 
 		VkSwapchainKHR swapChain = VK_NULL_HANDLE;
@@ -104,12 +106,10 @@ namespace wiGraphics
 		VkQueryPool querypool_occlusion = VK_NULL_HANDLE;
 		static const size_t timestamp_query_count = 1024;
 		static const size_t occlusion_query_count = 1024;
-		bool initial_querypool_reset = false;
-		std::vector<uint32_t> timestamps_to_reset;
-		std::vector<uint32_t> occlusions_to_reset;
 
 		void CreateBackBufferResources();
 
+		VkQueue copyQueue = VK_NULL_HANDLE;
 		std::mutex copyQueueLock;
 		bool copyQueueUse = false;
 		VkSemaphore copySemaphore = VK_NULL_HANDLE;
@@ -120,7 +120,6 @@ namespace wiGraphics
 			VkCommandPool commandPools[COMMANDLIST_COUNT] = {};
 			VkCommandBuffer commandBuffers[COMMANDLIST_COUNT] = {};
 
-			VkQueue copyQueue = VK_NULL_HANDLE;
 			VkCommandPool copyCommandPool = VK_NULL_HANDLE;
 			VkCommandBuffer copyCommandBuffer = VK_NULL_HANDLE;
 
@@ -141,7 +140,7 @@ namespace wiGraphics
 				std::vector<VkDescriptorBufferInfo> bufferInfos;
 				std::vector<VkDescriptorImageInfo> imageInfos;
 				std::vector<VkBufferView> texelBufferViews;
-				std::vector<VkWriteDescriptorSetAccelerationStructureNV> accelerationStructureViews;
+				std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureViews;
 				bool dirty = false;
 
 				const GPUBuffer* CBV[GPU_RESOURCE_HEAP_CBV_COUNT];
@@ -201,12 +200,12 @@ namespace wiGraphics
 
 		static PFN_vkCreateRayTracingPipelinesKHR createRayTracingPipelinesKHR;
 		static PFN_vkCreateAccelerationStructureKHR createAccelerationStructureKHR;
-		static PFN_vkBindAccelerationStructureMemoryKHR bindAccelerationStructureMemoryKHR;
 		static PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructureKHR;
-		static PFN_vkGetAccelerationStructureMemoryRequirementsKHR getAccelerationStructureMemoryRequirementsKHR;
+		static PFN_vkGetAccelerationStructureBuildSizesKHR getAccelerationStructureBuildSizesKHR;
 		static PFN_vkGetAccelerationStructureDeviceAddressKHR getAccelerationStructureDeviceAddressKHR;
 		static PFN_vkGetRayTracingShaderGroupHandlesKHR getRayTracingShaderGroupHandlesKHR;
-		static PFN_vkCmdBuildAccelerationStructureKHR cmdBuildAccelerationStructureKHR;
+		static PFN_vkCmdBuildAccelerationStructuresKHR cmdBuildAccelerationStructuresKHR;
+		static PFN_vkBuildAccelerationStructuresKHR buildAccelerationStructuresKHR;
 		static PFN_vkCmdTraceRaysKHR cmdTraceRaysKHR;
 
 		static PFN_vkCmdDrawMeshTasksNV cmdDrawMeshTasksNV;
@@ -218,11 +217,7 @@ namespace wiGraphics
 
 		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) override;
 		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) override;
-		bool CreateInputLayout(const InputLayoutDesc *pInputElementDescs, uint32_t NumElements, const Shader* shader, InputLayout *pInputLayout) override;
 		bool CreateShader(SHADERSTAGE stafe, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) override;
-		bool CreateBlendState(const BlendStateDesc *pBlendStateDesc, BlendState *pBlendState) override;
-		bool CreateDepthStencilState(const DepthStencilStateDesc *pDepthStencilStateDesc, DepthStencilState *pDepthStencilState) override;
-		bool CreateRasterizerState(const RasterizerStateDesc *pRasterizerStateDesc, RasterizerState *pRasterizerState) override;
 		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) override;
 		bool CreateQuery(const GPUQueryDesc *pDesc, GPUQuery *pQuery) override;
 		bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) override;

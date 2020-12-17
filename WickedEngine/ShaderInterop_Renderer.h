@@ -202,8 +202,6 @@ static const uint TILED_CULLING_GRANULARITY = TILED_CULLING_BLOCKSIZE / TILED_CU
 
 static const int impostorCaptureAngles = 36;
 
-static const uint MAX_DESCRIPTOR_INDEXING = 100000;
-
 // These option bits can be read from g_xFrame_Options constant buffer value:
 static const uint OPTION_BIT_TEMPORALAA_ENABLED = 1 << 0;
 static const uint OPTION_BIT_TRANSPARENTSHADOWS_ENABLED = 1 << 1;
@@ -213,6 +211,7 @@ static const uint OPTION_BIT_VOXELGI_RETARGETTED = 1 << 4;
 static const uint OPTION_BIT_SIMPLE_SKY = 1 << 5;
 static const uint OPTION_BIT_REALISTIC_SKY = 1 << 6;
 static const uint OPTION_BIT_RAYTRACED_SHADOWS = 1 << 7;
+static const uint OPTION_BIT_DISABLE_ALBEDO_MAPS = 1 << 8;
 
 // ---------- Common Constant buffers: -----------------
 
@@ -295,7 +294,8 @@ CBUFFER(FrameCB, CBSLOT_RENDERER_FRAME)
 
 	float		g_xFrame_ShadowKernel2D;
 	float		g_xFrame_ShadowKernelCube;
-	float2		g_xFrame_padding0;
+	uint		g_xFrame_RaytracedShadowsSampleCount;
+	float		g_xFrame_padding0;
 };
 
 CBUFFER(CameraCB, CBSLOT_RENDERER_CAMERA)
