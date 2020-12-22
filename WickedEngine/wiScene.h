@@ -146,6 +146,7 @@ namespace wiScene
 		BLENDMODE userBlendMode = BLENDMODE_OPAQUE;
 
 		XMFLOAT4 baseColor = XMFLOAT4(1, 1, 1, 1);
+		XMFLOAT4 specularColor = XMFLOAT4(1, 1, 1, 1);
 		XMFLOAT4 emissiveColor = XMFLOAT4(1, 1, 1, 0);
 		XMFLOAT4 subsurfaceScattering = XMFLOAT4(1, 1, 1, 0);
 		XMFLOAT4 texMulAdd = XMFLOAT4(1, 1, 0, 0);
@@ -229,6 +230,7 @@ namespace wiScene
 		inline bool IsCustomShader() const { return customShaderID >= 0; }
 
 		inline void SetBaseColor(const XMFLOAT4& value) { SetDirty(); baseColor = value; }
+		inline void SetSpecularColor(const XMFLOAT4& value) { SetDirty(); specularColor = value; }
 		inline void SetEmissiveColor(const XMFLOAT4& value) { SetDirty(); emissiveColor = value; }
 		inline void SetRoughness(float value) { SetDirty(); roughness = value; }
 		inline void SetReflectance(float value) { SetDirty(); reflectance = value; }
@@ -1215,18 +1217,16 @@ namespace wiScene
 		enum DESCRIPTORTABLE_ENTRY
 		{
 			DESCRIPTORTABLE_SUBSETS_MATERIAL,
-			DESCRIPTORTABLE_SUBSETS_TEXTURE_BASECOLOR,
+			DESCRIPTORTABLE_SUBSETS_TEXTURES,
 			DESCRIPTORTABLE_SUBSETS_INDEXBUFFER,
-			DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_POSITION_NORMAL_WIND,
-			DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UV0,
-			DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UV1,
-			DESCRIPTORTABLE_SUBSETS_TEXTURE_EMISSIVE,
+			DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_RAW,
+			DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UVSETS,
 
 			DESCRIPTORTABLE_COUNT
 		};
 		wiGraphics::DescriptorTable descriptorTables[DESCRIPTORTABLE_COUNT];
 		std::atomic<uint32_t> geometryOffset;
-		uint32_t MAX_DESCRIPTOR_INDEXING = 100000;
+		uint32_t MAX_SUBSET_DESCRIPTOR_INDEXING = 10000;
 
 		// Update all components by a given timestep (in seconds):
 		//	This is an expensive function, prefer to call it only once per frame!

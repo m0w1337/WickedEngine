@@ -245,7 +245,16 @@ void RenderPath3D::ResizeBuffers()
 		desc.Format = FORMAT_R8_UINT;
 		desc.Width = (internalResolution.x + tileSize - 1) / tileSize;
 		desc.Height = (internalResolution.y + tileSize - 1) / tileSize;
-		device->CreateTexture(&desc, nullptr, &rtShadingRate);
+
+		std::vector<uint8_t> data(desc.Width * desc.Height);
+		uint8_t default_shadingrate;
+		device->WriteShadingRateValue(SHADING_RATE_1X1, &default_shadingrate);
+		std::fill(data.begin(), data.end(), default_shadingrate);
+
+		SubresourceData initData;
+		initData.pSysMem = data.data();
+		initData.SysMemPitch = sizeof(uint8_t) * desc.Width;
+		device->CreateTexture(&desc, &initData, &rtShadingRate);
 		device->SetName(&rtShadingRate, "rtShadingRate");
 	}
 
@@ -350,6 +359,12 @@ void RenderPath3D::ResizeBuffers()
 			desc.attachments.push_back(RenderPassAttachment::Resolve(GetGbuffer_Read(GBUFFER_COLOR_ROUGHNESS)));
 			desc.attachments.push_back(RenderPassAttachment::Resolve(GetGbuffer_Read(GBUFFER_NORMAL_VELOCITY)));
 		}
+
+		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_VARIABLE_RATE_SHADING_TIER2))
+		{
+			desc.attachments.push_back(RenderPassAttachment::ShadingRateSource(&rtShadingRate));
+		}
+
 		device->CreateRenderPass(&desc, &renderpass_main);
 	}
 	{
@@ -599,7 +614,6 @@ void RenderPath3D::Render() const
 	wiJobSystem::Execute(ctx, [this, cmd](wiJobArgs args) {
 
 		GraphicsDevice* device = wiRenderer::GetDevice();
-		device->EventBegin("Opaque Z-prepass", cmd);
 
 		wiRenderer::UpdateCameraCB(
 			*camera,
@@ -610,6 +624,7 @@ void RenderPath3D::Render() const
 
 		device->RenderPassBegin(&renderpass_depthprepass, cmd);
 
+		device->EventBegin("Opaque Z-prepass", cmd);
 		auto range = wiProfiler::BeginRangeGPU("Z-Prepass", cmd);
 
 		Viewport vp;
@@ -619,6 +634,7 @@ void RenderPath3D::Render() const
 		wiRenderer::DrawScene(visibility_main, RENDERPASS_DEPTHONLY, cmd, drawscene_flags);
 
 		wiProfiler::EndRange(range);
+		device->EventEnd(cmd);
 
 		wiRenderer::OcclusionCulling_Render(*camera, visibility_main, cmd);
 
@@ -681,7 +697,6 @@ void RenderPath3D::Render() const
 			);
 		}
 
-		device->EventEnd(cmd);
 		});
 
 	// Planar reflections depth prepass + Light culling:
@@ -689,10 +704,8 @@ void RenderPath3D::Render() const
 	{
 		cmd = device->BeginCommandList();
 		wiJobSystem::Execute(ctx, [cmd, this](wiJobArgs args) {
-			auto range = wiProfiler::BeginRangeGPU("Planar Reflections Z-Prepass", cmd);
 
 			GraphicsDevice* device = wiRenderer::GetDevice();
-			device->EventBegin("Planar reflections Z-Prepass", cmd);
 
 			wiRenderer::UpdateCameraCB(
 				camera_reflection,
@@ -700,6 +713,9 @@ void RenderPath3D::Render() const
 				camera_reflection,
 				cmd
 			);
+
+			device->EventBegin("Planar reflections Z-Prepass", cmd);
+			auto range = wiProfiler::BeginRangeGPU("Planar Reflections Z-Prepass", cmd);
 
 			Viewport vp;
 			vp.Width = (float)depthBuffer_Reflection.GetDesc().Width;
@@ -712,8 +728,10 @@ void RenderPath3D::Render() const
 
 			device->RenderPassEnd(cmd);
 
+			wiProfiler::EndRange(range); // Planar Reflections
+			device->EventEnd(cmd);
+
 			wiRenderer::ComputeTiledLightCulling(
-				*camera,
 				depthBuffer_Reflection,
 				tileFrustums,
 				entityTiles_Opaque,
@@ -722,8 +740,6 @@ void RenderPath3D::Render() const
 				cmd
 			);
 
-			device->EventEnd(cmd);
-			wiProfiler::EndRange(range); // Planar Reflections
 			});
 	}
 
@@ -760,10 +776,8 @@ void RenderPath3D::Render() const
 	{
 		cmd = device->BeginCommandList();
 		wiJobSystem::Execute(ctx, [cmd, this](wiJobArgs args) {
-			auto range = wiProfiler::BeginRangeGPU("Planar Reflections", cmd);
 
 			GraphicsDevice* device = wiRenderer::GetDevice();
-			device->EventBegin("Planar reflections", cmd);
 
 			wiRenderer::UpdateCameraCB(
 				camera_reflection,
@@ -771,6 +785,9 @@ void RenderPath3D::Render() const
 				camera_reflection,
 				cmd
 			);
+
+			device->EventBegin("Planar reflections", cmd);
+			auto range = wiProfiler::BeginRangeGPU("Planar Reflections", cmd);
 
 			Viewport vp;
 			vp.Width = (float)depthBuffer_Reflection.GetDesc().Width;
@@ -794,8 +811,8 @@ void RenderPath3D::Render() const
 
 			device->RenderPassEnd(cmd);
 
-			device->EventEnd(cmd);
 			wiProfiler::EndRange(range); // Planar Reflections
+			device->EventEnd(cmd);
 			});
 	}
 
@@ -813,24 +830,11 @@ void RenderPath3D::Render() const
 			cmd
 		);
 
-		if (wiRenderer::GetVariableRateShadingClassification() && device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_VARIABLE_RATE_SHADING_TIER2))
-		{
-			GPUBarrier barriers[] = {
-				GPUBarrier::Memory(&rtShadingRate),
-				GPUBarrier::Image(&rtShadingRate,IMAGE_LAYOUT_UNORDERED_ACCESS, IMAGE_LAYOUT_SHADING_RATE_SOURCE),
-			};
-			device->Barrier(barriers, arraysize(barriers), cmd);
-
-			device->BindShadingRate(SHADING_RATE_1X1, cmd);
-			device->BindShadingRateImage(&rtShadingRate, cmd);
-		}
-
 		device->UnbindResources(TEXSLOT_ONDEMAND0, 1, cmd);
 
 		{
 			auto range = wiProfiler::BeginRangeGPU("Entity Culling", cmd);
 			wiRenderer::ComputeTiledLightCulling(
-				*camera,
 				depthBuffer_Copy,
 				tileFrustums,
 				entityTiles_Opaque,
@@ -866,8 +870,6 @@ void RenderPath3D::Render() const
 		RenderOutline(cmd);
 
 		device->RenderPassEnd(cmd);
-
-		device->BindShadingRateImage(nullptr, cmd);
 
 		device->EventEnd(cmd);
 		});
