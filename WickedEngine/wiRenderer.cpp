@@ -245,8 +245,8 @@ struct RenderQueue
 	}
 };
 
-vector<size_t> pendingMaterialUpdates;
-vector<size_t> pendingMorphUpdates;
+vector<Entity> pendingMaterialUpdates;
+vector<Entity> pendingMorphUpdates;
 
 enum AS_UPDATE_TYPE
 {
@@ -983,7 +983,6 @@ void LoadShaders()
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT_DEBUG], "objectPS_debug.cso"); });
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT_PAINTRADIUS], "objectPS_paintradius.cso"); });
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT_SIMPLEST], "objectPS_simplest.cso"); });
-	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT_BLACKOUT], "objectPS_blackout.cso"); });
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT_TEXTUREONLY], "objectPS_textureonly.cso"); });
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT_ALPHATESTONLY], "objectPS_alphatestonly.cso"); });
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_IMPOSTOR_ALPHATESTONLY], "impostorPS_alphatestonly.cso"); });
@@ -2870,7 +2869,7 @@ void RenderMeshes(
 				uint32_t stencilRef = CombineStencilrefs(engineStencilRef, userStencilRef);
 				device->BindStencilRef(stencilRef, cmd);
 
-				if (renderPass != RENDERPASS_DEPTHONLY) // depth only alpha test will be full res
+				if (renderPass != RENDERPASS_DEPTHONLY && renderPass != RENDERPASS_VOXELIZE) // depth only alpha test will be full res
 				{
 					device->BindShadingRate(material.shadingRate, cmd);
 				}
@@ -2897,6 +2896,7 @@ void RenderMeshes(
 						material.GetEmissiveMap(),
 						material.GetDisplacementMap(),
 						material.GetOcclusionMap(),
+						material.GetTransmissionMap(),
 					};
 					device->BindResources(PS, res, TEXSLOT_RENDERER_BASECOLORMAP, arraysize(res), cmd);
 				}
@@ -3683,25 +3683,25 @@ void UpdateRenderData(
 	BindCommonResources(cmd);
 
 	// Update material constant buffers:
-	for (auto& materialIndex : pendingMaterialUpdates)
+	for (Entity entity : pendingMaterialUpdates)
 	{
-		if (materialIndex < vis.scene->materials.GetCount())
+		const MaterialComponent* material = vis.scene->materials.GetComponent(entity);
+		if (material != nullptr)
 		{
-			const MaterialComponent& material = vis.scene->materials[materialIndex];
 			ShaderMaterial materialGPUData;
-			material.WriteShaderMaterial(&materialGPUData);
-			device->UpdateBuffer(&material.constantBuffer, &materialGPUData, cmd);
+			material->WriteShaderMaterial(&materialGPUData);
+			device->UpdateBuffer(&material->constantBuffer, &materialGPUData, cmd);
 		}
 	}
 	pendingMaterialUpdates.clear();
 
 	// Update mesh morph buffers:
-	for (auto& meshIndex : pendingMorphUpdates)
+	for (Entity entity : pendingMorphUpdates)
 	{
-		if (meshIndex < vis.scene->meshes.GetCount())
+		const MeshComponent* mesh = vis.scene->meshes.GetComponent(entity);
+		if (mesh != nullptr && !mesh->vertex_positions_morphed.empty())
 		{
-			const MeshComponent& mesh = vis.scene->meshes[meshIndex];
-			device->UpdateBuffer(&mesh.vertexBuffer_POS, mesh.vertex_positions_morphed.data(), cmd);
+			device->UpdateBuffer(&mesh->vertexBuffer_POS, mesh->vertex_positions_morphed.data(), cmd);
 		}
 	}
 	pendingMorphUpdates.clear();
@@ -3807,8 +3807,8 @@ void UpdateRenderData(
 		}
 
 		// Write lights into entity array:
-		uint32_t shadowCounter_2D = 0;
-		uint32_t shadowCounter_Cube = 0;
+		uint32_t shadowCounter_2D = SHADOWRES_2D > 0 ? 0 : SHADOWCOUNT_2D;
+		uint32_t shadowCounter_Cube = SHADOWRES_CUBE > 0 ? 0 : SHADOWCOUNT_CUBE;
 		for (auto visibleLight : vis.visibleLights)
 		{
 			if (entityCounter == SHADER_ENTITY_COUNT)
@@ -4824,8 +4824,8 @@ void DrawShadowmaps(
 
 		device->UnbindResources(TEXSLOT_SHADOWARRAY_2D, 2, cmd);
 
-		uint32_t shadowCounter_2D = 0;
-		uint32_t shadowCounter_Cube = 0;
+		uint32_t shadowCounter_2D = SHADOWRES_2D > 0 ? 0 : SHADOWCOUNT_2D;
+		uint32_t shadowCounter_Cube = SHADOWRES_CUBE > 0 ? 0 : SHADOWCOUNT_CUBE;
 
 		for (auto visibleLight : vis.visibleLights)
 		{
@@ -4848,9 +4848,7 @@ void DrawShadowmaps(
 			case LightComponent::DIRECTIONAL:
 			{
 				if (shadowCounter_2D >= SHADOWCOUNT_2D - CASCADE_COUNT + 1)
-				{
 					break;
-				}
 				uint32_t slice = shadowCounter_2D;
 				shadowCounter_2D += CASCADE_COUNT;
 
@@ -4924,9 +4922,7 @@ void DrawShadowmaps(
 			case LightComponent::SPOT:
 			{
 				if (shadowCounter_2D >= SHADOWCOUNT_2D)
-				{
 					break;
-				}
 				uint32_t slice = shadowCounter_2D;
 				shadowCounter_2D += 1;
 
@@ -4999,9 +4995,7 @@ void DrawShadowmaps(
 			case LightComponent::POINT:
 			{
 				if (shadowCounter_Cube >= SHADOWCOUNT_CUBE)
-				{
 					break;
-				}
 				uint32_t slice = shadowCounter_Cube;
 				shadowCounter_Cube += 1;
 
@@ -11864,18 +11858,18 @@ void AddDeferredMIPGen(std::shared_ptr<wiResource> resource, bool preserve_cover
 	deferredMIPGens.push_back(std::make_pair(resource, preserve_coverage));
 	deferredMIPGenLock.unlock();
 }
-void AddDeferredMaterialUpdate(size_t index)
+void AddDeferredMaterialUpdate(Entity entity)
 {
 	static std::mutex locker;
 	locker.lock();
-	pendingMaterialUpdates.push_back(index);
+	pendingMaterialUpdates.push_back(entity);
 	locker.unlock();
 }
-void AddDeferredMorphUpdate(size_t index)
+void AddDeferredMorphUpdate(Entity entity)
 {
 	static std::mutex locker;
 	locker.lock();
-	pendingMorphUpdates.push_back(index);
+	pendingMorphUpdates.push_back(entity);
 	locker.unlock();
 }
 

@@ -8,6 +8,7 @@ struct VertextoPixel
 	float4 uvsets			: UVSETS;
 };
 
+[earlydepthstencil]
 float4 main(VertextoPixel input) : SV_TARGET
 {
 	float2 pixel = input.pos.xy;
@@ -26,11 +27,21 @@ float4 main(VertextoPixel input) : SV_TARGET
 	}
 	color *= input.color;
 
-#ifndef DISABLE_ALPHATEST
-	clip(color.a - g_xMaterial.alphaTest);
-#endif // DISABLE_ALPHATEST
-
 	float opacity = color.a;
+
+	[branch]
+	if (g_xMaterial.transmission > 0)
+	{
+		float transmission = g_xMaterial.transmission;
+		[branch]
+		if (g_xMaterial.uvset_transmissionMap >= 0)
+		{
+			const float2 UV_transmissionMap = g_xMaterial.uvset_transmissionMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+			float transmissionMap = texture_transmissionmap.Sample(sampler_objectshader, UV_transmissionMap);
+			transmission *= transmissionMap;
+		}
+		opacity *= 1 - transmission;
+	}
 
 	color.rgb *= 1 - opacity; // if fully opaque, then black (not let through any light)
 

@@ -1,14 +1,6 @@
 #ifndef WI_OBJECTSHADER_HF
 #define WI_OBJECTSHADER_HF
 
-#if (defined(TILEDFORWARD) || defined(FORWARD)) && !defined(TRANSPARENT)
-#define DISABLE_ALPHATEST
-#endif
-
-#ifdef TERRAIN
-#define DISABLE_ALPHATEST
-#endif
-
 #ifdef TRANSPARENT
 #define DISABLE_TRANSPARENT_SHADOWMAP
 #endif
@@ -21,7 +13,6 @@
 #ifdef WATER
 #define DISABLE_VOXELGI
 #endif
-
 
 #define LIGHTMAP_QUALITY_BICUBIC
 
@@ -41,6 +32,7 @@ TEXTURE2D(texture_surfacemap, float4, TEXSLOT_RENDERER_SURFACEMAP);				// r: occ
 TEXTURE2D(texture_emissivemap, float4, TEXSLOT_RENDERER_EMISSIVEMAP);			// rgba: emissive
 TEXTURE2D(texture_displacementmap, float, TEXSLOT_RENDERER_DISPLACEMENTMAP);	// r: heightmap
 TEXTURE2D(texture_occlusionmap, float, TEXSLOT_RENDERER_OCCLUSIONMAP);			// r: occlusion
+TEXTURE2D(texture_transmissionmap, float, TEXSLOT_RENDERER_TRANSMISSIONMAP);			// r: occlusion
 
 TEXTURE2D(texture_blend1_basecolormap, float4, TEXSLOT_RENDERER_BLEND1_BASECOLORMAP);	// rgb: baseColor, a: opacity
 TEXTURE2D(texture_blend1_normalmap, float3, TEXSLOT_RENDERER_BLEND1_NORMALMAP);			// rgb: normal
@@ -116,7 +108,7 @@ inline void LightMapping(in float2 ATLAS, inout Lighting lighting)
 #ifdef LIGHTMAP_QUALITY_BICUBIC
 		lighting.indirect.diffuse = SampleTextureCatmullRom(texture_globallightmap, sampler_linear_clamp, ATLAS).rgb;
 #else
-		lighting.indirect.diffuse = texture_globallightmap.SampleLevel(sampler_linear_clamp, ATLAS, 0);
+		lighting.indirect.diffuse = texture_globallightmap.SampleLevel(sampler_linear_clamp, ATLAS, 0).rgb;
 #endif // LIGHTMAP_QUALITY_BICUBIC
 	}
 }
@@ -177,22 +169,6 @@ inline void ParallaxOcclusionMapping(inout float4 uvsets, in float3 V, in float3
 		float2 finalTextureCoords = prevTCoords * weight + currentTextureCoords * (1.0 - weight);
 		float2 difference = finalTextureCoords - originalTextureCoords;
 		uvsets += difference.xyxy;
-	}
-}
-
-inline void Refraction(in float2 ScreenCoord, inout Surface surface, inout float4 color, inout Lighting lighting)
-{
-	[branch]
-	if (g_xMaterial.refractionIndex > 0)
-	{
-		float2 size;
-		float mipLevels;
-		texture_refraction.GetDimensions(0, size.x, size.y, mipLevels);
-		const float2 normal2D = mul((float3x3)g_xCamera_View, surface.N.xyz).xy;
-		float2 perturbatedRefrTexCoords = ScreenCoord.xy + normal2D * g_xMaterial.refractionIndex;
-		float4 refractiveColor = texture_refraction.SampleLevel(sampler_linear_clamp, perturbatedRefrTexCoords, surface.roughness * mipLevels);
-		surface.refraction = float4(refractiveColor.rgb, 1 - color.a);
-		color.a = 1;
 	}
 }
 
@@ -667,6 +643,11 @@ inline void ApplyFog(in float dist, inout float4 color)
 #endif // SIMPLE_INPUT
 
 
+#ifdef DISABLE_ALPHATEST
+[earlydepthstencil]
+#endif // DISABLE_ALPHATEST
+
+
 // entry point:
 #if defined(ALPHATESTONLY)
 void main(PIXELINPUT input)
@@ -677,7 +658,6 @@ float4 main(PIXELINPUT input) : SV_TARGET
 #elif defined(ENVMAPRENDERING)
 float4 main(PSIn_EnvmapRendering input) : SV_TARGET
 #else
-[earlydepthstencil]
 GBUFFEROutputType main(PIXELINPUT input)
 #endif // ALPHATESTONLY
 
@@ -1052,7 +1032,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 		bumpColor1 = 2 * texture_normalmap.Sample(sampler_objectshader, UV_normalMap + g_xMaterial.texMulAdd.zw).rg - 1;
 	}
 	bumpColor2 = texture_waterriples.SampleLevel(sampler_objectshader, ScreenCoord, 0).rg;
-	bumpColor = float3(bumpColor0 + bumpColor1 + bumpColor2, 1)  * g_xMaterial.refractionIndex;
+	bumpColor = float3(bumpColor0 + bumpColor1 + bumpColor2, 1)  * g_xMaterial.refraction;
 	surface.N = normalize(lerp(surface.N, mul(normalize(bumpColor), TBN), g_xMaterial.normalMapStrength));
 	bumpColor *= g_xMaterial.normalMapStrength;
 
@@ -1062,6 +1042,31 @@ GBUFFEROutputType main(PIXELINPUT input)
 	reflectionUV.xy = reflectionUV.xy * float2(0.5, -0.5) + 0.5;
 	lighting.indirect.specular += texture_reflection.SampleLevel(sampler_linear_mirror, reflectionUV.xy + bumpColor.rg, 0).rgb;
 #endif // WATER
+
+
+
+#ifdef TRANSPARENT
+	[branch]
+	if (g_xMaterial.transmission > 0)
+	{
+		float transmission = g_xMaterial.transmission;
+		[branch]
+		if (g_xMaterial.uvset_transmissionMap >= 0)
+		{
+			const float2 UV_transmissionMap = g_xMaterial.uvset_transmissionMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+			float transmissionMap = texture_transmissionmap.Sample(sampler_objectshader, UV_transmissionMap);
+			transmission *= transmissionMap;
+		}
+		float2 size;
+		float mipLevels;
+		texture_refraction.GetDimensions(0, size.x, size.y, mipLevels);
+		const float2 normal2D = mul((float3x3)g_xCamera_View, surface.N.xyz).xy;
+		float2 perturbatedRefrTexCoords = ScreenCoord.xy + normal2D * g_xMaterial.refraction;
+		float4 refractiveColor = texture_refraction.SampleLevel(sampler_linear_clamp, perturbatedRefrTexCoords, surface.roughness * mipLevels);
+		surface.refraction.rgb = surface.albedo * refractiveColor.rgb;
+		surface.refraction.a = transmission;
+	}
+#endif // TRANSPARENT
 
 
 
@@ -1087,9 +1092,7 @@ GBUFFEROutputType main(PIXELINPUT input)
 
 #ifndef WATER
 #ifndef ENVMAPRENDERING
-#ifdef TRANSPARENT
-	Refraction(ScreenCoord, surface, color, lighting);
-#else
+#ifndef TRANSPARENT
 	float4 ssr = texture_ssr.SampleLevel(sampler_linear_clamp, ReprojectedScreenCoord, 0);
 	lighting.indirect.specular = lerp(lighting.indirect.specular, ssr.rgb, ssr.a);
 #endif // TRANSPARENT

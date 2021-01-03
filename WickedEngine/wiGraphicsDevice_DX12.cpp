@@ -978,18 +978,69 @@ namespace DX12_Internal
 	}
 
 
+	struct SingleDescriptor
+	{
+		std::shared_ptr<GraphicsDevice_DX12::DescriptorAllocator> allocator;
+		D3D12_CPU_DESCRIPTOR_HANDLE handle = {};
+		union
+		{
+			D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+			D3D12_SAMPLER_DESC sam;
+		};
+		bool IsValid() const { return handle.ptr != 0; }
+		void init(GraphicsDevice_DX12* device, const D3D12_CONSTANT_BUFFER_VIEW_DESC& cbv)
+		{
+			this->cbv = cbv;
+			this->allocator = device->descriptors_res;
+			handle = allocator->allocate();
+			device->device->CreateConstantBufferView(&cbv, handle);
+		}
+		void init(GraphicsDevice_DX12* device, const D3D12_SHADER_RESOURCE_VIEW_DESC& srv, ID3D12Resource* res)
+		{
+			this->srv = srv;
+			this->allocator = device->descriptors_res;
+			handle = allocator->allocate();
+			device->device->CreateShaderResourceView(res, &srv, handle);
+		}
+		void init(GraphicsDevice_DX12* device, const D3D12_UNORDERED_ACCESS_VIEW_DESC& uav, ID3D12Resource* res)
+		{
+			this->uav = uav;
+			this->allocator = device->descriptors_res;
+			handle = allocator->allocate();
+			device->device->CreateUnorderedAccessView(res, nullptr, &uav, handle);
+		}
+		void init(GraphicsDevice_DX12* device, const D3D12_SAMPLER_DESC& sam)
+		{
+			this->sam = sam;
+			this->allocator = device->descriptors_sam;
+			handle = allocator->allocate();
+			device->device->CreateSampler(&sam, handle);
+		}
+		void destroy()
+		{
+			if (IsValid())
+			{
+				allocator->free(handle);
+			}
+		}
+	};
+
 	struct Resource_DX12
 	{
 		std::shared_ptr<GraphicsDevice_DX12::AllocationHandler> allocationhandler;
 		D3D12MA::Allocation* allocation = nullptr;
 		ComPtr<ID3D12Resource> resource;
-		D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = {};
-		D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-		D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-		std::vector<D3D12_SHADER_RESOURCE_VIEW_DESC> subresources_srv;
-		std::vector<D3D12_UNORDERED_ACCESS_VIEW_DESC> subresources_uav;
+		SingleDescriptor cbv;
+		SingleDescriptor srv;
+		SingleDescriptor uav;
+		std::vector<SingleDescriptor> subresources_srv;
+		std::vector<SingleDescriptor> subresources_uav;
 
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+
+		D3D12_GPU_VIRTUAL_ADDRESS gpu_address = 0;
 
 		GraphicsDevice::GPUAllocation dynamic[COMMANDLIST_COUNT];
 
@@ -1000,6 +1051,18 @@ namespace DX12_Internal
 			if (allocation) allocationhandler->destroyer_allocations.push_back(std::make_pair(allocation, framecount));
 			if (resource) allocationhandler->destroyer_resources.push_back(std::make_pair(resource, framecount));
 			allocationhandler->destroylocker.unlock();
+
+			cbv.destroy();
+			srv.destroy();
+			uav.destroy();
+			for (auto& x : subresources_srv)
+			{
+				x.destroy();
+			}
+			for (auto& x : subresources_uav)
+			{
+				x.destroy();
+			}
 		}
 	};
 	struct Texture_DX12 : public Resource_DX12
@@ -1019,24 +1082,26 @@ namespace DX12_Internal
 	struct Sampler_DX12
 	{
 		std::shared_ptr<GraphicsDevice_DX12::AllocationHandler> allocationhandler;
-		D3D12_SAMPLER_DESC descriptor;
+		SingleDescriptor descriptor;
 
 		~Sampler_DX12()
 		{
 			allocationhandler->destroylocker.lock();
 			uint64_t framecount = allocationhandler->framecount;
 			allocationhandler->destroylocker.unlock();
+
+			descriptor.destroy();
 		}
 	};
 	struct Query_DX12
 	{
 		std::shared_ptr<GraphicsDevice_DX12::AllocationHandler> allocationhandler;
 		GPU_QUERY_TYPE query_type = GPU_QUERY_TYPE_INVALID;
-		uint32_t query_index = ~0;
+		GraphicsDevice_DX12::AllocationHandler::QueryAllocator::Query query;
 
 		~Query_DX12()
 		{
-			if (query_index != ~0) 
+			if (query.index != ~0) 
 			{
 				allocationhandler->destroylocker.lock();
 				uint64_t framecount = allocationhandler->framecount;
@@ -1044,10 +1109,10 @@ namespace DX12_Internal
 				{
 				case wiGraphics::GPU_QUERY_TYPE_OCCLUSION:
 				case wiGraphics::GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
-					allocationhandler->destroyer_queries_occlusion.push_back(std::make_pair(query_index, framecount));
+					allocationhandler->destroyer_queries_occlusion.push_back(std::make_pair(query, framecount));
 					break;
 				case wiGraphics::GPU_QUERY_TYPE_TIMESTAMP:
-					allocationhandler->destroyer_queries_timestamp.push_back(std::make_pair(query_index, framecount));
+					allocationhandler->destroyer_queries_timestamp.push_back(std::make_pair(query, framecount));
 					break;
 				}
 				allocationhandler->destroylocker.unlock();
@@ -1060,8 +1125,11 @@ namespace DX12_Internal
 		ComPtr<ID3D12PipelineState> resource;
 		ComPtr<ID3D12RootSignature> rootSignature;
 
-		std::vector<D3D12_DESCRIPTOR_RANGE> resources;
-		std::vector<D3D12_DESCRIPTOR_RANGE> samplers;
+		std::vector<D3D12_DESCRIPTOR_RANGE1> resources;
+		std::vector<D3D12_DESCRIPTOR_RANGE1> samplers;
+
+		uint32_t bindpoint_res = 0;
+		uint32_t bindpoint_sam = 0;
 
 		~PipelineState_DX12()
 		{
@@ -1115,7 +1183,7 @@ namespace DX12_Internal
 			ComPtr<ID3D12DescriptorHeap> heap;
 			D3D12_DESCRIPTOR_HEAP_DESC desc = {};
 			D3D12_CPU_DESCRIPTOR_HANDLE address = {};
-			std::vector<D3D12_DESCRIPTOR_RANGE> ranges;
+			std::vector<D3D12_DESCRIPTOR_RANGE1> ranges;
 			std::vector<size_t> write_remap;
 		};
 		Heap sampler_heap;
@@ -1135,7 +1203,7 @@ namespace DX12_Internal
 	{
 		std::shared_ptr<GraphicsDevice_DX12::AllocationHandler> allocationhandler;
 		ComPtr<ID3D12RootSignature> resource;
-		std::vector<D3D12_ROOT_PARAMETER> params;
+		std::vector<D3D12_ROOT_PARAMETER1> params;
 
 		std::vector<uint32_t> table_bind_point_remap;
 		uint32_t root_constant_bind_remap = 0;
@@ -1245,11 +1313,16 @@ using namespace DX12_Internal;
 		buffer.desc.Usage = USAGE_DYNAMIC;
 		buffer.desc.BindFlags = BIND_VERTEX_BUFFER | BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE;
 		buffer.desc.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
-		internal_state->srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-		internal_state->srv.Format = DXGI_FORMAT_R32_TYPELESS;
-		internal_state->srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-		internal_state->srv.Buffer.NumElements = buffer.desc.ByteWidth / sizeof(uint32_t);
-		internal_state->srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+
+		internal_state->gpu_address = internal_state->resource->GetGPUVirtualAddress();
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+		srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+		srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+		srv_desc.Buffer.NumElements = buffer.desc.ByteWidth / sizeof(uint32_t);
+		srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		internal_state->srv.init(device, srv_desc, internal_state->resource.Get());
 	}
 	uint8_t* GraphicsDevice_DX12::FrameResources::ResourceFrameAllocator::allocate(size_t dataSize, size_t alignment)
 	{
@@ -1288,7 +1361,8 @@ using namespace DX12_Internal;
 	}
 	void GraphicsDevice_DX12::FrameResources::DescriptorTableFrameAllocator::reset()
 	{
-		dirty = true;
+		dirty_res = true;
+		dirty_sam = true;
 		heaps_bound = false;
 		for (auto& x : heaps_resource)
 		{
@@ -1318,7 +1392,7 @@ using namespace DX12_Internal;
 
 		DescriptorHeap& heap_resource = heaps_resource[current_resource_heap];
 		uint32_t allocation = heap_resource.ringOffset + resources;
-		if (heap_resource.heapDesc.NumDescriptors <= allocation)
+		if (heap_resource.heapDesc.NumDescriptors < allocation || heap_resource.heapDesc.NumDescriptors == 0)
 		{
 			if (allocation > 1000000) // tier 1 limit
 			{
@@ -1333,7 +1407,7 @@ using namespace DX12_Internal;
 			DescriptorHeap& heap = heaps_resource[current_resource_heap];
 
 			// Need to re-check if growing is necessary (maybe step into new block is enough):
-			if (heap.heapDesc.NumDescriptors <= allocation)
+			if (heap.heapDesc.NumDescriptors < allocation || heap.heapDesc.NumDescriptors == 0)
 			{
 				// grow rate is controlled here:
 				allocation = std::max(512u, allocation);
@@ -1363,7 +1437,7 @@ using namespace DX12_Internal;
 
 		DescriptorHeap& heap_sampler = heaps_sampler[current_sampler_heap];
 		allocation = heap_sampler.ringOffset + samplers;
-		if (heap_sampler.heapDesc.NumDescriptors <= allocation)
+		if (heap_sampler.heapDesc.NumDescriptors < allocation || heap_sampler.heapDesc.NumDescriptors == 0)
 		{
 			if (allocation > 2048) // sampler limit
 			{
@@ -1378,7 +1452,7 @@ using namespace DX12_Internal;
 			DescriptorHeap& heap = heaps_sampler[current_sampler_heap];
 
 			// Need to re-check if growing is necessary (maybe step into new block is enough):
-			if (heap.heapDesc.NumDescriptors <= allocation)
+			if (heap.heapDesc.NumDescriptors < allocation || heap.heapDesc.NumDescriptors == 0)
 			{
 				// grow rate is controlled here:
 				allocation = std::max(512u, allocation);
@@ -1408,8 +1482,9 @@ using namespace DX12_Internal;
 
 		if (!heaps_bound)
 		{
+			heaps_bound = true;
 			// definitely re-index the heap blocks!
-			ID3D12DescriptorHeap* heaps[] = {
+			ID3D12DescriptorHeap* heaps[2] = {
 				heaps_resource[current_resource_heap].heap_GPU.Get(),
 				heaps_sampler[current_sampler_heap].heap_GPU.Get()
 			};
@@ -1418,199 +1493,164 @@ using namespace DX12_Internal;
 	}
 	void GraphicsDevice_DX12::FrameResources::DescriptorTableFrameAllocator::validate(bool graphics, CommandList cmd)
 	{
-		if (!dirty)
+		if (!dirty_res && !dirty_sam)
 			return;
-		dirty = true;
 
 		auto pso_internal = graphics ? to_internal(device->active_pso[cmd]) : to_internal(device->active_cs[cmd]);
 
-		request_heaps((uint32_t)pso_internal->resources.size(), (uint32_t)pso_internal->samplers.size(), cmd);
+		uint32_t request_res = dirty_res ? (uint32_t)pso_internal->resources.size() : 0;
+		uint32_t request_sam = dirty_sam ? (uint32_t)pso_internal->samplers.size() : 0;
+		request_heaps(request_res, request_sam, cmd);
 
-		UINT root_parameter_index = 0;
-
+		// Resources:
+		if (!pso_internal->resources.empty() && dirty_res)
 		{
+			dirty_res = false;
+			DescriptorHeap& heap = heaps_resource[current_resource_heap];
+			D3D12_GPU_DESCRIPTOR_HANDLE binding_table = heap.start_gpu;
+			binding_table.ptr += (UINT64)heap.ringOffset * (UINT64)device->resource_descriptor_size;
 
+			for (auto& x : pso_internal->resources)
 			{
+				D3D12_CPU_DESCRIPTOR_HANDLE dst = heap.start_cpu;
+				uint32_t ringOffset = heap.ringOffset++;
+				dst.ptr += ringOffset * device->resource_descriptor_size;
 
-				// Resources:
-				if (!pso_internal->resources.empty())
+				switch (x.RangeType)
 				{
-					DescriptorHeap& heap = heaps_resource[current_resource_heap];
-
-					D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
-					D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-					srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-					srv_desc.Format = DXGI_FORMAT_R32_UINT;
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-
-					D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
-					uav_desc.Format = DXGI_FORMAT_R32_UINT;
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-
-					uint32_t index = 0;
-					for (auto& x : pso_internal->resources)
+				default:
+				case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+				{
+					const GPUResource* resource = SRV[x.BaseShaderRegister];
+					const int subresource = SRV_index[x.BaseShaderRegister];
+					if (resource == nullptr || !resource->IsValid())
 					{
-						D3D12_CPU_DESCRIPTOR_HANDLE dst = heap.start_cpu;
-						dst.ptr += (heap.ringOffset + index) * device->resource_descriptor_size;
-
-						switch (x.RangeType)
-						{
-						default:
-						case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
-						{
-							const GPUResource* resource = SRV[x.BaseShaderRegister];
-							const int subresource = SRV_index[x.BaseShaderRegister];
-							if (resource == nullptr || !resource->IsValid())
-							{
-								device->device->CreateShaderResourceView(nullptr, &srv_desc, dst);
-							}
-							else
-							{
-								auto internal_state = to_internal(resource);
-
-								if (resource->IsAccelerationStructure())
-								{
-									device->device->CreateShaderResourceView(nullptr, &internal_state->srv, dst);
-								}
-								else
-								{
-									if (subresource < 0)
-									{
-										device->device->CreateShaderResourceView(internal_state->resource.Get(), &internal_state->srv, dst);
-									}
-									else
-									{
-										device->device->CreateShaderResourceView(internal_state->resource.Get(), &internal_state->subresources_srv[subresource], dst);
-									}
-								}
-							}
-						}
-						break;
-
-						case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
-						{
-							const GPUResource* resource = UAV[x.BaseShaderRegister];
-							const int subresource = UAV_index[x.BaseShaderRegister];
-							if (resource == nullptr || !resource->IsValid())
-							{
-								device->device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, dst);
-							}
-							else
-							{
-								auto internal_state = to_internal(resource);
-
-								if (subresource < 0)
-								{
-									device->device->CreateUnorderedAccessView(internal_state->resource.Get(), nullptr, &internal_state->uav, dst);
-								}
-								else
-								{
-									device->device->CreateUnorderedAccessView(internal_state->resource.Get(), nullptr, &internal_state->subresources_uav[subresource], dst);
-								}
-							}
-						}
-						break;
-
-						case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
-						{
-							const GPUBuffer* buffer = CBV[x.BaseShaderRegister];
-							if (buffer == nullptr || !buffer->IsValid())
-							{
-								device->device->CreateConstantBufferView(&cbv_desc, dst);
-							}
-							else
-							{
-								auto internal_state = to_internal(buffer);
-
-								if (buffer->desc.Usage == USAGE_DYNAMIC)
-								{
-									GraphicsDevice::GPUAllocation allocation = internal_state->dynamic[cmd];
-									D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
-									cbv.BufferLocation = to_internal(allocation.buffer)->resource->GetGPUVirtualAddress();
-									cbv.BufferLocation += (D3D12_GPU_VIRTUAL_ADDRESS)allocation.offset;
-									cbv.SizeInBytes = (uint32_t)Align((size_t)buffer->desc.ByteWidth, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-
-									device->device->CreateConstantBufferView(&cbv, dst);
-								}
-								else
-								{
-									device->device->CreateConstantBufferView(&internal_state->cbv, dst);
-								}
-							}
-						}
-						break;
-						}
-
-						index++;
-					}
-
-					D3D12_GPU_DESCRIPTOR_HANDLE binding_table = heap.start_gpu;
-					binding_table.ptr += (UINT64)heap.ringOffset * (UINT64)device->resource_descriptor_size;
-
-					if (graphics)
-					{
-						device->GetDirectCommandList(cmd)->SetGraphicsRootDescriptorTable(root_parameter_index, binding_table);
+						device->device->CopyDescriptorsSimple(1, dst, device->nullSRV_buffer, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					}
 					else
 					{
-						device->GetDirectCommandList(cmd)->SetComputeRootDescriptorTable(root_parameter_index, binding_table);
-					}
+						auto internal_state = to_internal(resource);
 
-					heap.ringOffset += (uint32_t)pso_internal->resources.size();
-					root_parameter_index++;
-				}
-
-				// Samplers:
-				if (!pso_internal->samplers.empty())
-				{
-					DescriptorHeap& heap = heaps_sampler[current_sampler_heap];
-
-					D3D12_SAMPLER_DESC sampler_desc = {};
-					sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-					sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-					sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-					sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-					sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-
-					size_t index = 0;
-					for (auto& x : pso_internal->samplers)
-					{
-						D3D12_CPU_DESCRIPTOR_HANDLE dst = heap.start_cpu;
-						dst.ptr += (heap.ringOffset + index) * device->sampler_descriptor_size;
-
-						const Sampler* sampler = SAM[x.BaseShaderRegister];
-						if (sampler == nullptr || !sampler->IsValid())
+						if (resource->IsAccelerationStructure())
 						{
-							device->device->CreateSampler(&sampler_desc, dst);
+							device->device->CopyDescriptorsSimple(1, dst, internal_state->srv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 						}
 						else
 						{
-							auto internal_state = to_internal(sampler);
-							device->device->CreateSampler(&internal_state->descriptor, dst);
+							if (subresource < 0)
+							{
+								device->device->CopyDescriptorsSimple(1, dst, internal_state->srv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+							}
+							else
+							{
+								device->device->CopyDescriptorsSimple(1, dst, internal_state->subresources_srv[subresource].handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+							}
 						}
-
-						index++;
 					}
+				}
+				break;
 
-					D3D12_GPU_DESCRIPTOR_HANDLE binding_table = heap.start_gpu;
-					binding_table.ptr += (UINT64)heap.ringOffset * (UINT64)device->sampler_descriptor_size;
-
-					if (graphics)
+				case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
+				{
+					const GPUResource* resource = UAV[x.BaseShaderRegister];
+					const int subresource = UAV_index[x.BaseShaderRegister];
+					if (resource == nullptr || !resource->IsValid())
 					{
-						device->GetDirectCommandList(cmd)->SetGraphicsRootDescriptorTable(root_parameter_index, binding_table);
+						device->device->CopyDescriptorsSimple(1, dst, device->nullUAV_buffer, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					}
 					else
 					{
-						device->GetDirectCommandList(cmd)->SetComputeRootDescriptorTable(root_parameter_index, binding_table);
+						auto internal_state = to_internal(resource);
+
+						if (subresource < 0)
+						{
+							device->device->CopyDescriptorsSimple(1, dst, internal_state->uav.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						}
+						else
+						{
+							device->device->CopyDescriptorsSimple(1, dst, internal_state->subresources_uav[subresource].handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						}
 					}
-
-					heap.ringOffset += (uint32_t)pso_internal->samplers.size();
-					root_parameter_index++;
 				}
+				break;
 
+				case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+				{
+					const GPUBuffer* buffer = CBV[x.BaseShaderRegister];
+					if (buffer == nullptr || !buffer->IsValid())
+					{
+						device->device->CopyDescriptorsSimple(1, dst, device->nullCBV, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+					}
+					else
+					{
+						auto internal_state = to_internal(buffer);
+
+						if (buffer->desc.Usage == USAGE_DYNAMIC)
+						{
+							GraphicsDevice::GPUAllocation allocation = internal_state->dynamic[cmd];
+							D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
+							cbv.BufferLocation = to_internal(allocation.buffer)->gpu_address;
+							cbv.BufferLocation += (D3D12_GPU_VIRTUAL_ADDRESS)allocation.offset;
+							cbv.SizeInBytes = (uint32_t)Align((size_t)buffer->desc.ByteWidth, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+
+							device->device->CreateConstantBufferView(&cbv, dst);
+						}
+						else
+						{
+							device->device->CopyDescriptorsSimple(1, dst, internal_state->cbv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						}
+					}
+				}
+				break;
+				}
 			}
 
+			if (graphics)
+			{
+				device->GetDirectCommandList(cmd)->SetGraphicsRootDescriptorTable(pso_internal->bindpoint_res, binding_table);
+			}
+			else
+			{
+				device->GetDirectCommandList(cmd)->SetComputeRootDescriptorTable(pso_internal->bindpoint_res, binding_table);
+			}
 		}
+
+		// Samplers:
+		if (!pso_internal->samplers.empty() && dirty_sam)
+		{
+			dirty_sam = false;
+			DescriptorHeap& heap = heaps_sampler[current_sampler_heap];
+			D3D12_GPU_DESCRIPTOR_HANDLE binding_table = heap.start_gpu;
+			binding_table.ptr += (UINT64)heap.ringOffset * (UINT64)device->sampler_descriptor_size;
+
+			for (auto& x : pso_internal->samplers)
+			{
+				D3D12_CPU_DESCRIPTOR_HANDLE dst = heap.start_cpu;
+				uint32_t ringOffset = heap.ringOffset++;
+				dst.ptr += ringOffset * device->sampler_descriptor_size;
+
+				const Sampler* sampler = SAM[x.BaseShaderRegister];
+				if (sampler == nullptr || !sampler->IsValid())
+				{
+					device->device->CopyDescriptorsSimple(1, dst, device->nullSAM, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+				}
+				else
+				{
+					auto internal_state = to_internal(sampler);
+					device->device->CopyDescriptorsSimple(1, dst, internal_state->descriptor.handle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+				}
+			}
+
+			if (graphics)
+			{
+				device->GetDirectCommandList(cmd)->SetGraphicsRootDescriptorTable(pso_internal->bindpoint_sam, binding_table);
+			}
+			else
+			{
+				device->GetDirectCommandList(cmd)->SetComputeRootDescriptorTable(pso_internal->bindpoint_sam, binding_table);
+			}
+		}
+
 	}
 	GraphicsDevice_DX12::FrameResources::DescriptorTableFrameAllocator::DescriptorHandles
 		GraphicsDevice_DX12::FrameResources::DescriptorTableFrameAllocator::commit(const DescriptorTable* table, CommandList cmd)
@@ -2233,6 +2273,13 @@ using namespace DX12_Internal;
 
 		hr = device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&copyFence));
 		assert(SUCCEEDED(hr));
+		copyFenceEvent = CreateEventEx(NULL, FALSE, FALSE, EVENT_ALL_ACCESS);
+		copyFenceValue = copyFence->GetCompletedValue();
+
+		hr = device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&directFence));
+		assert(SUCCEEDED(hr));
+		directFenceEvent = CreateEventEx(NULL, FALSE, FALSE, EVENT_ALL_ACCESS);
+		directFenceValue = directFence->GetCompletedValue();
 
 		// Query features:
 
@@ -2335,57 +2382,144 @@ using namespace DX12_Internal;
 			assert(SUCCEEDED(hr));
 		}
 
-		// GPU Queries:
+		descriptors_res = std::make_shared<DescriptorAllocator>();
+		descriptors_sam = std::make_shared<DescriptorAllocator>();
+		descriptors_res->init(this, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		descriptors_sam->init(this, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+
 		{
-			D3D12_QUERY_HEAP_DESC queryheapdesc = {};
-			queryheapdesc.NodeMask = 0;
-
-			for (uint32_t i = 0; i < timestamp_query_count; ++i)
-			{
-				allocationhandler->free_timestampqueries.push_back(i);
-			}
-			queryheapdesc.Count = timestamp_query_count;
-			queryheapdesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-			hr = device->CreateQueryHeap(&queryheapdesc, IID_PPV_ARGS(&querypool_timestamp));
-			assert(SUCCEEDED(hr));
-
-			for (uint32_t i = 0; i < occlusion_query_count; ++i)
-			{
-				allocationhandler->free_occlusionqueries.push_back(i);
-			}
-			queryheapdesc.Count = occlusion_query_count;
-			queryheapdesc.Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
-			hr = device->CreateQueryHeap(&queryheapdesc, IID_PPV_ARGS(&querypool_occlusion));
-			assert(SUCCEEDED(hr));
-
-
-			D3D12MA::ALLOCATION_DESC allocationDesc = {};
-			allocationDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
-
-			CD3DX12_RESOURCE_DESC resdesc = CD3DX12_RESOURCE_DESC::Buffer(timestamp_query_count * sizeof(uint64_t));
-
-			hr = allocationhandler->allocator->CreateResource(
-				&allocationDesc,
-				&resdesc,
-				D3D12_RESOURCE_STATE_COPY_DEST,
-				nullptr,
-				&allocation_querypool_timestamp_readback,
-				IID_PPV_ARGS(&querypool_timestamp_readback)
-			);
-			assert(SUCCEEDED(hr));
-
-			resdesc = CD3DX12_RESOURCE_DESC::Buffer(occlusion_query_count * sizeof(uint64_t));
-
-			hr = allocationhandler->allocator->CreateResource(
-				&allocationDesc,
-				&resdesc,
-				D3D12_RESOURCE_STATE_COPY_DEST,
-				nullptr,
-				&allocation_querypool_occlusion_readback,
-				IID_PPV_ARGS(&querypool_occlusion_readback)
-			);
-			assert(SUCCEEDED(hr));
+			D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
+			nullCBV = descriptors_res->allocate();
+			device->CreateConstantBufferView(&cbv_desc, nullCBV);
 		}
+		{
+			D3D12_SAMPLER_DESC sampler_desc = {};
+			sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+			sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+			sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+			nullSAM = descriptors_sam->allocate();
+			device->CreateSampler(&sampler_desc, nullSAM);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R32_UINT;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+			nullSRV_buffer = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_buffer);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+			nullSRV_texture1d = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texture1d);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+			nullSRV_texture1darray = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texture1darray);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			nullSRV_texture2d = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texture2d);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+			nullSRV_texture2darray = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texture2darray);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+			nullSRV_texturecube = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texturecube);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+			nullSRV_texturecubearray = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texturecubearray);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+			nullSRV_texture3d = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_texture3d);
+		}
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+			nullSRV_accelerationstructure = descriptors_res->allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, nullSRV_accelerationstructure);
+		}
+		{
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+			uav_desc.Format = DXGI_FORMAT_R32_UINT;
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+			nullUAV_buffer = descriptors_res->allocate();
+			device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, nullUAV_buffer);
+		}
+		{
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+			uav_desc.Format = DXGI_FORMAT_R32_UINT;
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+			nullUAV_texture1d = descriptors_res->allocate();
+			device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, nullUAV_texture1d);
+		}
+		{
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+			uav_desc.Format = DXGI_FORMAT_R32_UINT;
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
+			nullUAV_texture1darray = descriptors_res->allocate();
+			device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, nullUAV_texture1darray);
+		}
+		{
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+			uav_desc.Format = DXGI_FORMAT_R32_UINT;
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			nullUAV_texture2d = descriptors_res->allocate();
+			device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, nullUAV_texture2d);
+		}
+		{
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+			uav_desc.Format = DXGI_FORMAT_R32_UINT;
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+			nullUAV_texture2darray = descriptors_res->allocate();
+			device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, nullUAV_texture2darray);
+		}
+		{
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+			uav_desc.Format = DXGI_FORMAT_R32_UINT;
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+			nullUAV_texture3d = descriptors_res->allocate();
+			device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, nullUAV_texture3d);
+		}
+
+		// GPU Queries:
+		allocationhandler->queries_occlusion.init(allocationhandler.get(), D3D12_QUERY_HEAP_TYPE_OCCLUSION);
+		allocationhandler->queries_timestamp.init(allocationhandler.get(), D3D12_QUERY_HEAP_TYPE_TIMESTAMP);
 
 		if (pfn_DxcCreateInstance == nullptr)
 		{
@@ -2406,9 +2540,8 @@ using namespace DX12_Internal;
 		WaitForGPU();
 
 		CloseHandle(frameFenceEvent);
-
-		allocation_querypool_timestamp_readback->Release();
-		allocation_querypool_occlusion_readback->Release();
+		CloseHandle(copyFenceEvent);
+		CloseHandle(directFenceEvent);
 	}
 
 	void GraphicsDevice_DX12::SetResolution(int width, int height)
@@ -2417,6 +2550,8 @@ using namespace DX12_Internal;
 		{
 			RESOLUTIONWIDTH = width;
 			RESOLUTIONHEIGHT = height;
+
+			WaitForGPU();
 
 			for (uint32_t fr = 0; fr < BACKBUFFER_COUNT; ++fr)
 			{
@@ -2470,12 +2605,11 @@ using namespace DX12_Internal;
 
 		HRESULT hr = E_FAIL;
 
-		uint32_t alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+		size_t alignedSize = pDesc->ByteWidth;
 		if (pDesc->BindFlags & BIND_CONSTANT_BUFFER)
 		{
-			alignment = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+			alignedSize = Align(alignedSize, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 		}
-		size_t alignedSize = Align(pDesc->ByteWidth, alignment);
 
 		D3D12_RESOURCE_DESC desc;
 		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -2524,6 +2658,7 @@ using namespace DX12_Internal;
 		);
 		assert(SUCCEEDED(hr));
 
+		internal_state->gpu_address = internal_state->resource->GetGPUVirtualAddress();
 
 		// Issue data copy on request:
 		if (pInitialData != nullptr)
@@ -2566,9 +2701,9 @@ using namespace DX12_Internal;
 		{
 			D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
 			cbv_desc.SizeInBytes = (uint32_t)alignedSize;
-			cbv_desc.BufferLocation = internal_state->resource->GetGPUVirtualAddress();
+			cbv_desc.BufferLocation = internal_state->gpu_address;
 
-			internal_state->cbv = cbv_desc;
+			internal_state->cbv.init(this, cbv_desc);
 		}
 
 		if (pDesc->BindFlags & BIND_SHADER_RESOURCE)
@@ -2617,10 +2752,6 @@ using namespace DX12_Internal;
 			{
 				desc.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 			}
-		}
-		else if (desc.SampleDesc.Count == 1)
-		{
-			desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 		}
 		if (pDesc->BindFlags & BIND_RENDER_TARGET)
 		{
@@ -2841,7 +2972,10 @@ using namespace DX12_Internal;
 				if (desc.Type == D3D_SIT_SAMPLER)
 				{
 					internal_state->samplers.emplace_back();
-					D3D12_DESCRIPTOR_RANGE& descriptor = internal_state->samplers.back();
+					D3D12_DESCRIPTOR_RANGE1& descriptor = internal_state->samplers.back();
+
+					descriptor.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+					//descriptor.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
 
 					descriptor.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
 					descriptor.BaseShaderRegister = desc.BindPoint;
@@ -2852,28 +2986,39 @@ using namespace DX12_Internal;
 				else
 				{
 					internal_state->resources.emplace_back();
-					D3D12_DESCRIPTOR_RANGE& descriptor = internal_state->resources.back();
+					D3D12_DESCRIPTOR_RANGE1& descriptor = internal_state->resources.back();
+
+					descriptor.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
 
 					switch (desc.Type)
 					{
 					default:
 					case D3D_SIT_CBUFFER:
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 						descriptor.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
 						break;
 					case D3D_SIT_TBUFFER:
-					case D3D_SIT_TEXTURE:
 					case D3D_SIT_STRUCTURED:
 					case D3D_SIT_BYTEADDRESS:
-					case D3D_SIT_RTACCELERATIONSTRUCTURE:
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS;
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 						descriptor.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 						break;
-					case D3D_SIT_UAV_RWTYPED:
+					case D3D_SIT_TEXTURE:
+					case D3D_SIT_RTACCELERATIONSTRUCTURE:
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+						descriptor.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+						break;
 					case D3D_SIT_UAV_RWSTRUCTURED:
 					case D3D_SIT_UAV_RWBYTEADDRESS:
 					case D3D_SIT_UAV_APPEND_STRUCTURED:
 					case D3D_SIT_UAV_CONSUME_STRUCTURED:
 					case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
+					case D3D_SIT_UAV_RWTYPED:
 					case D3D_SIT_UAV_FEEDBACKTEXTURE:
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+						descriptor.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 						descriptor.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 						break;
 					}
@@ -2933,12 +3078,13 @@ using namespace DX12_Internal;
 
 			if (stage == CS || stage == SHADERSTAGE_COUNT)
 			{
-				std::vector<D3D12_ROOT_PARAMETER> params;
+				std::vector<D3D12_ROOT_PARAMETER1> params;
 
 				if (!internal_state->resources.empty())
 				{
+					internal_state->bindpoint_res = (uint32_t)params.size();
 					params.emplace_back();
-					D3D12_ROOT_PARAMETER& param = params.back();
+					D3D12_ROOT_PARAMETER1& param = params.back();
 					param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 					param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 					param.DescriptorTable.NumDescriptorRanges = (UINT)internal_state->resources.size();
@@ -2947,23 +3093,28 @@ using namespace DX12_Internal;
 
 				if (!internal_state->samplers.empty())
 				{
+					internal_state->bindpoint_sam = (uint32_t)params.size();
 					params.emplace_back();
-					D3D12_ROOT_PARAMETER& param = params.back();
+					D3D12_ROOT_PARAMETER1& param = params.back();
 					param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 					param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 					param.DescriptorTable.NumDescriptorRanges = (UINT)internal_state->samplers.size();
 					param.DescriptorTable.pDescriptorRanges = internal_state->samplers.data();
 				}
 
-				D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+				D3D12_ROOT_SIGNATURE_DESC1 rootSigDesc = {};
 				rootSigDesc.NumStaticSamplers = 0;
 				rootSigDesc.NumParameters = (UINT)params.size();
 				rootSigDesc.pParameters = params.data();
 				rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
+				D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned_rs = {};
+				versioned_rs.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+				versioned_rs.Desc_1_1 = rootSigDesc;
+
 				ID3DBlob* rootSigBlob;
 				ID3DBlob* rootSigError;
-				hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootSigBlob, &rootSigError);
+				hr = D3D12SerializeVersionedRootSignature(&versioned_rs, &rootSigBlob, &rootSigError);
 				if (FAILED(hr))
 				{
 					OutputDebugStringA((char*)rootSigError->GetBufferPointer());
@@ -3018,7 +3169,7 @@ using namespace DX12_Internal;
 
 		pSamplerState->desc = *pSamplerDesc;
 
-		internal_state->descriptor = desc;
+		internal_state->descriptor.init(this, desc);
 
 		return true;
 	}
@@ -3034,21 +3185,13 @@ using namespace DX12_Internal;
 		switch (pDesc->Type)
 		{
 		case GPU_QUERY_TYPE_TIMESTAMP:
-			if (!allocationhandler->free_timestampqueries.pop_front(internal_state->query_index))
-			{
-				internal_state->query_type = GPU_QUERY_TYPE_INVALID;
-				return false;
-			}
+			internal_state->query = allocationhandler->queries_timestamp.allocate();
 			break;
 		case GPU_QUERY_TYPE_TIMESTAMP_DISJOINT:
 			break;
 		case GPU_QUERY_TYPE_OCCLUSION:
 		case GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
-			if (!allocationhandler->free_occlusionqueries.pop_front(internal_state->query_index))
-			{
-				internal_state->query_type = GPU_QUERY_TYPE_INVALID;
-				return false;
-			}
+			internal_state->query = allocationhandler->queries_occlusion.allocate();
 			break;
 		}
 
@@ -3144,12 +3287,13 @@ using namespace DX12_Internal;
 			insert_shader(pDesc->gs);
 			insert_shader(pDesc->ps);
 
-			std::vector<D3D12_ROOT_PARAMETER> params;
+			std::vector<D3D12_ROOT_PARAMETER1> params;
 
 			if (!internal_state->resources.empty())
 			{
+				internal_state->bindpoint_res = (uint32_t)params.size();
 				params.emplace_back();
-				D3D12_ROOT_PARAMETER& param = params.back();
+				D3D12_ROOT_PARAMETER1& param = params.back();
 				param = {};
 				param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -3159,8 +3303,9 @@ using namespace DX12_Internal;
 
 			if (!internal_state->samplers.empty())
 			{
+				internal_state->bindpoint_sam = (uint32_t)params.size();
 				params.emplace_back();
-				D3D12_ROOT_PARAMETER& param = params.back();
+				D3D12_ROOT_PARAMETER1& param = params.back();
 				param = {};
 				param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 				param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -3168,15 +3313,19 @@ using namespace DX12_Internal;
 				param.DescriptorTable.pDescriptorRanges = internal_state->samplers.data();
 			}
 
-			D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+			D3D12_ROOT_SIGNATURE_DESC1 rootSigDesc = {};
 			rootSigDesc.NumStaticSamplers = 0;
 			rootSigDesc.NumParameters = (UINT)params.size();
 			rootSigDesc.pParameters = params.data();
 			rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
+			D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned_rs = {};
+			versioned_rs.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+			versioned_rs.Desc_1_1 = rootSigDesc;
+
 			ID3DBlob* rootSigBlob;
 			ID3DBlob* rootSigError;
-			HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootSigBlob, &rootSigError);
+			HRESULT hr = D3D12SerializeVersionedRootSignature(&versioned_rs, &rootSigBlob, &rootSigError);
 			if (FAILED(hr))
 			{
 				assert(0);
@@ -3325,25 +3474,25 @@ using namespace DX12_Internal;
 				if (x.type == RaytracingAccelerationStructureDesc::BottomLevel::Geometry::TRIANGLES)
 				{
 					geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-					geometry.Triangles.VertexBuffer.StartAddress = to_internal(&x.triangles.vertexBuffer)->resource->GetGPUVirtualAddress() + (D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.vertexByteOffset;
+					geometry.Triangles.VertexBuffer.StartAddress = to_internal(&x.triangles.vertexBuffer)->gpu_address + (D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.vertexByteOffset;
 					geometry.Triangles.VertexBuffer.StrideInBytes = (UINT64)x.triangles.vertexStride;
 					geometry.Triangles.VertexCount = x.triangles.vertexCount;
 					geometry.Triangles.VertexFormat = _ConvertFormat(x.triangles.vertexFormat);
 					geometry.Triangles.IndexFormat = (x.triangles.indexFormat == INDEXBUFFER_FORMAT::INDEXFORMAT_16BIT ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
-					geometry.Triangles.IndexBuffer = to_internal(&x.triangles.indexBuffer)->resource->GetGPUVirtualAddress() +
+					geometry.Triangles.IndexBuffer = to_internal(&x.triangles.indexBuffer)->gpu_address +
 						(D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.indexOffset * (x.triangles.indexFormat == INDEXBUFFER_FORMAT::INDEXFORMAT_16BIT ? sizeof(uint16_t) : sizeof(uint32_t));
 					geometry.Triangles.IndexCount = x.triangles.indexCount;
 
 					if (x._flags & RaytracingAccelerationStructureDesc::BottomLevel::Geometry::FLAG_USE_TRANSFORM)
 					{
-						geometry.Triangles.Transform3x4 = to_internal(&x.triangles.transform3x4Buffer)->resource->GetGPUVirtualAddress() +
+						geometry.Triangles.Transform3x4 = to_internal(&x.triangles.transform3x4Buffer)->gpu_address +
 							(D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.transform3x4BufferOffset;
 					}
 				}
 				else if (x.type == RaytracingAccelerationStructureDesc::BottomLevel::Geometry::PROCEDURAL_AABBS)
 				{
 					geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS; 
-					geometry.AABBs.AABBs.StartAddress = to_internal(&x.aabbs.aabbBuffer)->resource->GetGPUVirtualAddress() +
+					geometry.AABBs.AABBs.StartAddress = to_internal(&x.aabbs.aabbBuffer)->gpu_address +
 						(D3D12_GPU_VIRTUAL_ADDRESS)x.aabbs.offset;
 					geometry.AABBs.AABBs.StrideInBytes = (UINT64)x.aabbs.stride;
 					geometry.AABBs.AABBCount = x.aabbs.count;
@@ -3359,7 +3508,7 @@ using namespace DX12_Internal;
 			internal_state->desc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
 			internal_state->desc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
 
-			internal_state->desc.InstanceDescs = to_internal(&pDesc->toplevel.instanceBuffer)->resource->GetGPUVirtualAddress() +
+			internal_state->desc.InstanceDescs = to_internal(&pDesc->toplevel.instanceBuffer)->gpu_address +
 				(D3D12_GPU_VIRTUAL_ADDRESS)pDesc->toplevel.offset;
 			internal_state->desc.NumDescs = (UINT)pDesc->toplevel.count;
 		}
@@ -3389,7 +3538,6 @@ using namespace DX12_Internal;
 
 		D3D12MA::ALLOCATION_DESC allocationDesc = {};
 		allocationDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
-		allocationDesc.Flags = D3D12MA::ALLOCATION_FLAG_COMMITTED;
 
 		HRESULT hr = allocationhandler->allocator->CreateResource(
 			&allocationDesc,
@@ -3401,12 +3549,14 @@ using namespace DX12_Internal;
 		);
 		assert(SUCCEEDED(hr));
 
+		internal_state->gpu_address = internal_state->resource->GetGPUVirtualAddress();
+
 		D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
 		srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 		srv_desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-		srv_desc.RaytracingAccelerationStructure.Location = internal_state->resource->GetGPUVirtualAddress();
+		srv_desc.RaytracingAccelerationStructure.Location = internal_state->gpu_address;
 
-		internal_state->srv = srv_desc;
+		internal_state->srv.init(this, srv_desc, nullptr);
 
 		GPUBufferDesc scratch_desc;
 		scratch_desc.ByteWidth = (uint32_t)std::max(internal_state->info.ScratchDataSizeInBytes, internal_state->info.UpdateScratchDataSizeInBytes);
@@ -3692,8 +3842,8 @@ using namespace DX12_Internal;
 		internal_state->params.reserve(rootsig->tables.size());
 		std::vector<D3D12_STATIC_SAMPLER_DESC> staticsamplers;
 
-		std::vector<std::vector<D3D12_DESCRIPTOR_RANGE>> table_ranges_resource;
-		std::vector<std::vector<D3D12_DESCRIPTOR_RANGE>> table_ranges_sampler;
+		std::vector<std::vector<D3D12_DESCRIPTOR_RANGE1>> table_ranges_resource;
+		std::vector<std::vector<D3D12_DESCRIPTOR_RANGE1>> table_ranges_sampler;
 		table_ranges_resource.reserve(rootsig->tables.size());
 		table_ranges_sampler.reserve(rootsig->tables.size());
 
@@ -3739,9 +3889,12 @@ using namespace DX12_Internal;
 				{
 					// Space assignment for Root Signature:
 					table_ranges_resource.back().emplace_back();
-					D3D12_DESCRIPTOR_RANGE& range = table_ranges_resource.back().back();
+					D3D12_DESCRIPTOR_RANGE1& range = table_ranges_resource.back().back();
 					auto table_internal = to_internal(&x);
 					range = table_internal->resource_heap.ranges[rangeIndex];
+					range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+					range.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+					range.Flags |= D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 					range.RegisterSpace = space;
 				}
 				rangeIndex++;
@@ -3750,9 +3903,10 @@ using namespace DX12_Internal;
 			{
 				// Space assignment for Root Signature:
 				table_ranges_sampler.back().emplace_back();
-				D3D12_DESCRIPTOR_RANGE& range = table_ranges_sampler.back().back();
+				D3D12_DESCRIPTOR_RANGE1& range = table_ranges_sampler.back().back();
 				auto table_internal = to_internal(&x);
 				range = table_internal->sampler_heap.ranges[rangeIndex];
+				range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
 				range.RegisterSpace = space;
 			}
 			space++;
@@ -3826,7 +3980,7 @@ using namespace DX12_Internal;
 			param.Constants.Num32BitValues = x.size / sizeof(uint32_t);
 		}
 
-		D3D12_ROOT_SIGNATURE_DESC desc = {};
+		D3D12_ROOT_SIGNATURE_DESC1 desc = {};
 		if (rootsig->_flags & RootSignature::FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT)
 		{
 			desc.Flags |= D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -3836,9 +3990,13 @@ using namespace DX12_Internal;
 		desc.NumStaticSamplers = (UINT)staticsamplers.size();
 		desc.pStaticSamplers = staticsamplers.data();
 
+		D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned_rs = {};
+		versioned_rs.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+		versioned_rs.Desc_1_1 = desc;
+
 		ID3DBlob* rootSigBlob;
 		ID3DBlob* rootSigError;
-		HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootSigBlob, &rootSigError);
+		HRESULT hr = D3D12SerializeVersionedRootSignature(&versioned_rs, &rootSigBlob, &rootSigError);
 		if (FAILED(hr))
 		{
 			OutputDebugStringA((char*)rootSigError->GetBufferPointer());
@@ -3958,12 +4116,15 @@ using namespace DX12_Internal;
 				srv_desc.Texture3D.MipLevels = mipCount;
 			}
 
-			if (internal_state->srv.ViewDimension == D3D12_SRV_DIMENSION_UNKNOWN)
+			SingleDescriptor descriptor;
+			descriptor.init(this, srv_desc, internal_state->resource.Get());
+
+			if (!internal_state->srv.IsValid())
 			{
-				internal_state->srv = srv_desc;
+				internal_state->srv = descriptor;
 				return -1;
 			}
-			internal_state->subresources_srv.push_back(srv_desc);
+			internal_state->subresources_srv.push_back(descriptor);
 			return int(internal_state->subresources_srv.size() - 1);
 		}
 		break;
@@ -4029,12 +4190,15 @@ using namespace DX12_Internal;
 				uav_desc.Texture3D.WSize = -1;
 			}
 
-			if (internal_state->uav.ViewDimension == D3D12_UAV_DIMENSION_UNKNOWN)
+			SingleDescriptor descriptor;
+			descriptor.init(this, uav_desc, internal_state->resource.Get());
+
+			if (!internal_state->uav.IsValid())
 			{
-				internal_state->uav = uav_desc;
+				internal_state->uav = descriptor;
 				return -1;
 			}
-			internal_state->subresources_uav.push_back(uav_desc);
+			internal_state->subresources_uav.push_back(descriptor);
 			return int(internal_state->subresources_uav.size() - 1);
 		}
 		break;
@@ -4250,12 +4414,15 @@ using namespace DX12_Internal;
 				srv_desc.Buffer.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / stride;
 			}
 
-			if (internal_state->srv.ViewDimension == D3D12_SRV_DIMENSION_UNKNOWN)
+			SingleDescriptor descriptor;
+			descriptor.init(this, srv_desc, internal_state->resource.Get());
+
+			if (!internal_state->srv.IsValid())
 			{
-				internal_state->srv = srv_desc;
+				internal_state->srv = descriptor;
 				return -1;
 			}
-			internal_state->subresources_srv.push_back(srv_desc);
+			internal_state->subresources_srv.push_back(descriptor);
 			return int(internal_state->subresources_srv.size() - 1);
 		}
 		break;
@@ -4291,12 +4458,15 @@ using namespace DX12_Internal;
 				uav_desc.Buffer.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / stride;
 			}
 
-			if (internal_state->uav.ViewDimension == D3D12_UAV_DIMENSION_UNKNOWN)
+			SingleDescriptor descriptor;
+			descriptor.init(this, uav_desc, internal_state->resource.Get());
+
+			if (!internal_state->uav.IsValid())
 			{
-				internal_state->uav = uav_desc;
+				internal_state->uav = descriptor;
 				return -1;
 			}
-			internal_state->subresources_uav.push_back(uav_desc);
+			internal_state->subresources_uav.push_back(descriptor);
 			return int(internal_state->subresources_uav.size() - 1);
 		}
 		break;
@@ -4320,7 +4490,7 @@ using namespace DX12_Internal;
 	void GraphicsDevice_DX12::WriteTopLevelAccelerationStructureInstance(const RaytracingAccelerationStructureDesc::TopLevel::Instance* instance, void* dest)
 	{
 		D3D12_RAYTRACING_INSTANCE_DESC* desc = (D3D12_RAYTRACING_INSTANCE_DESC*)dest;
-		desc->AccelerationStructure = to_internal(&instance->bottomlevel)->resource->GetGPUVirtualAddress();
+		desc->AccelerationStructure = to_internal(&instance->bottomlevel)->gpu_address;
 		memcpy(desc->Transform, &instance->transform, sizeof(desc->Transform));
 		desc->InstanceID = instance->InstanceID;
 		desc->InstanceMask = instance->InstanceMask;
@@ -4351,8 +4521,7 @@ using namespace DX12_Internal;
 		case CONSTANTBUFFER:
 			if (resource == nullptr || !resource->IsValid())
 			{
-				D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
-				device->CreateConstantBufferView(&cbv_desc, dst);
+				device->CopyDescriptorsSimple(1, dst, nullCBV, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 			}
 			else if (resource->IsBuffer())
 			{
@@ -4360,9 +4529,16 @@ using namespace DX12_Internal;
 				auto internal_state = to_internal(buffer);
 				if (buffer->desc.BindFlags & BIND_CONSTANT_BUFFER)
 				{
-					D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = internal_state->cbv;
-					cbv.BufferLocation += offset;
-					device->CreateConstantBufferView(&cbv, dst);
+					if (offset > 0)
+					{
+						D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = internal_state->cbv.cbv;
+						cbv.BufferLocation += offset;
+						device->CreateConstantBufferView(&cbv, dst);
+					}
+					else
+					{
+						device->CopyDescriptorsSimple(1, dst, internal_state->cbv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+					}
 				}
 			}
 			break;
@@ -4379,84 +4555,86 @@ using namespace DX12_Internal;
 		case ACCELERATIONSTRUCTURE:
 			if (resource == nullptr || !resource->IsValid())
 			{
-				D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-				srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 				switch (binding)
 				{
 				case RAWBUFFER:
 				case STRUCTUREDBUFFER:
 				case TYPEDBUFFER:
-					srv_desc.Format = DXGI_FORMAT_R32_UINT;
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_buffer, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURE1D:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texture1d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURE1DARRAY:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texture1darray, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURE2D:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texture2d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURE2DARRAY:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texture2darray, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURECUBE:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texturecube, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURECUBEARRAY:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texturecubearray, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case TEXTURE3D:
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_texture3d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case ACCELERATIONSTRUCTURE:
-					srv_desc.Format = DXGI_FORMAT_UNKNOWN;
-					srv_desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+					device->CopyDescriptorsSimple(1, dst, nullSRV_accelerationstructure, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				default:
 					assert(0);
 					break;
 				}
-				device->CreateShaderResourceView(nullptr, &srv_desc, dst);
 			}
 			else if (resource->IsTexture())
 			{
 				auto internal_state = to_internal((const Texture*)resource);
 				if (subresource < 0)
 				{
-					device->CreateShaderResourceView(internal_state->resource.Get(), &internal_state->srv, dst);
+					device->CopyDescriptorsSimple(1, dst, internal_state->srv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 				}
 				else
 				{
-					device->CreateShaderResourceView(internal_state->resource.Get(), &internal_state->subresources_srv[subresource], dst);
+					device->CopyDescriptorsSimple(1, dst, internal_state->subresources_srv[subresource].handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 				}
 			}
 			else if (resource->IsBuffer())
 			{
 				const GPUBuffer* buffer = (const GPUBuffer*)resource;
 				auto internal_state = to_internal(buffer);
-				D3D12_SHADER_RESOURCE_VIEW_DESC srv = subresource < 0 ? internal_state->srv : internal_state->subresources_srv[subresource];
-				switch (binding)
+
+				if (offset > 0)
 				{
-				default:
-				case RAWBUFFER:
-					srv.Buffer.FirstElement += offset / sizeof(uint32_t);
-					break;
-				case STRUCTUREDBUFFER:
-					srv.Buffer.FirstElement += offset / srv.Buffer.StructureByteStride;
-					break;
-				case TYPEDBUFFER:
-					srv.Buffer.FirstElement += offset / GetFormatStride(buffer->desc.Format);
-					break;
+					D3D12_SHADER_RESOURCE_VIEW_DESC srv = subresource < 0 ? internal_state->srv.srv : internal_state->subresources_srv[subresource].srv;
+					switch (binding)
+					{
+					default:
+					case RAWBUFFER:
+						srv.Buffer.FirstElement += offset / sizeof(uint32_t);
+						break;
+					case STRUCTUREDBUFFER:
+						srv.Buffer.FirstElement += offset / srv.Buffer.StructureByteStride;
+						break;
+					case TYPEDBUFFER:
+						srv.Buffer.FirstElement += offset / GetFormatStride(buffer->desc.Format);
+						break;
+					}
+					device->CreateShaderResourceView(internal_state->resource.Get(), &srv, dst);
 				}
-				device->CreateShaderResourceView(internal_state->resource.Get(), &srv, dst);
+				else
+				{
+					device->CopyDescriptorsSimple(1, dst, internal_state->srv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				}
 			}
 			else if (resource->IsAccelerationStructure())
 			{
 				auto internal_state = to_internal((const RaytracingAccelerationStructure*)resource);
-				device->CreateShaderResourceView(nullptr, &internal_state->srv, dst);
+				device->CopyDescriptorsSimple(1, dst, internal_state->srv.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 			}
 			break;
 		case RWRAWBUFFER:
@@ -4469,67 +4647,72 @@ using namespace DX12_Internal;
 		case RWTEXTURE3D:
 			if (resource == nullptr || !resource->IsValid())
 			{
-				D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
-				uav_desc.Format = DXGI_FORMAT_R32_UINT;
 				switch (binding)
 				{
 				case RWRAWBUFFER:
 				case RWSTRUCTUREDBUFFER:
 				case RWTYPEDBUFFER:
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+					device->CopyDescriptorsSimple(1, dst, nullUAV_buffer, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case RWTEXTURE1D:
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+					device->CopyDescriptorsSimple(1, dst, nullUAV_texture1d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case RWTEXTURE1DARRAY:
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
+					device->CopyDescriptorsSimple(1, dst, nullUAV_texture1darray, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case RWTEXTURE2D:
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+					device->CopyDescriptorsSimple(1, dst, nullUAV_texture2d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case RWTEXTURE2DARRAY:
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+					device->CopyDescriptorsSimple(1, dst, nullUAV_texture2darray, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				case RWTEXTURE3D:
-					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+					device->CopyDescriptorsSimple(1, dst, nullUAV_texture3d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					break;
 				default:
 					assert(0);
 					break;
 				}
-				device->CreateUnorderedAccessView(nullptr, nullptr, &uav_desc, dst);
 			}
 			else if (resource->IsTexture())
 			{
 				auto internal_state = to_internal((const Texture*)resource);
 				if (subresource < 0)
 				{
-					device->CreateUnorderedAccessView(internal_state->resource.Get(), nullptr, &internal_state->uav, dst);
+					device->CopyDescriptorsSimple(1, dst, internal_state->uav.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 				}
 				else
 				{
-					device->CreateUnorderedAccessView(internal_state->resource.Get(), nullptr, &internal_state->subresources_uav[subresource], dst);
+					device->CopyDescriptorsSimple(1, dst, internal_state->subresources_uav[subresource].handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 				}
 			}
 			else if (resource->IsBuffer())
 			{
 				const GPUBuffer* buffer = (const GPUBuffer*)resource;
 				auto internal_state = to_internal(buffer);
-				D3D12_UNORDERED_ACCESS_VIEW_DESC uav = subresource < 0 ? internal_state->uav : internal_state->subresources_uav[subresource];
-				switch (binding)
+
+				if (offset > 0)
 				{
-				default:
-				case RWRAWBUFFER:
-					uav.Buffer.FirstElement += offset / sizeof(uint32_t);
-					break;
-				case RWSTRUCTUREDBUFFER:
-					uav.Buffer.FirstElement += offset / uav.Buffer.StructureByteStride;
-					break;
-				case RWTYPEDBUFFER:
-					uav.Buffer.FirstElement += offset / GetFormatStride(buffer->desc.Format);
-					break;
+					D3D12_UNORDERED_ACCESS_VIEW_DESC uav = subresource < 0 ? internal_state->uav.uav : internal_state->subresources_uav[subresource].uav;
+					switch (binding)
+					{
+					default:
+					case RWRAWBUFFER:
+						uav.Buffer.FirstElement += offset / sizeof(uint32_t);
+						break;
+					case RWSTRUCTUREDBUFFER:
+						uav.Buffer.FirstElement += offset / uav.Buffer.StructureByteStride;
+						break;
+					case RWTYPEDBUFFER:
+						uav.Buffer.FirstElement += offset / GetFormatStride(buffer->desc.Format);
+						break;
+					}
+					device->CreateUnorderedAccessView(internal_state->resource.Get(), nullptr, &uav, dst);
 				}
-				device->CreateUnorderedAccessView(internal_state->resource.Get(), nullptr, &uav, dst);
+				else
+				{
+					device->CopyDescriptorsSimple(1, dst, internal_state->uav.handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				}
 			}
 			break;
 		default:
@@ -4545,18 +4728,12 @@ using namespace DX12_Internal;
 
 		if (sampler == nullptr || !sampler->IsValid())
 		{
-			D3D12_SAMPLER_DESC sam = {};
-			sam.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-			sam.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-			sam.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-			sam.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-			sam.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-			device->CreateSampler(&sam, dst);
+			device->CopyDescriptorsSimple(1, dst, nullSAM, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 		}
 		else
 		{
 			auto internal_state = to_internal(sampler);
-			device->CreateSampler(&internal_state->descriptor, dst);
+			device->CopyDescriptorsSimple(1, dst, internal_state->descriptor.handle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 		}
 	}
 
@@ -4591,7 +4768,7 @@ using namespace DX12_Internal;
 		auto internal_state = to_internal(query);
 
 		D3D12_RANGE range;
-		range.Begin = (size_t)internal_state->query_index * sizeof(size_t);
+		range.Begin = (size_t)internal_state->query.index * sizeof(uint64_t);
 		range.End = range.Begin + sizeof(uint64_t);
 		D3D12_RANGE nullrange = {};
 		void* data = nullptr;
@@ -4602,35 +4779,35 @@ using namespace DX12_Internal;
 			assert(0); // not implemented yet
 			break;
 		case GPU_QUERY_TYPE_TIMESTAMP:
-			if (internal_state->query_index == ~0)
+			if (internal_state->query.index == ~0)
 				return false;
-			querypool_timestamp_readback->Map(0, &range, &data);
+			allocationhandler->queries_timestamp.blocks[internal_state->query.block].readback->Map(0, &range, &data);
 			result->result_timestamp = *(uint64_t*)((size_t)data + range.Begin);
-			querypool_timestamp_readback->Unmap(0, &nullrange);
+			allocationhandler->queries_timestamp.blocks[internal_state->query.block].readback->Unmap(0, &nullrange);
 			break;
 		case GPU_QUERY_TYPE_TIMESTAMP_DISJOINT:
 			directQueue->GetTimestampFrequency(&result->result_timestamp_frequency);
 			break;
 		case GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
 		{
-			if (internal_state->query_index == ~0)
+			if (internal_state->query.index == ~0)
 				return false;
 			BOOL passed = FALSE;
-			querypool_occlusion_readback->Map(0, &range, &data);
+			allocationhandler->queries_occlusion.blocks[internal_state->query.block].readback->Map(0, &range, &data);
 			passed = *(BOOL*)((size_t)data + range.Begin);
-			querypool_occlusion_readback->Unmap(0, &nullrange);
+			allocationhandler->queries_occlusion.blocks[internal_state->query.block].readback->Unmap(0, &nullrange);
 			result->result_passed_sample_count = (uint64_t)passed;
 			break;
 		}
 		case GPU_QUERY_TYPE_OCCLUSION:
-			if (internal_state->query_index == ~0)
+			if (internal_state->query.index == ~0)
 				return false;
-			querypool_occlusion_readback->Map(0, &range, &data);
+			allocationhandler->queries_occlusion.blocks[internal_state->query.block].readback->Map(0, &range, &data);
 			result->result_passed_sample_count = *(uint64_t*)((size_t)data + range.Begin);
-			querypool_occlusion_readback->Unmap(0, &nullrange);
+			allocationhandler->queries_occlusion.blocks[internal_state->query.block].readback->Unmap(0, &nullrange);
 			break;
 		default:
-			false;
+			return false;
 		}
 
 		return true;
@@ -4803,13 +4980,34 @@ using namespace DX12_Internal;
 					switch (x.type)
 					{
 					case GPU_QUERY_TYPE_TIMESTAMP:
-						GetDirectCommandList(cmd)->ResolveQueryData(querypool_timestamp.Get(), D3D12_QUERY_TYPE_TIMESTAMP, x.index, 1, querypool_timestamp_readback.Get(), (uint64_t)x.index * sizeof(uint64_t));
+						GetDirectCommandList(cmd)->ResolveQueryData(
+							allocationhandler->queries_timestamp.blocks[x.block].pool.Get(),
+							D3D12_QUERY_TYPE_TIMESTAMP,
+							x.index,
+							1,
+							allocationhandler->queries_timestamp.blocks[x.block].readback.Get(),
+							(uint64_t)x.index * sizeof(uint64_t)
+						);
 						break;
 					case GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
-						GetDirectCommandList(cmd)->ResolveQueryData(querypool_occlusion.Get(), D3D12_QUERY_TYPE_BINARY_OCCLUSION, x.index, 1, querypool_occlusion_readback.Get(), (uint64_t)x.index * sizeof(uint64_t));
+						GetDirectCommandList(cmd)->ResolveQueryData(
+							allocationhandler->queries_occlusion.blocks[x.block].pool.Get(),
+							D3D12_QUERY_TYPE_BINARY_OCCLUSION,
+							x.index,
+							1,
+							allocationhandler->queries_occlusion.blocks[x.block].readback.Get(),
+							(uint64_t)x.index * sizeof(uint64_t)
+						);
 						break;
 					case GPU_QUERY_TYPE_OCCLUSION:
-						GetDirectCommandList(cmd)->ResolveQueryData(querypool_occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, x.index, 1, querypool_occlusion_readback.Get(), (uint64_t)x.index * sizeof(uint64_t));
+						GetDirectCommandList(cmd)->ResolveQueryData(
+							allocationhandler->queries_occlusion.blocks[x.block].pool.Get(),
+							D3D12_QUERY_TYPE_OCCLUSION,
+							x.index,
+							1,
+							allocationhandler->queries_occlusion.blocks[x.block].readback.Get(),
+							(uint64_t)x.index * sizeof(uint64_t)
+						);
 						break;
 					}
 				}
@@ -4862,11 +5060,26 @@ using namespace DX12_Internal;
 
 	void GraphicsDevice_DX12::WaitForGPU()
 	{
-		if (frameFence->GetCompletedValue() < FRAMECOUNT)
+		// wait for copy and direct queues to be idle
+		copyFenceValue++;
+		HRESULT hr = copyQueue->Signal(copyFence.Get(), copyFenceValue);
+		assert(SUCCEEDED(hr));
+		if (copyFence->GetCompletedValue() < copyFenceValue)
 		{
-			HRESULT result = frameFence->SetEventOnCompletion(FRAMECOUNT, frameFenceEvent);
-			WaitForSingleObject(frameFenceEvent, INFINITE);
+			hr = copyFence->SetEventOnCompletion(copyFenceValue, copyFenceEvent);
+			WaitForSingleObject(copyFenceEvent, INFINITE);
 		}
+		assert(SUCCEEDED(hr));
+
+		directFenceValue++;
+		hr = directQueue->Signal(directFence.Get(), directFenceValue);
+		assert(SUCCEEDED(hr));
+		if (directFence->GetCompletedValue() < directFenceValue)
+		{
+			hr = directFence->SetEventOnCompletion(directFenceValue, directFenceEvent);
+			WaitForSingleObject(directFenceEvent, INFINITE);
+		}
+		assert(SUCCEEDED(hr));
 	}
 	void GraphicsDevice_DX12::ClearPipelineStateCache()
 	{
@@ -5125,7 +5338,7 @@ using namespace DX12_Internal;
 		{
 			descriptors.SRV[slot] = resource;
 			descriptors.SRV_index[slot] = subresource;
-			descriptors.dirty = true;
+			descriptors.dirty_res = true;
 		}
 	}
 	void GraphicsDevice_DX12::BindResources(SHADERSTAGE stage, const GPUResource* const* resources, uint32_t slot, uint32_t count, CommandList cmd)
@@ -5146,7 +5359,7 @@ using namespace DX12_Internal;
 		{
 			descriptors.UAV[slot] = resource;
 			descriptors.UAV_index[slot] = subresource;
-			descriptors.dirty = true;
+			descriptors.dirty_res = true;
 		}
 	}
 	void GraphicsDevice_DX12::BindUAVs(SHADERSTAGE stage, const GPUResource* const* resources, uint32_t slot, uint32_t count, CommandList cmd)
@@ -5172,7 +5385,7 @@ using namespace DX12_Internal;
 		if (descriptors.SAM[slot] != sampler)
 		{
 			descriptors.SAM[slot] = sampler;
-			descriptors.dirty = true;
+			descriptors.dirty_sam = true;
 		}
 	}
 	void GraphicsDevice_DX12::BindConstantBuffer(SHADERSTAGE stage, const GPUBuffer* buffer, uint32_t slot, CommandList cmd)
@@ -5182,7 +5395,7 @@ using namespace DX12_Internal;
 		if (buffer->desc.Usage == USAGE_DYNAMIC || descriptors.CBV[slot] != buffer)
 		{
 			descriptors.CBV[slot] = buffer;
-			descriptors.dirty = true;
+			descriptors.dirty_res = true;
 		}
 	}
 	void GraphicsDevice_DX12::BindVertexBuffers(const GPUBuffer* const* vertexBuffers, uint32_t slot, uint32_t count, const uint32_t* strides, const uint32_t* offsets, CommandList cmd)
@@ -5193,7 +5406,7 @@ using namespace DX12_Internal;
 		{
 			if (vertexBuffers[i] != nullptr)
 			{
-				res[i].BufferLocation = vertexBuffers[i]->IsValid() ? to_internal(vertexBuffers[i])->resource->GetGPUVirtualAddress() : 0;
+				res[i].BufferLocation = vertexBuffers[i]->IsValid() ? to_internal(vertexBuffers[i])->gpu_address : 0;
 				res[i].SizeInBytes = vertexBuffers[i]->desc.ByteWidth;
 				if (offsets != nullptr)
 				{
@@ -5212,7 +5425,7 @@ using namespace DX12_Internal;
 		{
 			auto internal_state = to_internal(indexBuffer);
 
-			res.BufferLocation = internal_state->resource->GetGPUVirtualAddress() + (D3D12_GPU_VIRTUAL_ADDRESS)offset;
+			res.BufferLocation = internal_state->gpu_address + (D3D12_GPU_VIRTUAL_ADDRESS)offset;
 			res.Format = (format == INDEXBUFFER_FORMAT::INDEXFORMAT_16BIT ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
 			res.SizeInBytes = indexBuffer->desc.ByteWidth;
 		}
@@ -5269,7 +5482,8 @@ using namespace DX12_Internal;
 			GetDirectCommandList(cmd)->SetGraphicsRootSignature(to_internal(pso->desc.rootSignature)->resource.Get());
 		}
 
-		GetFrameResources().descriptors[cmd].dirty = true;
+		GetFrameResources().descriptors[cmd].dirty_res = true;
+		GetFrameResources().descriptors[cmd].dirty_sam = true;
 		active_pso[cmd] = pso;
 		dirty_pso[cmd] = true;
 	}
@@ -5279,7 +5493,8 @@ using namespace DX12_Internal;
 		if (active_cs[cmd] != cs)
 		{
 			prev_pipeline_hash[cmd] = 0;
-			GetFrameResources().descriptors[cmd].dirty = true;
+			GetFrameResources().descriptors[cmd].dirty_res = true;
+			GetFrameResources().descriptors[cmd].dirty_sam = true;
 			active_cs[cmd] = cs;
 
 			auto internal_state = to_internal(cs);
@@ -5395,7 +5610,7 @@ using namespace DX12_Internal;
 			memcpy(allocation.data, data, dataSize);
 			internal_state->dynamic[cmd] = allocation;
 
-			GetFrameResources().descriptors[cmd].dirty = true;
+			GetFrameResources().descriptors[cmd].dirty_res = true;
 		}
 		else
 		{
@@ -5444,13 +5659,13 @@ using namespace DX12_Internal;
 		switch (internal_state->query_type)
 		{
 		case GPU_QUERY_TYPE_TIMESTAMP:
-			GetDirectCommandList(cmd)->BeginQuery(querypool_timestamp.Get(), D3D12_QUERY_TYPE_TIMESTAMP, internal_state->query_index);
+			GetDirectCommandList(cmd)->BeginQuery(allocationhandler->queries_timestamp.blocks[internal_state->query.block].pool.Get(), D3D12_QUERY_TYPE_TIMESTAMP, internal_state->query.index);
 			break;
 		case GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
-			GetDirectCommandList(cmd)->BeginQuery(querypool_occlusion.Get(), D3D12_QUERY_TYPE_BINARY_OCCLUSION, internal_state->query_index);
+			GetDirectCommandList(cmd)->BeginQuery(allocationhandler->queries_occlusion.blocks[internal_state->query.block].pool.Get(), D3D12_QUERY_TYPE_BINARY_OCCLUSION, internal_state->query.index);
 			break;
 		case GPU_QUERY_TYPE_OCCLUSION:
-			GetDirectCommandList(cmd)->BeginQuery(querypool_occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, internal_state->query_index);
+			GetDirectCommandList(cmd)->BeginQuery(allocationhandler->queries_occlusion.blocks[internal_state->query.block].pool.Get(), D3D12_QUERY_TYPE_OCCLUSION, internal_state->query.index);
 			break;
 		}
 	}
@@ -5461,13 +5676,13 @@ using namespace DX12_Internal;
 		switch (internal_state->query_type)
 		{
 		case GPU_QUERY_TYPE_TIMESTAMP:
-			GetDirectCommandList(cmd)->EndQuery(querypool_timestamp.Get(), D3D12_QUERY_TYPE_TIMESTAMP, internal_state->query_index);
+			GetDirectCommandList(cmd)->EndQuery(allocationhandler->queries_timestamp.blocks[internal_state->query.block].pool.Get(), D3D12_QUERY_TYPE_TIMESTAMP, internal_state->query.index);
 			break;
 		case GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
-			GetDirectCommandList(cmd)->EndQuery(querypool_occlusion.Get(), D3D12_QUERY_TYPE_BINARY_OCCLUSION, internal_state->query_index);
+			GetDirectCommandList(cmd)->EndQuery(allocationhandler->queries_occlusion.blocks[internal_state->query.block].pool.Get(), D3D12_QUERY_TYPE_BINARY_OCCLUSION, internal_state->query.index);
 			break;
 		case GPU_QUERY_TYPE_OCCLUSION:
-			GetDirectCommandList(cmd)->EndQuery(querypool_occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, internal_state->query_index);
+			GetDirectCommandList(cmd)->EndQuery(allocationhandler->queries_occlusion.blocks[internal_state->query.block].pool.Get(), D3D12_QUERY_TYPE_OCCLUSION, internal_state->query.index);
 			break;
 		}
 
@@ -5476,7 +5691,8 @@ using namespace DX12_Internal;
 			query_resolves[cmd].emplace_back();
 			Query_Resolve& resolver = query_resolves[cmd].back();
 			resolver.type = query->desc.Type;
-			resolver.index = internal_state->query_index;
+			resolver.block = internal_state->query.block;
+			resolver.index = internal_state->query.index;
 		}
 	}
 	void GraphicsDevice_DX12::Barrier(const GPUBarrier* barriers, uint32_t numBarriers, CommandList cmd)
@@ -5555,20 +5771,20 @@ using namespace DX12_Internal;
 
 				if (x.type == RaytracingAccelerationStructureDesc::BottomLevel::Geometry::TRIANGLES)
 				{
-					geometry.Triangles.VertexBuffer.StartAddress = to_internal(&x.triangles.vertexBuffer)->resource->GetGPUVirtualAddress() + 
+					geometry.Triangles.VertexBuffer.StartAddress = to_internal(&x.triangles.vertexBuffer)->gpu_address + 
 						(D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.vertexByteOffset;
-					geometry.Triangles.IndexBuffer = to_internal(&x.triangles.indexBuffer)->resource->GetGPUVirtualAddress() +
+					geometry.Triangles.IndexBuffer = to_internal(&x.triangles.indexBuffer)->gpu_address +
 						(D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.indexOffset * (x.triangles.indexFormat == INDEXBUFFER_FORMAT::INDEXFORMAT_16BIT ? sizeof(uint16_t) : sizeof(uint32_t));
 
 					if (x._flags & RaytracingAccelerationStructureDesc::BottomLevel::Geometry::FLAG_USE_TRANSFORM)
 					{
-						geometry.Triangles.Transform3x4 = to_internal(&x.triangles.transform3x4Buffer)->resource->GetGPUVirtualAddress() +
+						geometry.Triangles.Transform3x4 = to_internal(&x.triangles.transform3x4Buffer)->gpu_address +
 							(D3D12_GPU_VIRTUAL_ADDRESS)x.triangles.transform3x4BufferOffset;
 					}
 				}
 				else if (x.type == RaytracingAccelerationStructureDesc::BottomLevel::Geometry::PROCEDURAL_AABBS)
 				{
-					geometry.AABBs.AABBs.StartAddress = to_internal(&x.aabbs.aabbBuffer)->resource->GetGPUVirtualAddress() +
+					geometry.AABBs.AABBs.StartAddress = to_internal(&x.aabbs.aabbBuffer)->gpu_address +
 						(D3D12_GPU_VIRTUAL_ADDRESS)x.aabbs.offset;
 				}
 			}
@@ -5576,7 +5792,7 @@ using namespace DX12_Internal;
 		break;
 		case RaytracingAccelerationStructureDesc::TOPLEVEL:
 		{
-			desc.Inputs.InstanceDescs = to_internal(&dst->desc.toplevel.instanceBuffer)->resource->GetGPUVirtualAddress() +
+			desc.Inputs.InstanceDescs = to_internal(&dst->desc.toplevel.instanceBuffer)->gpu_address +
 				(D3D12_GPU_VIRTUAL_ADDRESS)dst->desc.toplevel.offset;
 		}
 		break;
@@ -5587,10 +5803,10 @@ using namespace DX12_Internal;
 			desc.Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
 
 			auto src_internal = to_internal(src);
-			desc.SourceAccelerationStructureData = src_internal->resource->GetGPUVirtualAddress();
+			desc.SourceAccelerationStructureData = src_internal->gpu_address;
 		}
-		desc.DestAccelerationStructureData = dst_internal->resource->GetGPUVirtualAddress();
-		desc.ScratchAccelerationStructureData = to_internal(&dst_internal->scratch)->resource->GetGPUVirtualAddress();
+		desc.DestAccelerationStructureData = dst_internal->gpu_address;
+		desc.ScratchAccelerationStructureData = to_internal(&dst_internal->scratch)->gpu_address;
 		GetDirectCommandList(cmd)->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
 	}
 	void GraphicsDevice_DX12::BindRaytracingPipelineState(const RaytracingPipelineState* rtpso, CommandList cmd)
@@ -5599,7 +5815,8 @@ using namespace DX12_Internal;
 		{
 			prev_pipeline_hash[cmd] = 0;
 			active_rt[cmd] = rtpso;
-			GetFrameResources().descriptors[cmd].dirty = true;
+			GetFrameResources().descriptors[cmd].dirty_res = true;
+			GetFrameResources().descriptors[cmd].dirty_sam = true;
 
 			auto internal_state = to_internal(rtpso);
 			GetDirectCommandList(cmd)->SetPipelineState1(internal_state->resource.Get());
@@ -5631,7 +5848,7 @@ using namespace DX12_Internal;
 		if (desc->raygeneration.buffer != nullptr)
 		{
 			dispatchrays_desc.RayGenerationShaderRecord.StartAddress =
-				to_internal(desc->raygeneration.buffer)->resource->GetGPUVirtualAddress() +
+				to_internal(desc->raygeneration.buffer)->gpu_address +
 				(D3D12_GPU_VIRTUAL_ADDRESS)desc->raygeneration.offset;
 			dispatchrays_desc.RayGenerationShaderRecord.SizeInBytes =
 				desc->raygeneration.size;
@@ -5640,7 +5857,7 @@ using namespace DX12_Internal;
 		if (desc->miss.buffer != nullptr)
 		{
 			dispatchrays_desc.MissShaderTable.StartAddress =
-				to_internal(desc->miss.buffer)->resource->GetGPUVirtualAddress() +
+				to_internal(desc->miss.buffer)->gpu_address +
 				(D3D12_GPU_VIRTUAL_ADDRESS)desc->miss.offset;
 			dispatchrays_desc.MissShaderTable.SizeInBytes =
 				desc->miss.size;
@@ -5651,7 +5868,7 @@ using namespace DX12_Internal;
 		if (desc->hitgroup.buffer != nullptr)
 		{
 			dispatchrays_desc.HitGroupTable.StartAddress =
-				to_internal(desc->hitgroup.buffer)->resource->GetGPUVirtualAddress() +
+				to_internal(desc->hitgroup.buffer)->gpu_address +
 				(D3D12_GPU_VIRTUAL_ADDRESS)desc->hitgroup.offset;
 			dispatchrays_desc.HitGroupTable.SizeInBytes =
 				desc->hitgroup.size;
@@ -5662,7 +5879,7 @@ using namespace DX12_Internal;
 		if (desc->callable.buffer != nullptr)
 		{
 			dispatchrays_desc.CallableShaderTable.StartAddress =
-				to_internal(desc->callable.buffer)->resource->GetGPUVirtualAddress() +
+				to_internal(desc->callable.buffer)->gpu_address +
 				(D3D12_GPU_VIRTUAL_ADDRESS)desc->callable.offset;
 			dispatchrays_desc.CallableShaderTable.SizeInBytes =
 				desc->callable.size;
@@ -5741,7 +5958,7 @@ using namespace DX12_Internal;
 		}
 		auto rootsig_internal = to_internal(rootsig);
 		auto internal_state = to_internal(buffer);
-		D3D12_GPU_VIRTUAL_ADDRESS address = internal_state->resource.Get()->GetGPUVirtualAddress() + (UINT64)offset;
+		D3D12_GPU_VIRTUAL_ADDRESS address = internal_state->gpu_address + (UINT64)offset;
 
 		auto remap = rootsig_internal->root_remap[index];
 		auto binding = rootsig->tables[remap.space].resources[remap.rangeIndex].binding;
