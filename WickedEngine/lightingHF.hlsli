@@ -828,7 +828,7 @@ inline void VoxelGI(in Surface surface, inout Lighting lighting)
 inline float3 GetAmbient(in float3 N)
 {
 	float3 ambient;
-
+/*
 #ifndef ENVMAPRENDERING
 	[branch]
 	if (g_xFrame_GlobalEnvProbeIndex >= 0)
@@ -836,7 +836,7 @@ inline float3 GetAmbient(in float3 N)
 		ambient = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(N, g_xFrame_GlobalEnvProbeIndex), g_xFrame_EnvProbeMipCount).rgb;
 	}
 	else
-#endif // ENVMAPRENDERING
+#endif*/ // ENVMAPRENDERING
 	{
 		// Also set realistic_sky_stationary to true so we capture ambient at float3(0.0, 0.0, 0.0), similar to the standard sky to avoid flickering and weird behavior
 		ambient = lerp(
