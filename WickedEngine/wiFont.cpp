@@ -261,7 +261,7 @@ void Initialize()
 	// add default font if there is none yet:
 	if (fontStyles.empty())
 	{
-		AddFontStyle((FONTPATH + "arial.ttf").c_str());
+		AddFontStyle((FONTPATH + "roboto.ttf").c_str());
 	}
 
 	GraphicsDevice* device = wiRenderer::GetDevice();
