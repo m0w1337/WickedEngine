@@ -15,7 +15,7 @@ enum wiFontAlign
 	WIFALIGN_BOTTOM
 };
 
-static const int WIFONTSIZE_DEFAULT = 16;
+static const int WIFONTSIZE_DEFAULT = 18;
 
 struct wiFontParams
 {
