@@ -47,7 +47,7 @@ inline LightingPart CombineLighting(in Surface surface, in Lighting lighting)
 inline float3 shadowCascade(in ShaderEntity light, in float3 shadowPos, in float2 shadowUV, in uint cascade)
 {
 	const float slice = light.GetTextureIndex() + cascade;
-	const float realDistance = shadowPos.z; // bias was already applied when shadow map was rendered
+	const float realDistance = shadowPos.z-0.0002; // bias was already applied when shadow map was rendered
 	float3 shadow = 0;
 #ifndef DISABLE_SOFT_SHADOWMAP
 	// sample along a rectangle pattern around center:

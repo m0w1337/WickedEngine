@@ -2720,7 +2720,11 @@ namespace wiScene
 			if (material.texAnimElapsedTime >= 1.0f)
 			{
 				material.texMulAdd.z = fmodf(material.texMulAdd.z + material.texAnimDirection.x, 1);
-				material.texMulAdd.w = fmodf(material.texMulAdd.w + material.texAnimDirection.y, 1);
+
+				if (material.texMulAdd.z  == 0.0f){
+					material.texMulAdd.w = fmodf(material.texMulAdd.w + material.texAnimDirection.y, 1);
+				}
+					
 				material.texAnimElapsedTime = 0.0f;
 
 				material.SetDirty(); // will trigger constant buffer update later on
