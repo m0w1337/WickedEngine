@@ -1530,7 +1530,7 @@ namespace wiScene
 	void Scene::Entity_Remove(Entity entity)
 	{
 		Component_Detach(entity); // special case, this will also remove entity from hierarchy but also do more!
-
+		//hierarchy.Remove_KeepSorted(entity);	<--possible speedup??
 		names.Remove(entity);
 		layers.Remove(entity);
 		transforms.Remove(entity);
@@ -1948,7 +1948,30 @@ namespace wiScene
 			}
 		}
 	}
-
+	void Scene::Component_RemoveChildren(Entity parent) {
+		for (size_t i = 0; i < lights.GetCount();)
+		{
+			if (lights[i].parentObject == parent)
+			{
+				Entity entity = lights.GetEntity(i);
+				Entity_Remove(entity);
+			} else
+			{
+				++i;
+			}
+		}
+		for (size_t i = 0; i < objects.GetCount();)
+		{
+			if (objects[i].parentObject == parent)
+			{
+				Entity entity = objects.GetEntity(i);
+				Entity_Remove(entity);
+			} else
+			{
+				++i;
+			}
+		}
+	}
 
 	const uint32_t small_subtask_groupsize = 64;
 

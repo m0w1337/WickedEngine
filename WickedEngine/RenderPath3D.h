@@ -20,6 +20,19 @@ public:
 		AO_RTAO,		// ray traced ambient occlusion
 		// Don't alter order! (bound to lua manually)
 	};
+	enum EDITORSTENCILREF {
+		EDITORSTENCILREF_CLEAR				= 0x00,
+		EDITORSTENCILREF_HIGHLIGHT_OBJECT	= 0x01,
+		EDITORSTENCILREF_HIGHLIGHT_MATERIAL = 0x02,
+		EDITORSTENCILREF_LAST				= 0x0F,
+	};
+	wiGraphics::Texture rt_selectionOutline_MSAA;
+	wiGraphics::Texture rt_selectionOutline[2];
+	wiGraphics::RenderPass renderpass_selectionOutline[2];
+	float selectionOutlineTimer	   = 0;
+	const XMFLOAT4 selectionColor  = XMFLOAT4(1, 0.6f, 0, 1);
+	const XMFLOAT4 selectionColor2 = XMFLOAT4(0, 1, 0.6f, 0.35f);
+
 private:
 	float exposure = 1.0f;
 	float bloomThreshold = 1.0f;
