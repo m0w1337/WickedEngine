@@ -11,8 +11,6 @@ struct VertextoPixel
 [earlydepthstencil]
 float4 main(VertextoPixel input) : SV_TARGET
 {
-	float2 pixel = input.pos.xy;
-
 	float4 color;
 	[branch]
 	if (g_xMaterial.uvset_baseColorMap >= 0)
@@ -44,6 +42,8 @@ float4 main(VertextoPixel input) : SV_TARGET
 	}
 
 	color.rgb *= 1 - opacity; // if fully opaque, then black (not let through any light)
+
+	color.a = input.pos.z; // secondary depth
 
 	return color;
 }

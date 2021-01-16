@@ -28,7 +28,7 @@ namespace wiGraphics
 {
 	class GraphicsDevice_DX12 : public GraphicsDevice
 	{
-	public:
+	protected:
 		Microsoft::WRL::ComPtr<ID3D12Device5> device;
 		Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter;
 		Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
@@ -74,12 +74,116 @@ namespace wiGraphics
 		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture2darray = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture3d = {};
 
-		Microsoft::WRL::ComPtr<ID3D12CommandQueue> copyQueue;
-		std::mutex copyQueueLock;
-		bool copyQueueUse = false;
-		Microsoft::WRL::ComPtr<ID3D12Fence> copyFence; // GPU only
-		HANDLE copyFenceEvent;
-		UINT64 copyFenceValue = 0;
+		std::vector<D3D12_STATIC_SAMPLER_DESC> common_samplers;
+
+		struct CopyAllocator
+		{
+			Microsoft::WRL::ComPtr<ID3D12Device5> device;
+			Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			uint64_t fenceValue = 0;
+			std::mutex locker;
+			bool submitted = false;
+
+			struct CopyCMD
+			{
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+				Microsoft::WRL::ComPtr<ID3D12CommandList> commandList;
+				uint64_t target = 0;
+				GPUBuffer uploadbuffer;
+			};
+			std::vector<CopyCMD> freelist;
+			std::deque<CopyCMD> worklist;
+
+			void Create(Microsoft::WRL::ComPtr<ID3D12Device5> device)
+			{
+				this->device = device;
+
+				D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
+				copyQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+				copyQueueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+				copyQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+				copyQueueDesc.NodeMask = 0;
+				HRESULT hr = device->CreateCommandQueue(&copyQueueDesc, IID_PPV_ARGS(&queue));
+				assert(SUCCEEDED(hr));
+
+				hr = device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+				assert(SUCCEEDED(hr));
+				fenceValue = fence->GetCompletedValue();
+			}
+
+			CopyCMD allocate(uint32_t staging_size = 0)
+			{
+				locker.lock();
+
+				// pop the finished command lists if there are any:
+				while (!worklist.empty() && worklist.front().target <= fence->GetCompletedValue())
+				{
+					freelist.push_back(worklist.front());
+					worklist.pop_front();
+				}
+
+				// create a new command list if there are no free ones:
+				if (freelist.empty())
+				{
+					CopyCMD cmd;
+
+					HRESULT hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&cmd.commandAllocator));
+					assert(SUCCEEDED(hr));
+					hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, cmd.commandAllocator.Get(), nullptr, IID_PPV_ARGS(&cmd.commandList));
+					assert(SUCCEEDED(hr));
+
+					hr = static_cast<ID3D12GraphicsCommandList*>(cmd.commandList.Get())->Close();
+					assert(SUCCEEDED(hr));
+
+					freelist.push_back(cmd);
+				}
+
+				CopyCMD cmd = freelist.back();
+				if (cmd.uploadbuffer.desc.ByteWidth < staging_size)
+				{
+					// Try to search for a staging buffer that is good:
+					for (size_t i = 0; i < freelist.size(); ++i)
+					{
+						if (freelist[i].uploadbuffer.desc.ByteWidth >= staging_size)
+						{
+							cmd = freelist[i];
+							std::swap(freelist[i], freelist.back());
+							break;
+						}
+					}
+				}
+
+				// begin command list in valid state:
+				HRESULT hr = cmd.commandAllocator->Reset();
+				assert(SUCCEEDED(hr));
+				hr = static_cast<ID3D12GraphicsCommandList*>(cmd.commandList.Get())->Reset(cmd.commandAllocator.Get(), nullptr);
+				assert(SUCCEEDED(hr));
+
+				freelist.pop_back();
+				locker.unlock();
+
+				return cmd;
+			}
+			void submit(CopyCMD cmd)
+			{
+				static_cast<ID3D12GraphicsCommandList*>(cmd.commandList.Get())->Close();
+				ID3D12CommandList* commandlists[] = {
+					cmd.commandList.Get()
+				};
+				queue->ExecuteCommandLists(1, commandlists);
+
+				locker.lock();
+				submitted = true;
+
+				cmd.target = ++fenceValue;
+				queue->Signal(fence.Get(), cmd.target);
+
+				worklist.push_back(cmd);
+				locker.unlock();
+			}
+		};
+		CopyAllocator copyAllocator;
 
 		Microsoft::WRL::ComPtr<ID3D12Fence> directFence;
 		HANDLE directFenceEvent;
@@ -87,30 +191,34 @@ namespace wiGraphics
 
 		RenderPass dummyRenderpass;
 
+		struct DescriptorHeap
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_GPU;
+			D3D12_CPU_DESCRIPTOR_HANDLE start_cpu = {};
+			D3D12_GPU_DESCRIPTOR_HANDLE start_gpu = {};
+
+			// CPU status:
+			std::atomic<uint64_t> allocationOffset{ 0 };
+
+			// GPU status:
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			uint64_t fenceValue = 0;
+			uint64_t cached_completedValue = 0;
+		};
+		DescriptorHeap descriptorheap_res;
+		DescriptorHeap descriptorheap_sam;
+
 		struct FrameResources
 		{
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[COMMANDLIST_COUNT];
 			Microsoft::WRL::ComPtr<ID3D12CommandList> commandLists[COMMANDLIST_COUNT];
 
-			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> copyAllocator;
-			Microsoft::WRL::ComPtr<ID3D12CommandList> copyCommandList;
-
 			struct DescriptorTableFrameAllocator
 			{
 				GraphicsDevice_DX12* device = nullptr;
-				struct DescriptorHeap
-				{
-					D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-					Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_GPU;
-					D3D12_CPU_DESCRIPTOR_HANDLE start_cpu = {};
-					D3D12_GPU_DESCRIPTOR_HANDLE start_gpu = {};
-					uint32_t ringOffset = 0;
-				};
-				std::vector<DescriptorHeap> heaps_resource;
-				std::vector<DescriptorHeap> heaps_sampler;
-				uint32_t current_resource_heap = 0;
-				uint32_t current_sampler_heap = 0;
-				bool heaps_bound = false;
+				uint32_t ringOffset_res = 0;
+				uint32_t ringOffset_sam = 0;
 				bool dirty_res = false;
 				bool dirty_sam = false;
 
@@ -120,6 +228,9 @@ namespace wiGraphics
 				const GPUResource* UAV[GPU_RESOURCE_HEAP_UAV_COUNT];
 				int UAV_index[GPU_RESOURCE_HEAP_UAV_COUNT];
 				const Sampler* SAM[GPU_SAMPLER_HEAP_COUNT];
+
+				uint32_t dirty_root_cbvs_gfx = 0; // bitmask
+				uint32_t dirty_root_cbvs_compute = 0; // bitmask
 
 				struct DescriptorHandles
 				{
@@ -218,6 +329,8 @@ namespace wiGraphics
 		void Map(const GPUResource* resource, Mapping* mapping) override;
 		void Unmap(const GPUResource* resource) override;
 		bool QueryRead(const GPUQuery* query, GPUQueryResult* result) override;
+
+		void SetCommonSampler(const StaticSampler* sam) override;
 
 		void SetName(GPUResource* pResource, const char* name) override;
 

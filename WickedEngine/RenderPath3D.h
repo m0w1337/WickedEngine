@@ -73,7 +73,7 @@ private:
 
 	uint32_t msaaSampleCount = 1;
 
-protected:
+public:
 	wiGraphics::Texture rtGbuffer[GBUFFER_COUNT];
 	wiGraphics::Texture rtGbuffer_resolved[GBUFFER_COUNT];
 	wiGraphics::Texture rtReflection; // contains the scene rendered for planar reflections
@@ -161,8 +161,6 @@ protected:
 	virtual void RenderSceneMIPChain(wiGraphics::CommandList cmd) const;
 	virtual void RenderTransparents(wiGraphics::CommandList cmd) const;
 	virtual void RenderPostprocessChain(wiGraphics::CommandList cmd) const;
-	
-public:
 
 	void ResizeBuffers() override;
 

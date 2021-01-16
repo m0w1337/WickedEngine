@@ -70,7 +70,7 @@ uint32_t SHADOWRES_2D = 1024;
 uint32_t SHADOWRES_CUBE = 256;
 uint32_t SHADOWCOUNT_2D = 5 + 3 + 3;
 uint32_t SHADOWCOUNT_CUBE = 5;
-bool TRANSPARENTSHADOWSENABLED = false;
+bool TRANSPARENTSHADOWSENABLED = true;
 bool wireRender = false;
 bool debugBoneLines = false;
 bool debugPartitionTree = false;
@@ -119,9 +119,9 @@ std::unique_ptr<wiOcean> ocean;
 
 Texture shadowMapArray_2D;
 Texture shadowMapArray_Cube;
-Texture shadowMapArray_Transparent;
+Texture shadowMapArray_Transparent_2D;
+Texture shadowMapArray_Transparent_Cube;
 std::vector<RenderPass> renderpasses_shadow2D;
-std::vector<RenderPass> renderpasses_shadow2DTransparent;
 std::vector<RenderPass> renderpasses_shadowCube;
 
 deque<wiSprite> waterRipples;
@@ -156,6 +156,133 @@ unordered_map<const void*, wiRectPacker::rect_xywh> packedLightmaps;
 void SetDevice(std::shared_ptr<GraphicsDevice> newDevice)
 {
 	device = newDevice;
+
+	SamplerDesc samplerDesc;
+	samplerDesc.Filter = FILTER_MIN_MAG_MIP_LINEAR;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.MipLODBias = 0.0f;
+	samplerDesc.MaxAnisotropy = 0;
+	samplerDesc.ComparisonFunc = COMPARISON_NEVER;
+	samplerDesc.BorderColor[0] = 0;
+	samplerDesc.BorderColor[1] = 0;
+	samplerDesc.BorderColor[2] = 0;
+	samplerDesc.BorderColor[3] = 0;
+	samplerDesc.MinLOD = 0;
+	samplerDesc.MaxLOD = FLT_MAX;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_LINEAR_MIRROR]);
+
+	samplerDesc.Filter = FILTER_MIN_MAG_MIP_LINEAR;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_LINEAR_CLAMP]);
+
+	samplerDesc.Filter = FILTER_MIN_MAG_MIP_LINEAR;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_LINEAR_WRAP]);
+
+	samplerDesc.Filter = FILTER_MIN_MAG_MIP_POINT;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_MIRROR;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_POINT_MIRROR]);
+
+	samplerDesc.Filter = FILTER_MIN_MAG_MIP_POINT;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_POINT_WRAP]);
+
+
+	samplerDesc.Filter = FILTER_MIN_MAG_MIP_POINT;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_POINT_CLAMP]);
+
+	samplerDesc.Filter = FILTER_ANISOTROPIC;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.MaxAnisotropy = 16;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_ANISO_CLAMP]);
+
+	samplerDesc.Filter = FILTER_ANISOTROPIC;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.MaxAnisotropy = 16;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_ANISO_WRAP]);
+
+	samplerDesc.Filter = FILTER_ANISOTROPIC;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_MIRROR;
+	samplerDesc.MaxAnisotropy = 16;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_ANISO_MIRROR]);
+
+	samplerDesc.Filter = FILTER_ANISOTROPIC;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
+	samplerDesc.MaxAnisotropy = 16;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_OBJECTSHADER]);
+
+	samplerDesc.Filter = FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
+	samplerDesc.MipLODBias = 0.0f;
+	samplerDesc.MaxAnisotropy = 0;
+	samplerDesc.ComparisonFunc = COMPARISON_GREATER_EQUAL;
+	device->CreateSampler(&samplerDesc, &samplers[SSLOT_CMP_DEPTH]);
+
+
+	StaticSampler sam;
+
+	sam.sampler = samplers[SSLOT_CMP_DEPTH];
+	sam.slot = SSLOT_CMP_DEPTH;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_LINEAR_MIRROR];
+	sam.slot = SSLOT_LINEAR_MIRROR;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_LINEAR_CLAMP];
+	sam.slot = SSLOT_LINEAR_CLAMP;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_LINEAR_WRAP];
+	sam.slot = SSLOT_LINEAR_WRAP;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_POINT_MIRROR];
+	sam.slot = SSLOT_POINT_MIRROR;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_POINT_WRAP];
+	sam.slot = SSLOT_POINT_WRAP;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_POINT_CLAMP];
+	sam.slot = SSLOT_POINT_CLAMP;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_ANISO_CLAMP];
+	sam.slot = SSLOT_ANISO_CLAMP;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_ANISO_WRAP];
+	sam.slot = SSLOT_ANISO_WRAP;
+	device->SetCommonSampler(&sam);
+
+	sam.sampler = samplers[SSLOT_ANISO_MIRROR];
+	sam.slot = SSLOT_ANISO_MIRROR;
+	device->SetCommonSampler(&sam);
 }
 GraphicsDevice* GetDevice()
 {
@@ -531,13 +658,20 @@ SHADERTYPE GetVSTYPE(RENDERPASS renderPass, bool tessellation, bool alphatest, b
 		}
 		break;
 	case RENDERPASS_SHADOWCUBE:
-		if (alphatest)
+		if (transparent)
 		{
-			realVS = VSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST;
+			realVS = VSTYPE_SHADOWCUBEMAPRENDER_TRANSPARENT;
 		}
 		else
 		{
-			realVS = VSTYPE_SHADOWCUBEMAPRENDER;
+			if (alphatest)
+			{
+				realVS = VSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST;
+			}
+			else
+			{
+				realVS = VSTYPE_SHADOWCUBEMAPRENDER;
+			}
 		}
 		break;
 	case RENDERPASS_VOXELIZE:
@@ -547,7 +681,7 @@ SHADERTYPE GetVSTYPE(RENDERPASS renderPass, bool tessellation, bool alphatest, b
 
 	return realVS;
 }
-SHADERTYPE GetGSTYPE(RENDERPASS renderPass, bool alphatest)
+SHADERTYPE GetGSTYPE(RENDERPASS renderPass, bool alphatest, bool transparent)
 {
 	SHADERTYPE realGS = SHADERTYPE_COUNT;
 
@@ -564,13 +698,20 @@ SHADERTYPE GetGSTYPE(RENDERPASS renderPass, bool alphatest)
 	case RENDERPASS_SHADOWCUBE:
 		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RENDERTARGET_AND_VIEWPORT_ARRAYINDEX_WITHOUT_GS))
 			break;
-		if (alphatest)
+		if (transparent)
 		{
-			realGS = GSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST_EMULATION;
+			realGS = GSTYPE_SHADOWCUBEMAPRENDER_TRANSPARENT_EMULATION;
 		}
 		else
 		{
-			realGS = GSTYPE_SHADOWCUBEMAPRENDER_EMULATION;
+			if (alphatest)
+			{
+				realGS = GSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST_EMULATION;
+			}
+			else
+			{
+				realGS = GSTYPE_SHADOWCUBEMAPRENDER_EMULATION;
+			}
 		}
 		break;
 	}
@@ -654,6 +795,7 @@ SHADERTYPE GetPSTYPE(RENDERPASS renderPass, bool alphatest, bool transparent, Ma
 		realPS = PSTYPE_ENVMAP;
 		break;
 	case RENDERPASS_SHADOW:
+	case RENDERPASS_SHADOWCUBE:
 		if (transparent)
 		{
 			realPS = shaderType == MaterialComponent::SHADERTYPE_WATER ? PSTYPE_SHADOW_WATER : PSTYPE_SHADOW_TRANSPARENT;
@@ -668,16 +810,6 @@ SHADERTYPE GetPSTYPE(RENDERPASS renderPass, bool alphatest, bool transparent, Ma
 			{
 				realPS = SHADERTYPE_COUNT;
 			}
-		}
-		break;
-	case RENDERPASS_SHADOWCUBE:
-		if (alphatest)
-		{
-			realPS = PSTYPE_SHADOW_ALPHATEST;
-		}
-		else
-		{
-			realPS = SHADERTYPE_COUNT;
 		}
 		break;
 	case RENDERPASS_VOXELIZE:
@@ -764,7 +896,6 @@ bool LoadShader(SHADERSTAGE stage, Shader& shader, const std::string& filename)
 	{
 		return device->CreateShader(stage, buffer.data(), buffer.size(), &shader);
 	}
-	wiHelper::messageBox("Shader not found: " + SHADERPATH + filename);
 	return false;
 }
 
@@ -908,6 +1039,7 @@ void LoadShaders()
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_ENVMAP_SKY], "envMap_skyVS.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_SHADOWCUBEMAPRENDER], "cubeShadowVS.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST], "cubeShadowVS_alphatest.cso"); });
+		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_SHADOWCUBEMAPRENDER_TRANSPARENT], "cubeShadowVS_transparent.cso"); });
 	}
 	else
 	{
@@ -915,11 +1047,13 @@ void LoadShaders()
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_ENVMAP_SKY], "envMap_skyVS_emulation.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_SHADOWCUBEMAPRENDER], "cubeShadowVS_emulation.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST], "cubeShadowVS_alphatest_emulation.cso"); });
+		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(VS, shaders[VSTYPE_SHADOWCUBEMAPRENDER_TRANSPARENT], "cubeShadowVS_transparent_emulation.cso"); });
 
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(GS, shaders[GSTYPE_ENVMAP_EMULATION], "envMapGS_emulation.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(GS, shaders[GSTYPE_ENVMAP_SKY_EMULATION], "envMap_skyGS_emulation.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(GS, shaders[GSTYPE_SHADOWCUBEMAPRENDER_EMULATION], "cubeShadowGS_emulation.cso"); });
 		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(GS, shaders[GSTYPE_SHADOWCUBEMAPRENDER_ALPHATEST_EMULATION], "cubeShadowGS_alphatest_emulation.cso"); });
+		wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(GS, shaders[GSTYPE_SHADOWCUBEMAPRENDER_TRANSPARENT_EMULATION], "cubeShadowGS_transparent_emulation.cso"); });
 	}
 
 	wiJobSystem::Execute(ctx, [](wiJobArgs args) { LoadShader(PS, shaders[PSTYPE_OBJECT], "objectPS.cso"); });
@@ -1124,7 +1258,7 @@ void LoadShaders()
 							ILTYPES realVL = GetILTYPE((RENDERPASS)renderPass, tessellation, alphatest, transparency);
 							SHADERTYPE realHS = GetHSTYPE((RENDERPASS)renderPass, tessellation);
 							SHADERTYPE realDS = GetDSTYPE((RENDERPASS)renderPass, tessellation);
-							SHADERTYPE realGS = GetGSTYPE((RENDERPASS)renderPass, alphatest);
+							SHADERTYPE realGS = GetGSTYPE((RENDERPASS)renderPass, alphatest, transparency);
 							SHADERTYPE realPS = GetPSTYPE((RENDERPASS)renderPass, alphatest, transparency, shaderType);
 
 							if (tessellation && (realHS == SHADERTYPE_COUNT || realDS == SHADERTYPE_COUNT))
@@ -1164,7 +1298,7 @@ void LoadShaders()
 							case RENDERPASS_DEPTHONLY:
 							case RENDERPASS_SHADOW:
 							case RENDERPASS_SHADOWCUBE:
-								desc.bs = &blendStates[transparency ? BSTYPE_TRANSPARENT : BSTYPE_COLORWRITEDISABLE];
+								desc.bs = &blendStates[transparency ? BSTYPE_TRANSPARENTSHADOW : BSTYPE_COLORWRITEDISABLE];
 								break;
 							default:
 								break;
@@ -1827,92 +1961,6 @@ void LoadBuffers()
 }
 void SetUpStates()
 {
-	SamplerDesc samplerDesc;
-	samplerDesc.Filter = FILTER_MIN_MAG_MIP_LINEAR;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.MipLODBias = 0.0f;
-	samplerDesc.MaxAnisotropy = 0;
-	samplerDesc.ComparisonFunc = COMPARISON_NEVER;
-	samplerDesc.BorderColor[0] = 0;
-	samplerDesc.BorderColor[1] = 0;
-	samplerDesc.BorderColor[2] = 0;
-	samplerDesc.BorderColor[3] = 0;
-	samplerDesc.MinLOD = 0;
-	samplerDesc.MaxLOD = FLT_MAX;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_LINEAR_MIRROR]);
-
-	samplerDesc.Filter = FILTER_MIN_MAG_MIP_LINEAR;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_LINEAR_CLAMP]);
-
-	samplerDesc.Filter = FILTER_MIN_MAG_MIP_LINEAR;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_LINEAR_WRAP]);
-
-	samplerDesc.Filter = FILTER_MIN_MAG_MIP_POINT;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_MIRROR;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_POINT_MIRROR]);
-
-	samplerDesc.Filter = FILTER_MIN_MAG_MIP_POINT;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_POINT_WRAP]);
-
-
-	samplerDesc.Filter = FILTER_MIN_MAG_MIP_POINT;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_POINT_CLAMP]);
-
-	samplerDesc.Filter = FILTER_ANISOTROPIC;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.MaxAnisotropy = 16;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_ANISO_CLAMP]);
-
-	samplerDesc.Filter = FILTER_ANISOTROPIC;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.MaxAnisotropy = 16;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_ANISO_WRAP]);
-
-	samplerDesc.Filter = FILTER_ANISOTROPIC;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_MIRROR;
-	samplerDesc.MaxAnisotropy = 16;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_ANISO_MIRROR]);
-
-	samplerDesc.Filter = FILTER_ANISOTROPIC;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_WRAP;
-	samplerDesc.MaxAnisotropy = 16;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_OBJECTSHADER]);
-
-	samplerDesc.Filter = FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-	samplerDesc.AddressU = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressV = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.AddressW = TEXTURE_ADDRESS_CLAMP;
-	samplerDesc.MipLODBias = 0.0f;
-	samplerDesc.MaxAnisotropy = 0;
-	samplerDesc.ComparisonFunc = COMPARISON_GREATER_EQUAL;
-	device->CreateSampler(&samplerDesc, &samplers[SSLOT_CMP_DEPTH]);
-
-
-
 	RasterizerState rs;
 	rs.FillMode = FILL_SOLID;
 	rs.CullMode = CULL_BACK;
@@ -2216,11 +2264,23 @@ void SetUpStates()
 	bd.AlphaToCoverageEnable = false;
 	bd.IndependentBlendEnable = false;
 	blendStates[BSTYPE_MULTIPLY] = bd;
+
+	bd.RenderTarget[0].SrcBlend = BLEND_ZERO;
+	bd.RenderTarget[0].DestBlend = BLEND_SRC_COLOR;
+	bd.RenderTarget[0].BlendOp = BLEND_OP_ADD;
+	bd.RenderTarget[0].SrcBlendAlpha = BLEND_ONE;
+	bd.RenderTarget[0].DestBlendAlpha = BLEND_ONE;
+	bd.RenderTarget[0].BlendOpAlpha = BLEND_OP_MAX;
+	bd.RenderTarget[0].BlendEnable = true;
+	bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
+	bd.AlphaToCoverageEnable = false;
+	bd.IndependentBlendEnable = false;
+	blendStates[BSTYPE_TRANSPARENTSHADOW] = bd;
 }
 
-void ModifySampler(const SamplerDesc& desc, int slot)
+void ModifyObjectSampler(const SamplerDesc& desc)
 {
-	device->CreateSampler(&desc, &samplers[slot]);
+	device->CreateSampler(&desc, &samplers[SSLOT_OBJECTSHADER]);
 }
 
 const std::string& GetShaderPath()
@@ -2494,7 +2554,8 @@ void BindShadowmaps(SHADERSTAGE stage, CommandList cmd)
 	device->BindResource(stage, &shadowMapArray_Cube, TEXSLOT_SHADOWARRAY_CUBE, cmd);
 	if (GetTransparentShadowsEnabled())
 	{
-		device->BindResource(stage, &shadowMapArray_Transparent, TEXSLOT_SHADOWARRAY_TRANSPARENT, cmd);
+		device->BindResource(stage, &shadowMapArray_Transparent_2D, TEXSLOT_SHADOWARRAY_TRANSPARENT_2D, cmd);
+		device->BindResource(stage, &shadowMapArray_Transparent_Cube, TEXSLOT_SHADOWARRAY_TRANSPARENT_CUBE, cmd);
 	}
 }
 
@@ -2760,7 +2821,7 @@ void RenderMeshes(
 					// simple vertex buffers are used in some passes (note: tessellator requires more attributes)
 					if ((renderPass == RENDERPASS_DEPTHONLY || renderPass == RENDERPASS_SHADOW || renderPass == RENDERPASS_SHADOWCUBE) && !material.IsAlphaTestEnabled() && !forceAlphaTestForDithering)
 					{
-						if (renderPass == RENDERPASS_SHADOW && (renderTypeFlags & RENDERTYPE_TRANSPARENT))
+						if ((renderPass == RENDERPASS_SHADOW || renderPass == RENDERPASS_SHADOWCUBE ) && (renderTypeFlags & RENDERTYPE_TRANSPARENT))
 						{
 							boundVBType = BOUNDVERTEXBUFFERTYPE::POSITION_TEXCOORD;
 						}
@@ -4695,23 +4756,22 @@ void SetShadowProps2D(int resolution, int count)
 		device->CreateTexture(&desc, nullptr, &shadowMapArray_2D);
 
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
-		desc.Format = FORMAT_R11G11B10_FLOAT;
+		desc.Format = FORMAT_R16G16B16A16_FLOAT;
 		desc.layout = IMAGE_LAYOUT_SHADER_RESOURCE;
 		desc.clear.color[0] = 1;
 		desc.clear.color[1] = 1;
 		desc.clear.color[2] = 1;
 		desc.clear.color[3] = 0;
-		device->CreateTexture(&desc, nullptr, &shadowMapArray_Transparent);
+		device->CreateTexture(&desc, nullptr, &shadowMapArray_Transparent_2D);
 
 		renderpasses_shadow2D.resize(SHADOWCOUNT_2D);
-		renderpasses_shadow2DTransparent.resize(SHADOWCOUNT_2D);
 
 		for (uint32_t i = 0; i < SHADOWCOUNT_2D; ++i)
 		{
 			int subresource_index;
 			subresource_index = device->CreateSubresource(&shadowMapArray_2D, DSV, i, 1, 0, 1);
 			assert(subresource_index == i);
-			subresource_index = device->CreateSubresource(&shadowMapArray_Transparent, RTV, i, 1, 0, 1);
+			subresource_index = device->CreateSubresource(&shadowMapArray_Transparent_2D, RTV, i, 1, 0, 1);
 			assert(subresource_index == i);
 
 			RenderPassDesc renderpassdesc;
@@ -4727,14 +4787,10 @@ void SetShadowProps2D(int resolution, int count)
 				)
 			);
 			renderpassdesc.attachments.back().subresource = subresource_index;
-			
-			device->CreateRenderPass(&renderpassdesc, &renderpasses_shadow2D[subresource_index]);
-
-			renderpassdesc.attachments.back().loadop = RenderPassAttachment::LOADOP_LOAD;
 
 			renderpassdesc.attachments.push_back(
 				RenderPassAttachment::RenderTarget(
-					&shadowMapArray_Transparent,
+					&shadowMapArray_Transparent_2D,
 					RenderPassAttachment::LOADOP_CLEAR,
 					RenderPassAttachment::STOREOP_STORE,
 					IMAGE_LAYOUT_SHADER_RESOURCE,
@@ -4743,8 +4799,8 @@ void SetShadowProps2D(int resolution, int count)
 				)
 			);
 			renderpassdesc.attachments.back().subresource = subresource_index;
-			
-			device->CreateRenderPass(&renderpassdesc, &renderpasses_shadow2DTransparent[subresource_index]);
+
+			device->CreateRenderPass(&renderpassdesc, &renderpasses_shadow2D[subresource_index]);
 		}
 	}
 
@@ -4767,14 +4823,24 @@ void SetShadowPropsCube(int resolution, int count)
 		desc.Height = SHADOWRES_CUBE;
 		desc.MipLevels = 1;
 		desc.ArraySize = 6 * SHADOWCOUNT_CUBE;
-		desc.Format = FORMAT_R16_TYPELESS;
 		desc.SampleCount = 1;
 		desc.Usage = USAGE_DEFAULT;
-		desc.BindFlags = BIND_DEPTH_STENCIL | BIND_SHADER_RESOURCE;
 		desc.CPUAccessFlags = 0;
 		desc.MiscFlags = RESOURCE_MISC_TEXTURECUBE;
+
+		desc.BindFlags = BIND_DEPTH_STENCIL | BIND_SHADER_RESOURCE;
+		desc.Format = FORMAT_R16_TYPELESS;
 		desc.layout = IMAGE_LAYOUT_SHADER_RESOURCE;
 		device->CreateTexture(&desc, nullptr, &shadowMapArray_Cube);
+
+		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
+		desc.Format = FORMAT_R16G16B16A16_FLOAT;
+		desc.layout = IMAGE_LAYOUT_SHADER_RESOURCE;
+		desc.clear.color[0] = 1;
+		desc.clear.color[1] = 1;
+		desc.clear.color[2] = 1;
+		desc.clear.color[3] = 0;
+		device->CreateTexture(&desc, nullptr, &shadowMapArray_Transparent_Cube);
 
 		renderpasses_shadowCube.resize(SHADOWCOUNT_CUBE);
 
@@ -4782,6 +4848,8 @@ void SetShadowPropsCube(int resolution, int count)
 		{
 			int subresource_index;
 			subresource_index = device->CreateSubresource(&shadowMapArray_Cube, DSV, i * 6, 6, 0, 1);
+			assert(subresource_index == i);
+			subresource_index = device->CreateSubresource(&shadowMapArray_Transparent_Cube, RTV, i * 6, 6, 0, 1);
 			assert(subresource_index == i);
 
 			RenderPassDesc renderpassdesc;
@@ -4796,6 +4864,19 @@ void SetShadowPropsCube(int resolution, int count)
 				)
 			);
 			renderpassdesc.attachments.back().subresource = subresource_index;
+
+			renderpassdesc.attachments.push_back(
+				RenderPassAttachment::RenderTarget(
+					&shadowMapArray_Transparent_Cube,
+					RenderPassAttachment::LOADOP_CLEAR,
+					RenderPassAttachment::STOREOP_STORE,
+					IMAGE_LAYOUT_SHADER_RESOURCE,
+					IMAGE_LAYOUT_RENDERTARGET,
+					IMAGE_LAYOUT_SHADER_RESOURCE
+				)
+			);
+			renderpassdesc.attachments.back().subresource = subresource_index;
+
 			device->CreateRenderPass(&renderpassdesc, &renderpasses_shadowCube[subresource_index]);
 		}
 	}
@@ -4829,7 +4910,7 @@ void DrawShadowmaps(
 		uint32_t shadowCounter_2D = SHADOWRES_2D > 0 ? 0 : SHADOWCOUNT_2D;
 		uint32_t shadowCounter_Cube = SHADOWRES_CUBE > 0 ? 0 : SHADOWCOUNT_CUBE;
 
-		for (auto visibleLight : vis.visibleLights)
+		for (const auto& visibleLight : vis.visibleLights)
 		{
 			if (shadowCounter_2D >= SHADOWCOUNT_2D && shadowCounter_Cube >= SHADOWCOUNT_CUBE)
 			{
@@ -4905,10 +4986,6 @@ void DrawShadowmaps(
 
 						device->RenderPassBegin(&renderpasses_shadow2D[slice + cascade], cmd);
 						RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, RENDERTYPE_OPAQUE, cmd);
-						device->RenderPassEnd(cmd);
-
-						// Transparent renderpass will always be started so that it is clear:
-						device->RenderPassBegin(&renderpasses_shadow2DTransparent[slice + cascade], cmd);
 						if (GetTransparentShadowsEnabled() && transparentShadowsRequested)
 						{
 							RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, RENDERTYPE_TRANSPARENT | RENDERTYPE_WATER, cmd);
@@ -4979,10 +5056,6 @@ void DrawShadowmaps(
 
 					device->RenderPassBegin(&renderpasses_shadow2D[slice], cmd);
 					RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, RENDERTYPE_OPAQUE, cmd);
-					device->RenderPassEnd(cmd);
-
-					// Transparent renderpass will always be started so that it is clear:
-					device->RenderPassBegin(&renderpasses_shadow2DTransparent[slice], cmd);
 					if (GetTransparentShadowsEnabled() && transparentShadowsRequested)
 					{
 						RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, RENDERTYPE_TRANSPARENT | RENDERTYPE_WATER, cmd);
@@ -5004,13 +5077,14 @@ void DrawShadowmaps(
 				SPHERE boundingsphere = SPHERE(light.position, light.GetRange());
 
 				RenderQueue renderQueue;
+				bool transparentShadowsRequested = false;
 				for (size_t i = 0; i < vis.scene->aabb_objects.GetCount(); ++i)
 				{
 					const AABB& aabb = vis.scene->aabb_objects[i];
 					if (boundingsphere.intersects(aabb))
 					{
 						const ObjectComponent& object = vis.scene->objects[i];
-						if (object.IsRenderable() && object.IsCastingShadow() && object.GetRenderTypes() == RENDERTYPE_OPAQUE)
+						if (object.IsRenderable() && object.IsCastingShadow())
 						{
 							Entity cullable_entity = vis.scene->aabb_objects.GetEntity(i);
 							const LayerComponent* layer = vis.scene->layers.GetComponent(cullable_entity);
@@ -5023,6 +5097,11 @@ void DrawShadowmaps(
 							size_t meshIndex = vis.scene->meshes.GetIndex(object.meshID);
 							batch->Create(meshIndex, i, 0);
 							renderQueue.add(batch);
+
+							if (object.GetRenderTypes() & RENDERTYPE_TRANSPARENT || object.GetRenderTypes() & RENDERTYPE_WATER)
+							{
+								transparentShadowsRequested = true;
+							}
 						}
 					}
 				}
@@ -5072,6 +5151,10 @@ void DrawShadowmaps(
 
 					device->RenderPassBegin(&renderpasses_shadowCube[slice], cmd);
 					RenderMeshes(vis, renderQueue, RENDERPASS_SHADOWCUBE, RENDERTYPE_OPAQUE, cmd, false, frusta, frustum_count);
+					if (GetTransparentShadowsEnabled() && transparentShadowsRequested)
+					{
+						RenderMeshes(vis, renderQueue, RENDERPASS_SHADOWCUBE, RENDERTYPE_TRANSPARENT | RENDERTYPE_WATER, cmd, false, frusta, frustum_count);
+					}
 					device->RenderPassEnd(cmd);
 
 					GetRenderFrameAllocator(cmd).free(sizeof(RenderBatch) * renderQueue.batchCount);
@@ -8360,10 +8443,7 @@ void BindCommonResources(CommandList cmd)
 	{
 		SHADERSTAGE stage = (SHADERSTAGE)i;
 
-		for (int i = 0; i < SSLOT_COUNT; ++i)
-		{
-			device->BindSampler(stage, &samplers[i], i, cmd);
-		}
+		device->BindSampler(stage, &samplers[SSLOT_OBJECTSHADER], SSLOT_OBJECTSHADER, cmd);
 
 		BindConstantBuffers(stage, cmd);
 	}
@@ -9795,7 +9875,8 @@ void Postprocess_RTReflection(
 		descriptorTable.resources.push_back({ TEXTURECUBEARRAY, TEXSLOT_ENVMAPARRAY });
 		descriptorTable.resources.push_back({ TEXTURE2DARRAY, TEXSLOT_SHADOWARRAY_2D });
 		descriptorTable.resources.push_back({ TEXTURECUBEARRAY, TEXSLOT_SHADOWARRAY_CUBE });
-		descriptorTable.resources.push_back({ TEXTURECUBEARRAY, TEXSLOT_SHADOWARRAY_TRANSPARENT });
+		descriptorTable.resources.push_back({ TEXTURE2DARRAY, TEXSLOT_SHADOWARRAY_TRANSPARENT_2D });
+		descriptorTable.resources.push_back({ TEXTURECUBEARRAY, TEXSLOT_SHADOWARRAY_TRANSPARENT_CUBE });
 		descriptorTable.resources.push_back({ STRUCTUREDBUFFER, SBSLOT_ENTITYARRAY });
 		descriptorTable.resources.push_back({ STRUCTUREDBUFFER, SBSLOT_MATRIXARRAY });
 		descriptorTable.resources.push_back({ TEXTURE2D, TEXSLOT_SKYVIEWLUT });
@@ -9897,15 +9978,16 @@ void Postprocess_RTReflection(
 	device->WriteDescriptor(&descriptorTable, 5, 0, &textures[TEXTYPE_CUBEARRAY_ENVMAPARRAY]);
 	device->WriteDescriptor(&descriptorTable, 6, 0, &shadowMapArray_2D);
 	device->WriteDescriptor(&descriptorTable, 7, 0, &shadowMapArray_Cube);
-	device->WriteDescriptor(&descriptorTable, 8, 0, &shadowMapArray_Transparent);
-	device->WriteDescriptor(&descriptorTable, 9, 0, &resourceBuffers[RBTYPE_ENTITYARRAY]);
-	device->WriteDescriptor(&descriptorTable, 10, 0, &resourceBuffers[RBTYPE_MATRIXARRAY]);
-	device->WriteDescriptor(&descriptorTable, 11, 0, &textures[TEXTYPE_2D_SKYATMOSPHERE_SKYVIEWLUT]);
-	device->WriteDescriptor(&descriptorTable, 12, 0, &textures[TEXTYPE_2D_SKYATMOSPHERE_TRANSMITTANCELUT]);
-	device->WriteDescriptor(&descriptorTable, 13, 0, &textures[TEXTYPE_2D_SKYATMOSPHERE_MULTISCATTEREDLUMINANCELUT]);
-	device->WriteDescriptor(&descriptorTable, 14, 0, &resourceBuffers[RBTYPE_BLUENOISE_SOBOL_SEQUENCE]);
-	device->WriteDescriptor(&descriptorTable, 15, 0, &resourceBuffers[RBTYPE_BLUENOISE_SCRAMBLING_TILE]);
-	device->WriteDescriptor(&descriptorTable, 16, 0, &resourceBuffers[RBTYPE_BLUENOISE_RANKING_TILE]);
+	device->WriteDescriptor(&descriptorTable, 8, 0, &shadowMapArray_Transparent_2D);
+	device->WriteDescriptor(&descriptorTable, 9, 0, &shadowMapArray_Transparent_Cube);
+	device->WriteDescriptor(&descriptorTable, 10, 0, &resourceBuffers[RBTYPE_ENTITYARRAY]);
+	device->WriteDescriptor(&descriptorTable, 11, 0, &resourceBuffers[RBTYPE_MATRIXARRAY]);
+	device->WriteDescriptor(&descriptorTable, 12, 0, &textures[TEXTYPE_2D_SKYATMOSPHERE_SKYVIEWLUT]);
+	device->WriteDescriptor(&descriptorTable, 13, 0, &textures[TEXTYPE_2D_SKYATMOSPHERE_TRANSMITTANCELUT]);
+	device->WriteDescriptor(&descriptorTable, 14, 0, &textures[TEXTYPE_2D_SKYATMOSPHERE_MULTISCATTEREDLUMINANCELUT]);
+	device->WriteDescriptor(&descriptorTable, 15, 0, &resourceBuffers[RBTYPE_BLUENOISE_SOBOL_SEQUENCE]);
+	device->WriteDescriptor(&descriptorTable, 16, 0, &resourceBuffers[RBTYPE_BLUENOISE_SCRAMBLING_TILE]);
+	device->WriteDescriptor(&descriptorTable, 17, 0, &resourceBuffers[RBTYPE_BLUENOISE_RANKING_TILE]);
 	for (size_t i = 0; i < rootSignature.tables.size(); ++i)
 	{
 		device->BindDescriptorTable(RAYTRACING, (uint32_t)i, &rootSignature.tables[i], cmd);
@@ -11433,6 +11515,7 @@ void Postprocess_Lineardepth(
 )
 {
 	device->EventBegin("Postprocess_Lineardepth", cmd);
+	auto range = wiProfiler::BeginRangeGPU("Linear Depth Pyramid", cmd);
 
 	const TextureDesc& desc = output.GetDesc();
 
@@ -11465,13 +11548,16 @@ void Postprocess_Lineardepth(
 		cmd
 	);
 
-	GPUBarrier barriers[] = {
-		GPUBarrier::Memory(),
-	};
-	device->Barrier(barriers, arraysize(barriers), cmd);
+	{
+		GPUBarrier barriers[] = {
+			GPUBarrier::Memory(),
+		};
+		device->Barrier(barriers, arraysize(barriers), cmd);
+	}
 
 	device->UnbindUAVs(0, 6, cmd);
 
+	wiProfiler::EndRange(range);
 	device->EventEnd(cmd);
 }
 void Postprocess_Sharpen(
