@@ -1,7 +1,9 @@
+#define OBJECTSHADER_LAYOUT_POS_TEX
 #include "objectHF.hlsli"
 #include "ShaderInterop_Paint.h"
 
-float4 main(PixelInputType_Simple PSIn) : SV_TARGET
+[earlydepthstencil]
+float4 main(PixelInput PSIn) : SV_TARGET
 {
 	const float2 pixel = (xPaintRadUVSET == 0 ? PSIn.uvsets.xy : PSIn.uvsets.zw) * xPaintRadResolution;
 	const float dist = distance(pixel, xPaintRadCenter);

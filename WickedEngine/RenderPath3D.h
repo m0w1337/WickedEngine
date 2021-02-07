@@ -35,7 +35,8 @@ private:
 	uint32_t aoSampleCount = 16;
 	float aoPower = 2.0f;
 	float chromaticAberrationAmount = 2.0f;
-	float sssBlurAmount = 1.0f;
+	uint32_t screenSpaceShadowSampleCount = 16;
+	float screenSpaceShadowRange = 1;
 
 	AO ao = AO_DISABLED;
 	bool fxaaEnabled = false;
@@ -50,7 +51,6 @@ private:
 	bool lightShaftsEnabled = false;
 	bool lensFlareEnabled = true;
 	bool motionBlurEnabled = false;
-	bool sssEnabled = true;
 	bool depthOfFieldEnabled = false;
 	bool eyeAdaptionEnabled = false;
 	bool sharpenFilterEnabled = false;
@@ -62,13 +62,9 @@ private:
 
 	uint32_t msaaSampleCount = 1;
 
-protected:
+public:
 	wiGraphics::Texture rtGbuffer[GBUFFER_COUNT];
 	wiGraphics::Texture rtGbuffer_resolved[GBUFFER_COUNT];
-	wiGraphics::Texture rtDeferred;
-	wiGraphics::Texture rtDeferred_resolved;
-	wiGraphics::Texture rtSSS[2];
-	wiGraphics::Texture rtSSS_resolved;
 	wiGraphics::Texture rtReflection; // contains the scene rendered for planar reflections
 	wiGraphics::Texture rtSSR; // standard screen-space reflection results
 	wiGraphics::Texture rtSceneCopy; // contains the rendered scene that can be fed into transparent pass for distortion effect
@@ -81,36 +77,36 @@ protected:
 	wiGraphics::Texture rtBloom; // contains the bright parts of the image + mipchain
 	wiGraphics::Texture rtBloom_tmp; // temporary for bloom downsampling
 	wiGraphics::Texture rtAO; // full res AO
+	wiGraphics::Texture rtShadow; // raytraced shadows mask
 	wiGraphics::Texture rtSun[2]; // 0: sun render target used for lightshafts (can be MSAA), 1: radial blurred lightshafts
 	wiGraphics::Texture rtSun_resolved; // sun render target, but the resolved version if MSAA is enabled
 	wiGraphics::Texture rtGUIBlurredBackground[3];	// downsampled, gaussian blurred scene for GUI
 	wiGraphics::Texture rtShadingRate; // UINT8 shading rate per tile
-	wiGraphics::Texture rtDiffuseTemporal[2];	// raytraced shadows denoise
-	wiGraphics::Texture rtSpecularTemporal[2];	// raytraced shadows denoise
 
 	wiGraphics::Texture rtPostprocess_HDR; // ping-pong with main scene RT in HDR post-process chain
 	wiGraphics::Texture rtPostprocess_LDR[2]; // ping-pong with itself in LDR post-process chain
 
-	wiGraphics::Texture depthBuffer; // used for depth-testing, can be MSAA
+	wiGraphics::Texture depthBuffer_Main; // used for depth-testing, can be MSAA
 	wiGraphics::Texture depthBuffer_Copy; // used for shader resource, single sample
 	wiGraphics::Texture depthBuffer_Copy1; // used for disocclusion check
 	wiGraphics::Texture depthBuffer_Reflection; // used for reflection, single sample
 	wiGraphics::Texture rtLinearDepth; // linear depth result + mipchain (max filter)
-	wiGraphics::Texture smallDepth; // downsampled depth buffer
 
 	wiGraphics::RenderPass renderpass_depthprepass;
 	wiGraphics::RenderPass renderpass_main;
 	wiGraphics::RenderPass renderpass_transparent;
-	wiGraphics::RenderPass renderpass_occlusionculling;
+	wiGraphics::RenderPass renderpass_reflection_depthprepass;
 	wiGraphics::RenderPass renderpass_reflection;
-	wiGraphics::RenderPass renderpass_downsampledepthbuffer;
 	wiGraphics::RenderPass renderpass_downsamplescene;
 	wiGraphics::RenderPass renderpass_lightshafts;
 	wiGraphics::RenderPass renderpass_volumetriclight;
 	wiGraphics::RenderPass renderpass_particledistortion;
 	wiGraphics::RenderPass renderpass_waterripples;
-	wiGraphics::RenderPass renderpass_deferredcomposition;
-	wiGraphics::RenderPass renderpass_SSS[3];
+
+	wiGraphics::GPUBuffer tileFrustums; // entity culling frustums
+	wiGraphics::GPUBuffer entityTiles_Opaque; // culled entity indices (for opaque pass)
+	wiGraphics::GPUBuffer entityTiles_Transparent; // culled entity indices (for transparent pass)
+	wiGraphics::Texture debugUAV; // debug UAV can be used by some shaders...
 
 	const constexpr wiGraphics::Texture* GetGbuffer_Read() const
 	{
@@ -134,28 +130,6 @@ protected:
 			return &rtGbuffer[i];
 		}
 	}
-	const constexpr wiGraphics::Texture* GetDeferred_Read() const
-	{
-		if (getMSAASampleCount() > 1)
-		{
-			return &rtDeferred_resolved;
-		}
-		else
-		{
-			return &rtDeferred;
-		}
-	}
-	const constexpr wiGraphics::Texture* GetSSS_Read(int i) const
-	{
-		if (getMSAASampleCount() > 1)
-		{
-			return &rtSSS_resolved;
-		}
-		else
-		{
-			return &rtSSS[i];
-		}
-	}
 
 	// Post-processes are ping-ponged, this function helps to obtain the last postprocess render target that was written
 	const wiGraphics::Texture* GetLastPostprocessRT() const
@@ -168,27 +142,19 @@ protected:
 		return &rtPostprocess_LDR[rt_index];
 	}
 
-	void ResizeBuffers() override;
-
 	virtual void RenderFrameSetUp(wiGraphics::CommandList cmd) const;
-	virtual void RenderReflections(wiGraphics::CommandList cmd) const;
-
-	virtual void RenderSSS(wiGraphics::CommandList cmd) const;
-	virtual void RenderDeferredComposition(wiGraphics::CommandList cmd) const;
-	virtual void RenderLinearDepth(wiGraphics::CommandList cmd) const;
 	virtual void RenderAO(wiGraphics::CommandList cmd) const;
 	virtual void RenderSSR(wiGraphics::CommandList cmd) const;
-	virtual void DownsampleDepthBuffer(wiGraphics::CommandList cmd) const;
 	virtual void RenderOutline(wiGraphics::CommandList cmd) const;
 	virtual void RenderLightShafts(wiGraphics::CommandList cmd) const;
 	virtual void RenderVolumetrics(wiGraphics::CommandList cmd) const;
 	virtual void RenderSceneMIPChain(wiGraphics::CommandList cmd) const;
 	virtual void RenderTransparents(wiGraphics::CommandList cmd) const;
 	virtual void RenderPostprocessChain(wiGraphics::CommandList cmd) const;
-	
-public:
 
-	wiScene::CameraComponent* camera = &wiRenderer::GetCamera();
+	void ResizeBuffers() override;
+
+	wiScene::CameraComponent* camera = &wiScene::GetCamera();
 	wiScene::CameraComponent camera_previous;
 	wiScene::CameraComponent camera_reflection;
 
@@ -196,7 +162,9 @@ public:
 	wiRenderer::Visibility visibility_main;
 	wiRenderer::Visibility visibility_reflection;
 
-	const wiGraphics::Texture* GetDepthStencil() const override { return &depthBuffer; }
+	FrameCB frameCB = {};
+
+	const wiGraphics::Texture* GetDepthStencil() const override { return &depthBuffer_Main; }
 	const wiGraphics::Texture* GetGUIBlurredBackground() const override { return &rtGUIBlurredBackground[2]; }
 
 	constexpr float getExposure() const { return exposure; }
@@ -213,7 +181,8 @@ public:
 	constexpr uint32_t getAOSampleCount() const { return aoSampleCount; }
 	constexpr float getAOPower() const { return aoPower; }
 	constexpr float getChromaticAberrationAmount() const { return chromaticAberrationAmount; }
-	constexpr float getSSSBlurAmount() const { return sssBlurAmount; }
+	constexpr uint32_t getScreenSpaceShadowSampleCount() const { return screenSpaceShadowSampleCount; }
+	constexpr float getScreenSpaceShadowRange() const { return screenSpaceShadowRange; }
 
 	constexpr bool getAOEnabled() const { return ao != AO_DISABLED; }
 	constexpr AO getAO() const { return ao; }
@@ -224,12 +193,11 @@ public:
 	constexpr bool getFXAAEnabled() const { return fxaaEnabled; }
 	constexpr bool getBloomEnabled() const { return bloomEnabled; }
 	constexpr bool getVolumetricCloudsEnabled() const { return volumetricCloudsEnabled; }
-	constexpr bool getColorGradingEnabled() const { return colorGradingEnabled; }
+	constexpr bool getColorGradingEnabled() const { return colorGradingEnabled && colorGradingTex != nullptr; }
 	constexpr bool getVolumeLightsEnabled() const { return volumeLightsEnabled; }
 	constexpr bool getLightShaftsEnabled() const { return lightShaftsEnabled; }
 	constexpr bool getLensFlareEnabled() const { return lensFlareEnabled; }
 	constexpr bool getMotionBlurEnabled() const { return motionBlurEnabled; }
-	constexpr bool getSSSEnabled() const { return sssEnabled; }
 	constexpr bool getDepthOfFieldEnabled() const { return depthOfFieldEnabled; }
 	constexpr bool getEyeAdaptionEnabled() const { return eyeAdaptionEnabled; }
 	constexpr bool getSharpenFilterEnabled() const { return sharpenFilterEnabled && getSharpenFilterAmount() > 0; }
@@ -255,7 +223,8 @@ public:
 	constexpr void setAOSampleCount(uint32_t value) { aoSampleCount = value; }
 	constexpr void setAOPower(float value) { aoPower = value; }
 	constexpr void setChromaticAberrationAmount(float value) { chromaticAberrationAmount = value; }
-	constexpr void setSSSBlurAmount(float value) { sssBlurAmount = value; }
+	constexpr void setScreenSpaceShadowSampleCount(uint32_t value) { screenSpaceShadowSampleCount = value; }
+	constexpr void setScreenSpaceShadowRange(float value) { screenSpaceShadowRange = value; }
 
 	constexpr void setAO(AO value) { ao = value; }
 	constexpr void setSSREnabled(bool value){ ssrEnabled = value; }
@@ -270,7 +239,6 @@ public:
 	constexpr void setLightShaftsEnabled(bool value){ lightShaftsEnabled = value; }
 	constexpr void setLensFlareEnabled(bool value){ lensFlareEnabled = value; }
 	constexpr void setMotionBlurEnabled(bool value){ motionBlurEnabled = value; }
-	constexpr void setSSSEnabled(bool value){ sssEnabled = value; }
 	constexpr void setDepthOfFieldEnabled(bool value){ depthOfFieldEnabled = value; }
 	constexpr void setEyeAdaptionEnabled(bool value) { eyeAdaptionEnabled = value; }
 	constexpr void setSharpenFilterEnabled(bool value) { sharpenFilterEnabled = value; }

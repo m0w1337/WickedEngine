@@ -1,5 +1,6 @@
 #define DISABLE_DECALS
 #define DISABLE_ENVMAPS
+#define SHADOW_MASK_ENABLED
 #include "globals.hlsli"
 #include "objectHF.hlsli"
 #include "hairparticleHF.hlsli"
@@ -7,7 +8,7 @@
 TEXTURE2D(texture_color, float4, TEXSLOT_ONDEMAND0);
 
 [earlydepthstencil]
-GBUFFEROutputType main(VertexToPixel input)
+GBuffer main(VertexToPixel input)
 {
 	float4 color = texture_color.Sample(sampler_linear_wrap, input.tex);
 	color.rgb = DEGAMMA(color.rgb);
@@ -17,18 +18,34 @@ GBUFFEROutputType main(VertexToPixel input)
 	float dist = length(V);
 	V /= dist;
 	float emissive = 0;
-	Surface surface = CreateSurface(input.pos3D, input.nor, V, color, 1, 1, 0, 0);
-	Lighting lighting = CreateLighting(0, 0, GetAmbient(surface.N), 0);
+
+	Surface surface;
+	surface.create(g_xMaterial, color, 0);
+	surface.P = input.pos3D;
+	surface.N = input.nor;
+	surface.V = V;
 	surface.pixel = input.pos.xy;
+	surface.update();
+
+	Lighting lighting;
+	lighting.create(0, 0, GetAmbient(surface.N), 0);
+
+#ifdef SHADOW_MASK_ENABLED
+	[branch]
+	if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
+	{
+		lighting.shadow_mask = texture_rtshadow[surface.pixel];
+	}
+#endif // SHADOW_MASK_ENABLED
+
 	float depth = input.pos.z;
 	float3 reflection = 0;
 
-	float2 ScreenCoord = surface.pixel * g_xFrame_InternalResolution_rcp;
-	float2 pos2D = ScreenCoord * 2 - 1;
-	pos2D.y *= -1;
-	float2 velocity = ((input.pos2DPrev.xy / input.pos2DPrev.w - g_xFrame_TemporalAAJitterPrev) - (pos2D.xy - g_xFrame_TemporalAAJitter)) * float2(0.5f, -0.5f);
-
 	TiledLighting(surface, lighting);
 
-	return CreateGbuffer(surface, velocity, lighting);
+	ApplyLighting(surface, lighting, color);
+
+	ApplyFog(dist, color);
+
+	return CreateGBuffer(color, surface);
 }

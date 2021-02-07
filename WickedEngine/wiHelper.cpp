@@ -2,6 +2,7 @@
 #include "wiPlatform.h"
 #include "wiRenderer.h"
 #include "wiBackLog.h"
+#include "wiEvent.h"
 
 #include "Utility/stb_image_write.h"
 
@@ -45,12 +46,21 @@ namespace wiHelper
 
 	void messageBox(const std::string& msg, const std::string& caption)
 	{
-		auto& state = wiPlatform::GetWindowState();
-		state.messagemutex.lock();
-		state.messages.emplace_back();
-		StringConvert(msg, state.messages.back().message);
-		StringConvert(caption, state.messages.back().caption);
-		state.messagemutex.unlock();
+#ifdef _WIN32
+#ifndef PLATFORM_UWP
+		MessageBoxA(wiPlatform::GetWindow(), msg.c_str(), caption.c_str(), 0);
+#else
+		wstring wmessage, wcaption;
+		StringConvert(msg, wmessage);
+		StringConvert(caption, wcaption);
+		// UWP can only show message box on main thread:
+		wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
+			Windows::UI::Popups::MessageDialog(ref new Platform::String(wmessage.c_str()), ref new Platform::String(wcaption.c_str())).ShowAsync();
+		});
+#endif // PLATFORM_UWP
+#elif SDL2
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, caption.c_str(), msg.c_str(), NULL);
+#endif // _WIN32
 	}
 
 	void screenshot(const std::string& name)
@@ -67,7 +77,7 @@ namespace wiHelper
 #ifdef _WIN32
 		CreateDirectoryA(directory.c_str(), 0);
 #elif SDL2
-        std::filesystem::create_directory(directory.c_str());
+		std::filesystem::create_directory(directory.c_str());
 #endif // _WIN32
 
 		std::string filename = name;
@@ -203,7 +213,7 @@ namespace wiHelper
 		};
 
 		string extension = wiHelper::toUpper(wiHelper::GetExtensionFromFileName(fileName));
-		if (!extension.compare("JPG"))
+		if (!extension.compare("JPG") || !extension.compare("JPEG"))
 		{
 			write_result = stbi_write_jpg_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, textureData.data(), 100);
 		}
@@ -748,47 +758,59 @@ namespace wiHelper
 #endif // PLATFORM_UWP
 
 #else
-        if (!pfd::settings::available()) {
-            const char *message = "No dialog backend available";
+		if (!pfd::settings::available()) {
+			const char *message = "No dialog backend available";
 #ifdef SDL2
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-                                     "File dialog error!",
-                                     message,
-                                     nullptr);
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+									 "File dialog error!",
+									 message,
+									 nullptr);
 #endif
-            std::cerr << message << std::endl;
-        }
+			std::cerr << message << std::endl;
+		}
 
-        std::vector<std::string> extensions = {params.description};
-        extensions.reserve(params.extensions.size()+1);
-        extensions.insert(extensions.end(), params.extensions.cbegin(), params.extensions.cend());
+		std::vector<std::string> extensions = {params.description};
+		extensions.reserve(params.extensions.size()+1);
+		extensions.insert(extensions.end(), params.extensions.cbegin(), params.extensions.cend());
 
-        switch (params.type) {
-            case FileDialogParams::OPEN: {
-                std::vector<std::string> selection = pfd::open_file(
-                        params.description,
-                        wiHelper::GetOriginalWorkingDirectory(),
-                        extensions
-                        // allow multi selection here
-                ).result();
-                // result() will wait for user action before returning.
-                // This operation will block and return the user choice
+		switch (params.type) {
+			case FileDialogParams::OPEN: {
+				std::vector<std::string> selection = pfd::open_file(
+						params.description,
+						wiHelper::GetOriginalWorkingDirectory(),
+						extensions
+						// allow multi selection here
+				).result();
+				// result() will wait for user action before returning.
+				// This operation will block and return the user choice
 
-                if (!selection.empty()) {
-                    onSuccess(selection[0]);
-                }
-                //TODO what happens if the user cancelled the action? Is there not a onFailure callback?
-            }
-            case FileDialogParams::SAVE: {
-                std::string destination = pfd::save_file(params.description,
-                        wiHelper::GetOriginalWorkingDirectory(),
-                        extensions
-                        // remove overwrite warning here
-                ).result();
-                onSuccess(destination);
-            }
-        }
+				if (!selection.empty()) {
+					onSuccess(selection[0]);
+				}
+				//TODO what happens if the user cancelled the action? Is there not a onFailure callback?
+			}
+			case FileDialogParams::SAVE: {
+				std::string destination = pfd::save_file(params.description,
+						wiHelper::GetOriginalWorkingDirectory(),
+						extensions
+						// remove overwrite warning here
+				).result();
+				onSuccess(destination);
+			}
+		}
 #endif // _WIN32
+	}
+
+	bool Bin2H(const uint8_t* data, size_t size, const std::string& dst_filename, const char* dataName)
+	{
+		std::stringstream ss;
+		ss << "const uint8_t " << dataName << "[] = {";
+		for (size_t i = 0; i < size; ++i)
+		{
+			ss << (uint32_t)data[i] << ", ";
+		}
+		ss << "};" << endl;
+		return FileWrite(dst_filename, (uint8_t*)ss.str().c_str(), ss.str().length());
 	}
 
 	void StringConvert(const std::string& from, std::wstring& to)
@@ -829,9 +851,9 @@ namespace wiHelper
 		}
 #else
 		int num = 0; // TODO
-        const char * message = "int StringConvert(const char* from, wchar_t* to) not implemented";
-        std::cerr << message << std::endl;
-        throw std::runtime_error(message);
+		const char * message = "int StringConvert(const char* from, wchar_t* to) not implemented";
+		std::cerr << message << std::endl;
+		throw std::runtime_error(message);
 #endif // _WIN32
 		return num;
 	}
@@ -846,9 +868,9 @@ namespace wiHelper
 		}
 #else
 		int num = 0; // TODO
-        const char * message = "int StringConvert(const wchar_t* from, char* to) not implemented";
-        std::cerr << message << std::endl;
-        throw std::runtime_error(message);
+		const char * message = "int StringConvert(const wchar_t* from, char* to) not implemented";
+		std::cerr << message << std::endl;
+		throw std::runtime_error(message);
 #endif // _WIN32
 		return num;
 	}

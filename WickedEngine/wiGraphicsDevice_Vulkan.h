@@ -1,13 +1,13 @@
 #pragma once
+#include "CommonInclude.h"
+#include "wiPlatform.h"
 
-#if __has_include("vulkan/vulkan.h")
+#ifndef PLATFORM_UWP
 #define WICKEDENGINE_BUILD_VULKAN
-#endif // HAS VULKAN
+#endif // PLATFORM_UWP
 
 #ifdef WICKEDENGINE_BUILD_VULKAN
-#include "CommonInclude.h"
 #include "wiGraphicsDevice.h"
-#include "wiPlatform.h"
 #include "wiSpinLock.h"
 #include "wiContainers.h"
 #include "wiGraphicsDevice_SharedInternals.h"
@@ -16,9 +16,9 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif // _WIN32
 
-#define VK_ENABLE_BETA_EXTENSIONS
-#include <vulkan/vulkan.h>
-
+#define VK_NO_PROTOTYPES
+#include "Utility/vulkan/vulkan.h"
+#include "Utility/volk.h"
 #include "Utility/vk_mem_alloc.h"
 
 #include <vector>
@@ -30,46 +30,47 @@
 
 namespace wiGraphics
 {
-	struct FrameResources;
-	struct DescriptorTableFrameAllocator;
-
-	struct QueueFamilyIndices {
-		int graphicsFamily = -1;
-		int presentFamily = -1;
-		int copyFamily = -1;
-
-		bool isComplete() {
-			return graphicsFamily >= 0 && presentFamily >= 0 && copyFamily >= 0;
-		}
-	};
-
 	class GraphicsDevice_Vulkan : public GraphicsDevice
 	{
-		friend struct DescriptorTableFrameAllocator;
-	private:
-
+	protected:
 		VkInstance instance = VK_NULL_HANDLE;
-	    VkDebugUtilsMessengerEXT debugUtilsMessenger{VK_NULL_HANDLE};
-		/// Deprecated
-	    VkDebugReportCallbackEXT debugReportCallback = VK_NULL_HANDLE;
+	    VkDebugUtilsMessengerEXT debugUtilsMessenger = VK_NULL_HANDLE;
 		VkSurfaceKHR surface = VK_NULL_HANDLE;
 		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 		VkDevice device = VK_NULL_HANDLE;
-		QueueFamilyIndices queueIndices;
+		int graphicsFamily = -1;
+		int presentFamily = -1;
+		int copyFamily = -1;
+		int computeFamily = -1;
 		VkQueue graphicsQueue = VK_NULL_HANDLE;
 		VkQueue presentQueue = VK_NULL_HANDLE;
+		VkQueue computeQueue = VK_NULL_HANDLE;
 
-		VkPhysicalDeviceProperties2 device_properties = {};
-		VkPhysicalDeviceVulkan11Properties device_properties_1_1 = {};
-		VkPhysicalDeviceVulkan12Properties device_properties_1_2 = {};
-		VkPhysicalDeviceRayTracingPropertiesKHR raytracing_properties = {};
+		VkQueue copyQueue = VK_NULL_HANDLE;
+		std::mutex copyQueueLock;
+		bool copyQueueUse = false;
+		VkSemaphore copySemaphore = VK_NULL_HANDLE;
+
+		VkPhysicalDeviceProperties2 properties2 = {};
+		VkPhysicalDeviceVulkan11Properties properties_1_1 = {};
+		VkPhysicalDeviceVulkan12Properties properties_1_2 = {};
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR raytracing_properties = {};
+		VkPhysicalDeviceFragmentShadingRatePropertiesKHR fragment_shading_rate_properties = {};
 		VkPhysicalDeviceMeshShaderPropertiesNV mesh_shader_properties = {};
 
-		VkPhysicalDeviceFeatures2 device_features2 = {};
+		VkPhysicalDeviceFeatures2 features2 = {};
 		VkPhysicalDeviceVulkan11Features features_1_1 = {};
 		VkPhysicalDeviceVulkan12Features features_1_2 = {};
-		VkPhysicalDeviceRayTracingFeaturesKHR raytracing_features = {};
+		VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {};
+		VkPhysicalDeviceRayTracingPipelineFeaturesKHR raytracing_features = {};
+		VkPhysicalDeviceRayQueryFeaturesKHR raytracing_query_features = {};
+		VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragment_shading_rate_features = {};
 		VkPhysicalDeviceMeshShaderFeaturesNV mesh_shader_features = {};
+
+		VkSurfaceCapabilitiesKHR swapchain_capabilities;
+		std::vector<VkSurfaceFormatKHR> swapchain_formats;
+		std::vector<VkPresentModeKHR> swapchain_presentModes;
 
 		VkSwapchainKHR swapChain = VK_NULL_HANDLE;
 		VkFormat swapChainImageFormat;
@@ -78,6 +79,9 @@ namespace wiGraphics
 		std::vector<VkImage> swapChainImages;
 		std::vector<VkImageView> swapChainImageViews;
 		std::vector<VkFramebuffer> swapChainFramebuffers;
+
+		std::vector<VkDynamicState> pso_dynamicStates;
+		VkPipelineDynamicStateCreateInfo dynamicStateInfo = {};
 
 		VkRenderPass defaultRenderPass = VK_NULL_HANDLE;
 
@@ -100,19 +104,8 @@ namespace wiGraphics
 		VkImageView		nullImageView3D = VK_NULL_HANDLE;
 
 		uint64_t timestamp_frequency = 0;
-		VkQueryPool querypool_timestamp = VK_NULL_HANDLE;
-		VkQueryPool querypool_occlusion = VK_NULL_HANDLE;
-		static const size_t timestamp_query_count = 1024;
-		static const size_t occlusion_query_count = 1024;
-		bool initial_querypool_reset = false;
-		std::vector<uint32_t> timestamps_to_reset;
-		std::vector<uint32_t> occlusions_to_reset;
 
 		void CreateBackBufferResources();
-
-		std::mutex copyQueueLock;
-		bool copyQueueUse = false;
-		VkSemaphore copySemaphore = VK_NULL_HANDLE;
 
 		struct FrameResources
 		{
@@ -120,7 +113,6 @@ namespace wiGraphics
 			VkCommandPool commandPools[COMMANDLIST_COUNT] = {};
 			VkCommandBuffer commandBuffers[COMMANDLIST_COUNT] = {};
 
-			VkQueue copyQueue = VK_NULL_HANDLE;
 			VkCommandPool copyCommandPool = VK_NULL_HANDLE;
 			VkCommandBuffer copyCommandBuffer = VK_NULL_HANDLE;
 
@@ -131,7 +123,7 @@ namespace wiGraphics
 			VkSemaphore swapchainAcquireSemaphore = VK_NULL_HANDLE;
 			VkSemaphore swapchainReleaseSemaphore = VK_NULL_HANDLE;
 
-			struct DescriptorTableFrameAllocator
+			struct DescriptorBinder
 			{
 				GraphicsDevice_Vulkan* device;
 				VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
@@ -141,7 +133,7 @@ namespace wiGraphics
 				std::vector<VkDescriptorBufferInfo> bufferInfos;
 				std::vector<VkDescriptorImageInfo> imageInfos;
 				std::vector<VkBufferView> texelBufferViews;
-				std::vector<VkWriteDescriptorSetAccelerationStructureNV> accelerationStructureViews;
+				std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureViews;
 				bool dirty = false;
 
 				const GPUBuffer* CBV[GPU_RESOURCE_HEAP_CBV_COUNT];
@@ -158,7 +150,7 @@ namespace wiGraphics
 				void validate(bool graphics, CommandList cmd, bool raytracing = false);
 				VkDescriptorSet commit(const DescriptorTable* table);
 			};
-			DescriptorTableFrameAllocator descriptors[COMMANDLIST_COUNT];
+			DescriptorBinder descriptors[COMMANDLIST_COUNT];
 
 
 			struct ResourceFrameAllocator
@@ -176,11 +168,22 @@ namespace wiGraphics
 				uint64_t calculateOffset(uint8_t* address);
 			};
 			ResourceFrameAllocator resourceBuffer[COMMANDLIST_COUNT];
-
 		};
 		FrameResources frames[BACKBUFFER_COUNT];
 		FrameResources& GetFrameResources() { return frames[GetFrameCount() % BACKBUFFER_COUNT]; }
 		inline VkCommandBuffer GetDirectCommandList(CommandList cmd) { return GetFrameResources().commandBuffers[cmd]; }
+
+		std::vector<VkMemoryBarrier> frame_memoryBarriers[COMMANDLIST_COUNT];
+		std::vector<VkImageMemoryBarrier> frame_imageBarriers[COMMANDLIST_COUNT];
+		std::vector<VkBufferMemoryBarrier> frame_bufferBarriers[COMMANDLIST_COUNT];
+
+		struct PSOLayout
+		{
+			VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+			VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+		};
+		std::unordered_map<size_t, PSOLayout> pso_layout_cache;
+		std::mutex pso_layout_cache_mutex;
 
 		std::unordered_map<size_t, VkPipeline> pipelines_global;
 		std::vector<std::pair<size_t, VkPipeline>> pipelines_worker[COMMANDLIST_COUNT];
@@ -189,28 +192,19 @@ namespace wiGraphics
 		const Shader* active_cs[COMMANDLIST_COUNT] = {};
 		const RaytracingPipelineState* active_rt[COMMANDLIST_COUNT] = {};
 		const RenderPass* active_renderpass[COMMANDLIST_COUNT] = {};
+		SHADING_RATE prev_shadingrate[COMMANDLIST_COUNT] = {};
 
 		bool dirty_pso[COMMANDLIST_COUNT] = {};
 		void pso_validate(CommandList cmd);
 
+		void barrier_flush(CommandList cmd);
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
 		void preraytrace(CommandList cmd);
 
 		std::atomic<CommandList> cmd_count{ 0 };
 
-		static PFN_vkCreateRayTracingPipelinesKHR createRayTracingPipelinesKHR;
-		static PFN_vkCreateAccelerationStructureKHR createAccelerationStructureKHR;
-		static PFN_vkBindAccelerationStructureMemoryKHR bindAccelerationStructureMemoryKHR;
-		static PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructureKHR;
-		static PFN_vkGetAccelerationStructureMemoryRequirementsKHR getAccelerationStructureMemoryRequirementsKHR;
-		static PFN_vkGetAccelerationStructureDeviceAddressKHR getAccelerationStructureDeviceAddressKHR;
-		static PFN_vkGetRayTracingShaderGroupHandlesKHR getRayTracingShaderGroupHandlesKHR;
-		static PFN_vkCmdBuildAccelerationStructureKHR cmdBuildAccelerationStructureKHR;
-		static PFN_vkCmdTraceRaysKHR cmdTraceRaysKHR;
-
-		static PFN_vkCmdDrawMeshTasksNV cmdDrawMeshTasksNV;
-		static PFN_vkCmdDrawMeshTasksIndirectNV cmdDrawMeshTasksIndirectNV;
+		std::vector<StaticSampler> common_samplers;
 
 	public:
 		GraphicsDevice_Vulkan(wiPlatform::window_type window, bool fullscreen = false, bool debuglayer = false);
@@ -218,11 +212,7 @@ namespace wiGraphics
 
 		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) override;
 		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) override;
-		bool CreateInputLayout(const InputLayoutDesc *pInputElementDescs, uint32_t NumElements, const Shader* shader, InputLayout *pInputLayout) override;
-		bool CreateShader(SHADERSTAGE stafe, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) override;
-		bool CreateBlendState(const BlendStateDesc *pBlendStateDesc, BlendState *pBlendState) override;
-		bool CreateDepthStencilState(const DepthStencilStateDesc *pDepthStencilStateDesc, DepthStencilState *pDepthStencilState) override;
-		bool CreateRasterizerState(const RasterizerStateDesc *pRasterizerStateDesc, RasterizerState *pRasterizerState) override;
+		bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) override;
 		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) override;
 		bool CreateQuery(const GPUQueryDesc *pDesc, GPUQuery *pQuery) override;
 		bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) override;
@@ -235,6 +225,7 @@ namespace wiGraphics
 		int CreateSubresource(Texture* texture, SUBRESOURCE_TYPE type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount) override;
 		int CreateSubresource(GPUBuffer* buffer, SUBRESOURCE_TYPE type, uint64_t offset, uint64_t size = ~0) override;
 
+		void WriteShadingRateValue(SHADING_RATE rate, void* dest) override;
 		void WriteTopLevelAccelerationStructureInstance(const RaytracingAccelerationStructureDesc::TopLevel::Instance* instance, void* dest) override;
 		void WriteShaderIdentifier(const RaytracingPipelineState* rtpso, uint32_t group_index, void* dest) override;
 		void WriteDescriptor(const DescriptorTable* table, uint32_t rangeIndex, uint32_t arrayIndex, const GPUResource* resource, int subresource = -1, uint64_t offset = 0) override;
@@ -243,6 +234,8 @@ namespace wiGraphics
 		void Map(const GPUResource* resource, Mapping* mapping) override;
 		void Unmap(const GPUResource* resource) override;
 		bool QueryRead(const GPUQuery* query, GPUQueryResult* result) override;
+
+		void SetCommonSampler(const StaticSampler* sam) override;
 
 		void SetName(GPUResource* pResource, const char* name) override;
 
@@ -279,6 +272,7 @@ namespace wiGraphics
 		void BindIndexBuffer(const GPUBuffer* indexBuffer, const INDEXBUFFER_FORMAT format, uint32_t offset, CommandList cmd) override;
 		void BindStencilRef(uint32_t value, CommandList cmd) override;
 		void BindBlendFactor(float r, float g, float b, float a, CommandList cmd) override;
+		void BindShadingRate(SHADING_RATE rate, CommandList cmd) override;
 		void BindPipelineState(const PipelineState* pso, CommandList cmd) override;
 		void BindComputeShader(const Shader* cs, CommandList cmd) override;
 		void Draw(uint32_t vertexCount, uint32_t startVertexLocation, CommandList cmd) override;
@@ -318,6 +312,75 @@ namespace wiGraphics
 			VkInstance instance;
 			uint64_t framecount = 0;
 			std::mutex destroylocker;
+
+			struct QueryAllocator
+			{
+				AllocationHandler* allocationhandler = nullptr;
+				std::mutex locker;
+				VkQueryPoolCreateInfo poolInfo = {};
+
+				std::vector<VkQueryPool> blocks;
+
+				struct Query
+				{
+					uint32_t block = ~0;
+					uint32_t index = ~0;
+				};
+				std::vector<Query> freelist;
+
+				void init(AllocationHandler* allocationhandler, VkQueryType type)
+				{
+					this->allocationhandler = allocationhandler;
+
+					poolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+					poolInfo.queryCount = 1024;
+					poolInfo.queryType = type;
+				}
+				void destroy()
+				{
+					for (auto& x : blocks)
+					{
+						vkDestroyQueryPool(allocationhandler->device, x, nullptr);
+					}
+				}
+				void block_allocate()
+				{
+					uint32_t block_index = (uint32_t)blocks.size();
+					blocks.emplace_back();
+					auto& block = blocks.back();
+					VkResult res = vkCreateQueryPool(allocationhandler->device, &poolInfo, nullptr, &block);
+					assert(res == VK_SUCCESS);
+					vkResetQueryPool(allocationhandler->device, block, 0, poolInfo.queryCount);
+					for (uint32_t i = 0; i < poolInfo.queryCount; ++i)
+					{
+						freelist.emplace_back();
+						freelist.back().block = block_index;
+						freelist.back().index = i;
+					}
+				}
+				Query allocate()
+				{
+					locker.lock();
+					if (freelist.empty())
+					{
+						block_allocate();
+					}
+					assert(!freelist.empty());
+					auto query = freelist.back();
+					freelist.pop_back();
+					locker.unlock();
+					return query;
+				}
+				void free(Query query)
+				{
+					locker.lock();
+					freelist.push_back(query);
+					locker.unlock();
+				}
+			};
+			QueryAllocator queries_timestamp;
+			QueryAllocator queries_occlusion;
+
 			std::deque<std::pair<std::pair<VkImage, VmaAllocation>, uint64_t>> destroyer_images;
 			std::deque<std::pair<VkImageView, uint64_t>> destroyer_imageviews;
 			std::deque<std::pair<std::pair<VkBuffer, VmaAllocation>, uint64_t>> destroyer_buffers;
@@ -332,15 +395,14 @@ namespace wiGraphics
 			std::deque<std::pair<VkPipeline, uint64_t>> destroyer_pipelines;
 			std::deque<std::pair<VkRenderPass, uint64_t>> destroyer_renderpasses;
 			std::deque<std::pair<VkFramebuffer, uint64_t>> destroyer_framebuffers;
-			std::deque<std::pair<uint32_t, uint64_t>> destroyer_queries_occlusion;
-			std::deque<std::pair<uint32_t, uint64_t>> destroyer_queries_timestamp;
-
-			wiContainers::ThreadSafeRingBuffer<uint32_t, timestamp_query_count> free_timestampqueries;
-			wiContainers::ThreadSafeRingBuffer<uint32_t, occlusion_query_count> free_occlusionqueries;
+			std::deque<std::pair<QueryAllocator::Query, uint64_t>> destroyer_queries_occlusion;
+			std::deque<std::pair<QueryAllocator::Query, uint64_t>> destroyer_queries_timestamp;
 
 			~AllocationHandler()
 			{
 				Update(~0, 0); // destroy all remaining
+				queries_occlusion.destroy();
+				queries_timestamp.destroy();
 				vmaDestroyAllocator(allocator);
 				vkDestroyDevice(device, nullptr);
 				vkDestroyInstance(instance, nullptr);
@@ -409,7 +471,7 @@ namespace wiGraphics
 					{
 						auto item = destroyer_bvhs.front();
 						destroyer_bvhs.pop_front();
-						destroyAccelerationStructureKHR(device, item.first, nullptr);
+						vkDestroyAccelerationStructureKHR(device, item.first, nullptr);
 					}
 					else
 					{
@@ -539,7 +601,7 @@ namespace wiGraphics
 					{
 						auto item = destroyer_queries_occlusion.front();
 						destroyer_queries_occlusion.pop_front();
-						free_occlusionqueries.push_back(item.first);
+						queries_occlusion.free(item.first);
 					}
 					else
 					{
@@ -552,7 +614,7 @@ namespace wiGraphics
 					{
 						auto item = destroyer_queries_timestamp.front();
 						destroyer_queries_timestamp.pop_front();
-						free_timestampqueries.push_back(item.first);
+						queries_timestamp.free(item.first);
 					}
 					else
 					{

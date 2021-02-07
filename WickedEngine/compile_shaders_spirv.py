@@ -34,6 +34,9 @@ for item in root.iter():
         for shaderprofile in item.iter(namespace + "Filter"):
             profile = shaderprofile.text
 
+            #if name != "rtshadow_denoise_temporalCS.hlsl":
+            #    continue
+
             cmd = "dxc " + name + " -T "
             
             if profile == "VS":
@@ -57,23 +60,30 @@ for item in root.iter():
             
             cmd += "_6_5 "
             
+            cmd += " -all-resources-bound "
+            #cmd += " -pack-optimized "
+            cmd += " -res-may-alias "
+            cmd += " -no-legacy-cbuf-layout "
+            
             cmd += " -spirv "
+            cmd += " -fspv-target-env=vulkan1.2 "
             cmd += " -fvk-use-dx-layout "
             cmd += " -fvk-use-dx-position-w "
             cmd += " -flegacy-macro-expansion "
-            
-            if profile == "VS" or profile == "DS" or profile == "GS":
-                cmd += " -fvk-invert-y "
 
-            if profile == "LIB":
-                cmd += " -fspv-target-env=vulkan1.2 "
-            else:
-                cmd += " -fspv-target-env=vulkan1.1 "
+            # NOTE: Don't use -fvk-invert-y because it's not trivial when multiple connecting
+            #   shader stages are using SV_POSITION.
+            #   But when sharing structs between stages, it is not feasible to modify SV_POSITION to custom semantic
+            #   This will be handled by flipping the viewport instead
+            #if profile == "VS" or profile == "DS" or profile == "GS":
+            #    cmd += " -fvk-invert-y "
 
             #cmd += " -fvk-b-shift 0 all "
             cmd += " -fvk-t-shift 1000 all "
             cmd += " -fvk-u-shift 2000 all "
             cmd += " -fvk-s-shift 3000 all "
+
+            cmd += " -Vd " #DISABLE VALIDATION: There is currently a validation bug with raytracing RayTCurrent()!!!
             
             cmd += " -D SPIRV "
 

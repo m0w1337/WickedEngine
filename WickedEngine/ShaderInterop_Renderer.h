@@ -12,20 +12,23 @@ static const uint SHADERMATERIAL_OPTION_BIT_USE_WIND = 1 << 4;
 struct ShaderMaterial
 {
 	float4		baseColor;
+	float4		specularColor;
 	float4		emissiveColor;
+	float4		subsurfaceScattering;
+	float4		subsurfaceScattering_inv;
 	float4		texMulAdd;
 
 	float		roughness;
 	float		reflectance;
 	float		metalness;
-	float		refractionIndex;
+	float		refraction;
 
 	float		normalMapStrength;
 	float		parallaxOcclusionMapping;
 	float		alphaTest;
-	float		padding1;
-
 	float		displacementMapping;
+
+	uint		layerMask;
 	int			uvset_baseColorMap;
 	int			uvset_surfaceMap;
 	int			uvset_normalMap;
@@ -33,7 +36,23 @@ struct ShaderMaterial
 	int			uvset_displacementMap;
 	int			uvset_emissiveMap;
 	int			uvset_occlusionMap;
+	int			uvset_transmissionMap;
+
+	float2		padding1;
+	float		transmission;
 	uint		options;
+
+	int			uvset_sheenColorMap;
+	int			uvset_sheenRoughnessMap;
+	int			uvset_clearcoatMap;
+	int			uvset_clearcoatRoughnessMap;
+
+	int			uvset_clearcoatNormalMap;
+	float		sheenRoughness;
+	float		clearcoat;
+	float		clearcoatRoughness;
+
+	float4		sheenColor;
 
 	float4		baseColorAtlasMulAdd;
 	float4		surfaceMapAtlasMulAdd;
@@ -47,94 +66,141 @@ struct ShaderMaterial
 	inline bool IsUsingWind() { return options & SHADERMATERIAL_OPTION_BIT_USE_WIND; }
 };
 
+// Warning: the size of this structure directly affects shader performance.
+//	Try to reduce it as much as possible!
+//	Keep it aligned to 16 bytes for best performance!
+//	Right now, this is 48 bytes total
 struct ShaderEntity
 {
-	float3 positionVS;
-	uint params;
-	float3 directionVS;
-	float range;
-	float3 positionWS;
-	float energy;
-	float3 directionWS;
+	float3 position;
+	uint type8_flags8_range16;
+
+	uint2 direction16_coneAngleCos16;
+	uint energy16_X16; // 16 bits free
 	uint color;
-	float4 texMulAdd;
-	float coneAngleCos;
-	float shadowKernel;
-	float shadowBias;
+
+	uint layerMask;
+	uint indices;
+	uint cubeRemap;
 	uint userdata;
 
+#ifndef __cplusplus
+	// Shader-side:
 	inline uint GetType()
 	{
-		return params & 0xFFFF;
+		return type8_flags8_range16 & 0xFF;
 	}
 	inline uint GetFlags()
 	{
-		return (params >> 16) & 0xFFFF;
+		return (type8_flags8_range16 >> 8) & 0xFF;
 	}
-
-	inline void SetType(uint type)
+	inline float GetRange()
 	{
-		params = type & 0xFFFF; // also initializes to zero, so flags must be set after the type
+		return f16tof32((type8_flags8_range16 >> 16) & 0xFFFF);
 	}
-	inline void SetFlags(uint flags)
+	inline float3 GetDirection()
 	{
-		params |= (flags & 0xFFFF) << 16;
+		return float3(
+			f16tof32(direction16_coneAngleCos16.x & 0xFFFF),
+			f16tof32((direction16_coneAngleCos16.x >> 16) & 0xFFFF),
+			f16tof32(direction16_coneAngleCos16.y & 0xFFFF)
+		);
 	}
-
-	inline void SetShadowIndices(uint shadowMatrixIndex, uint shadowMapIndex)
+	inline float GetConeAngleCos()
 	{
-		userdata = shadowMatrixIndex & 0xFFFF;
-		userdata |= (shadowMapIndex & 0xFFFF) << 16;
+		return f16tof32((direction16_coneAngleCos16.y >> 16) & 0xFFFF);
 	}
-	inline uint GetShadowMatrixIndex()
+	inline float GetEnergy()
 	{
-		return userdata & 0xFFFF;
+		return f16tof32(energy16_X16 & 0xFFFF);
 	}
-	inline uint GetShadowMapIndex()
+	inline float GetCubemapDepthRemapNear()
 	{
-		return (userdata >> 16) & 0xFFFF;
+		return f16tof32(cubeRemap & 0xFFFF);
 	}
-	inline bool IsCastingShadow()
+	inline float GetCubemapDepthRemapFar()
 	{
-		return userdata != ~0;
+		return f16tof32((cubeRemap >> 16) & 0xFFFF);
 	}
-
-	// Load uncompressed color:
 	inline float4 GetColor()
 	{
 		float4 fColor;
 
-		fColor.x = (float)((color >> 0) & 0x000000FF) / 255.0f;
-		fColor.y = (float)((color >> 8) & 0x000000FF) / 255.0f;
-		fColor.z = (float)((color >> 16) & 0x000000FF) / 255.0f;
-		fColor.w = (float)((color >> 24) & 0x000000FF) / 255.0f;
+		fColor.x = (float)((color >> 0) & 0xFF) / 255.0f;
+		fColor.y = (float)((color >> 8) & 0xFF) / 255.0f;
+		fColor.z = (float)((color >> 16) & 0xFF) / 255.0f;
+		fColor.w = (float)((color >> 24) & 0xFF) / 255.0f;
 
 		return fColor;
 	}
-
-	// Load area light props:
-	inline float3 GetRight() { return directionWS; }
-	inline float3 GetUp() { return directionVS; }
-	inline float3 GetFront() { return positionVS; }
-	inline float GetRadius() { return texMulAdd.x; }
-	inline float GetWidth() { return texMulAdd.y; }
-	inline float GetHeight() { return texMulAdd.z; }
-
-	// Load cubemap depth remap props:
-	inline float GetCubemapDepthRemapNear() { return texMulAdd.w; }
-	inline float GetCubemapDepthRemapFar() { return coneAngleCos; }
+	inline uint GetMatrixIndex()
+	{
+		return indices & 0xFFFF;
+	}
+	inline uint GetTextureIndex()
+	{
+		return (indices >> 16) & 0xFFFF;
+	}
+	inline bool IsCastingShadow()
+	{
+		return indices != ~0;
+	}
 
 	// Load decal props:
-	inline float GetEmissive() { return energy; }
+	inline float GetEmissive() { return GetEnergy(); }
+
+#else
+	// Application-side:
+	inline void SetType(uint type)
+	{
+		type8_flags8_range16 |= type & 0xFF;
+	}
+	inline void SetFlags(uint flags)
+	{
+		type8_flags8_range16 |= (flags & 0xFF) << 8;
+	}
+	inline void SetRange(float value)
+	{
+		type8_flags8_range16 |= XMConvertFloatToHalf(value) << 16;
+	}
+	inline void SetDirection(float3 value)
+	{
+		direction16_coneAngleCos16.x |= XMConvertFloatToHalf(value.x);
+		direction16_coneAngleCos16.x |= XMConvertFloatToHalf(value.y) << 16;
+		direction16_coneAngleCos16.y |= XMConvertFloatToHalf(value.z);
+	}
+	inline void SetConeAngleCos(float value)
+	{
+		direction16_coneAngleCos16.y |= XMConvertFloatToHalf(value) << 16;
+	}
+	inline void SetEnergy(float value)
+	{
+		energy16_X16 |= XMConvertFloatToHalf(value);
+	}
+	inline void SetCubeRemapNear(float value)
+	{
+		cubeRemap |= XMConvertFloatToHalf(value);
+	}
+	inline void SetCubeRemapFar(float value)
+	{
+		cubeRemap |= XMConvertFloatToHalf(value) << 16;
+	}
+	inline void SetIndices(uint matrixIndex, uint textureIndex)
+	{
+		indices = matrixIndex & 0xFFFF;
+		indices |= (textureIndex & 0xFFFF) << 16;
+	}
+
+#endif // __cplusplus
 };
 
 static const uint ENTITY_TYPE_DIRECTIONALLIGHT = 0;
 static const uint ENTITY_TYPE_POINTLIGHT = 1;
 static const uint ENTITY_TYPE_SPOTLIGHT = 2;
-static const uint ENTITY_TYPE_SPHERELIGHT = 3;
-static const uint ENTITY_TYPE_DISCLIGHT = 4;
-static const uint ENTITY_TYPE_RECTANGLELIGHT = 5;
-static const uint ENTITY_TYPE_TUBELIGHT = 6;
+//static const uint ENTITY_TYPE_SPHERELIGHT = 3;
+//static const uint ENTITY_TYPE_DISCLIGHT = 4;
+//static const uint ENTITY_TYPE_RECTANGLELIGHT = 5;
+//static const uint ENTITY_TYPE_TUBELIGHT = 6;
 static const uint ENTITY_TYPE_DECAL = 100;
 static const uint ENTITY_TYPE_ENVMAP = 101;
 static const uint ENTITY_TYPE_FORCEFIELD_POINT = 200;
@@ -153,7 +219,22 @@ static const uint TILED_CULLING_GRANULARITY = TILED_CULLING_BLOCKSIZE / TILED_CU
 
 static const int impostorCaptureAngles = 36;
 
-static const uint MAX_DESCRIPTOR_INDEXING = 100000;
+static const uint MATERIAL_TEXTURE_SLOT_DESCRIPTOR_BASECOLOR = 0;
+static const uint MATERIAL_TEXTURE_SLOT_DESCRIPTOR_NORMAL = 1;
+static const uint MATERIAL_TEXTURE_SLOT_DESCRIPTOR_SURFACE = 2;
+static const uint MATERIAL_TEXTURE_SLOT_DESCRIPTOR_OCCLUSION = 3;
+static const uint MATERIAL_TEXTURE_SLOT_DESCRIPTOR_EMISSIVE = 4;
+static const uint MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT = 5;
+
+static const uint VERTEXBUFFER_DESCRIPTOR_RAW_POS = 0;
+static const uint VERTEXBUFFER_DESCRIPTOR_RAW_TAN = 1;
+static const uint VERTEXBUFFER_DESCRIPTOR_RAW_COL = 1;
+static const uint VERTEXBUFFER_DESCRIPTOR_RAW_COUNT = 2;
+
+static const uint VERTEXBUFFER_DESCRIPTOR_UV_0 = 0;
+static const uint VERTEXBUFFER_DESCRIPTOR_UV_1 = 1;
+static const uint VERTEXBUFFER_DESCRIPTOR_UV_ATL = 2;
+static const uint VERTEXBUFFER_DESCRIPTOR_UV_COUNT = 3;
 
 // These option bits can be read from g_xFrame_Options constant buffer value:
 static const uint OPTION_BIT_TEMPORALAA_ENABLED = 1 << 0;
@@ -164,6 +245,8 @@ static const uint OPTION_BIT_VOXELGI_RETARGETTED = 1 << 4;
 static const uint OPTION_BIT_SIMPLE_SKY = 1 << 5;
 static const uint OPTION_BIT_REALISTIC_SKY = 1 << 6;
 static const uint OPTION_BIT_RAYTRACED_SHADOWS = 1 << 7;
+static const uint OPTION_BIT_DISABLE_ALBEDO_MAPS = 1 << 8;
+static const uint OPTION_BIT_SHADOW_MASK = 1 << 9;
 
 // ---------- Common Constant buffers: -----------------
 
@@ -243,6 +326,11 @@ CBUFFER(FrameCB, CBSLOT_RENDERER_FRAME)
 
 	float3		g_xFrame_WorldBoundsExtents_rcp;	// world enclosing AABB 1.0f / abs(max - min)
 	uint		g_xFrame_TemporalAASampleRotation;
+
+	float		g_xFrame_ShadowKernel2D;
+	float		g_xFrame_ShadowKernelCube;
+	uint		g_xFrame_RaytracedShadowsSampleCount;
+	float		g_xFrame_padding0;
 };
 
 CBUFFER(CameraCB, CBSLOT_RENDERER_CAMERA)
@@ -271,6 +359,13 @@ CBUFFER(CameraCB, CBSLOT_RENDERER_CAMERA)
 	float4x4	g_xCamera_InvP;			// Inverse Projection
 	float4x4	g_xCamera_InvVP;		// Inverse View-Projection
 
+	// Frustum planes:
+	//	0 : near
+	//	1 : far
+	//	2 : left
+	//	3 : right
+	//	4 : top
+	//	5 : bottom
 	float4		g_xCamera_FrustumPlanes[6];
 
 	float2		g_xFrame_TemporalAAJitter;
@@ -352,7 +447,7 @@ CBUFFER(CubemapRenderCB, CBSLOT_RENDERER_CUBEMAPRENDER)
 
 CBUFFER(TessellationCB, CBSLOT_RENDERER_TESSELLATION)
 {
-	float4 g_f4TessFactors;
+	float4 xTessellationFactors;
 };
 
 

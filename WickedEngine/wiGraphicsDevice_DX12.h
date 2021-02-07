@@ -1,22 +1,23 @@
 #pragma once
+#include "CommonInclude.h"
+#include "wiPlatform.h"
 
-#if __has_include("d3d12.h")
+#ifdef _WIN32
 #define WICKEDENGINE_BUILD_DX12
-#endif // HAS DX12
+#endif // _WIN32
 
 #ifdef WICKEDENGINE_BUILD_DX12
-#include "CommonInclude.h"
 #include "wiGraphicsDevice.h"
-#include "wiPlatform.h"
 #include "wiSpinLock.h"
 #include "wiContainers.h"
 #include "wiGraphicsDevice_SharedInternals.h"
 
-#include "Utility/D3D12MemAlloc.h"
-
-#include <dxgi1_4.h>
-#include <d3d12.h>
+#include <dxgi1_6.h>
 #include <wrl/client.h> // ComPtr
+
+#include "Utility/dx12/d3d12.h"
+#define D3D12MA_D3D12_HEADERS_ALREADY_INCLUDED
+#include "Utility/D3D12MemAlloc.h"
 
 #include <unordered_map>
 #include <deque>
@@ -28,8 +29,10 @@ namespace wiGraphics
 {
 	class GraphicsDevice_DX12 : public GraphicsDevice
 	{
-	private:
+	protected:
 		Microsoft::WRL::ComPtr<ID3D12Device5> device;
+		Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter;
+		Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> directQueue;
 		Microsoft::WRL::ComPtr<ID3D12Fence> frameFence;
 		HANDLE frameFenceEvent;
@@ -42,15 +45,6 @@ namespace wiGraphics
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> drawIndexedInstancedIndirectCommandSignature;
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> dispatchMeshIndirectCommandSignature;
 
-		Microsoft::WRL::ComPtr<ID3D12QueryHeap> querypool_timestamp;
-		Microsoft::WRL::ComPtr<ID3D12QueryHeap> querypool_occlusion;
-		static const size_t timestamp_query_count = 1024;
-		static const size_t occlusion_query_count = 1024;
-		Microsoft::WRL::ComPtr<ID3D12Resource> querypool_timestamp_readback;
-		Microsoft::WRL::ComPtr<ID3D12Resource> querypool_occlusion_readback;
-		D3D12MA::Allocation* allocation_querypool_timestamp_readback = nullptr;
-		D3D12MA::Allocation* allocation_querypool_occlusion_readback = nullptr;
-
 		D3D12_FEATURE_DATA_D3D12_OPTIONS features_0;
 		D3D12_FEATURE_DATA_D3D12_OPTIONS5 features_5;
 		D3D12_FEATURE_DATA_D3D12_OPTIONS6 features_6;
@@ -61,64 +55,165 @@ namespace wiGraphics
 		uint32_t resource_descriptor_size = 0;
 		uint32_t sampler_descriptor_size = 0;
 
-		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> descriptorheap_RTV;
-		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> descriptorheap_DSV;
+		D3D12_CPU_DESCRIPTOR_HANDLE backbufferRTV[BACKBUFFER_COUNT] = {};
 
-		D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptor_heap_start = {};
-		D3D12_CPU_DESCRIPTOR_HANDLE dsv_descriptor_heap_start = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullCBV = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSAM = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_buffer = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texture1d = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texture1darray = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texture2d = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texture2darray = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texturecube = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texturecubearray = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_texture3d = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullSRV_accelerationstructure = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_buffer = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture1d = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture1darray = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture2d = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture2darray = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE nullUAV_texture3d = {};
 
-		std::mutex copyQueueLock;
-		bool copyQueueUse = false;
-		Microsoft::WRL::ComPtr<ID3D12Fence> copyFence; // GPU only
+		std::vector<D3D12_STATIC_SAMPLER_DESC> common_samplers;
+
+		struct CopyAllocator
+		{
+			Microsoft::WRL::ComPtr<ID3D12Device5> device;
+			Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			uint64_t fenceValue = 0;
+			std::mutex locker;
+			bool submitted = false;
+
+			struct CopyCMD
+			{
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> commandList;
+				uint64_t target = 0;
+				GPUBuffer uploadbuffer;
+			};
+			std::vector<CopyCMD> freelist;
+			std::deque<CopyCMD> worklist;
+
+			void Create(Microsoft::WRL::ComPtr<ID3D12Device5> device)
+			{
+				this->device = device;
+
+				D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
+				copyQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+				copyQueueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+				copyQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+				copyQueueDesc.NodeMask = 0;
+				HRESULT hr = device->CreateCommandQueue(&copyQueueDesc, IID_PPV_ARGS(&queue));
+				assert(SUCCEEDED(hr));
+
+				hr = device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+				assert(SUCCEEDED(hr));
+				fenceValue = fence->GetCompletedValue();
+			}
+
+			CopyCMD allocate(uint32_t staging_size = 0)
+			{
+				locker.lock();
+
+				// pop the finished command lists if there are any:
+				while (!worklist.empty() && worklist.front().target <= fence->GetCompletedValue())
+				{
+					freelist.push_back(worklist.front());
+					worklist.pop_front();
+				}
+
+				// create a new command list if there are no free ones:
+				if (freelist.empty())
+				{
+					CopyCMD cmd;
+
+					HRESULT hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&cmd.commandAllocator));
+					assert(SUCCEEDED(hr));
+					hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, cmd.commandAllocator.Get(), nullptr, IID_PPV_ARGS(&cmd.commandList));
+					assert(SUCCEEDED(hr));
+
+					hr = static_cast<ID3D12GraphicsCommandList*>(cmd.commandList.Get())->Close();
+					assert(SUCCEEDED(hr));
+
+					freelist.push_back(cmd);
+				}
+
+				CopyCMD cmd = freelist.back();
+				if (cmd.uploadbuffer.desc.ByteWidth < staging_size)
+				{
+					// Try to search for a staging buffer that is good:
+					for (size_t i = 0; i < freelist.size(); ++i)
+					{
+						if (freelist[i].uploadbuffer.desc.ByteWidth >= staging_size)
+						{
+							cmd = freelist[i];
+							std::swap(freelist[i], freelist.back());
+							break;
+						}
+					}
+				}
+
+				// begin command list in valid state:
+				HRESULT hr = cmd.commandAllocator->Reset();
+				assert(SUCCEEDED(hr));
+				hr = static_cast<ID3D12GraphicsCommandList*>(cmd.commandList.Get())->Reset(cmd.commandAllocator.Get(), nullptr);
+				assert(SUCCEEDED(hr));
+
+				freelist.pop_back();
+				locker.unlock();
+
+				return cmd;
+			}
+			void submit(CopyCMD cmd)
+			{
+				static_cast<ID3D12GraphicsCommandList*>(cmd.commandList.Get())->Close();
+				ID3D12CommandList* commandlists[] = {
+					cmd.commandList.Get()
+				};
+				queue->ExecuteCommandLists(1, commandlists);
+
+				locker.lock();
+				submitted = true;
+
+				cmd.target = ++fenceValue;
+				queue->Signal(fence.Get(), cmd.target);
+
+				worklist.push_back(cmd);
+				locker.unlock();
+			}
+		};
+		CopyAllocator copyAllocator;
+
+		Microsoft::WRL::ComPtr<ID3D12Fence> directFence;
+		HANDLE directFenceEvent;
+		UINT64 directFenceValue = 0;
+
+		RenderPass dummyRenderpass;
+
+		struct DescriptorHeap
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_GPU;
+			D3D12_CPU_DESCRIPTOR_HANDLE start_cpu = {};
+			D3D12_GPU_DESCRIPTOR_HANDLE start_gpu = {};
+
+			// CPU status:
+			std::atomic<uint64_t> allocationOffset{ 0 };
+
+			// GPU status:
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			uint64_t fenceValue = 0;
+			uint64_t cached_completedValue = 0;
+		};
+		DescriptorHeap descriptorheap_res;
+		DescriptorHeap descriptorheap_sam;
 
 		struct FrameResources
 		{
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[COMMANDLIST_COUNT];
-			Microsoft::WRL::ComPtr<ID3D12CommandList> commandLists[COMMANDLIST_COUNT];
-
-			Microsoft::WRL::ComPtr<ID3D12CommandQueue> copyQueue;
-			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> copyAllocator;
-			Microsoft::WRL::ComPtr<ID3D12CommandList> copyCommandList;
-
-			struct DescriptorTableFrameAllocator
-			{
-				GraphicsDevice_DX12*	device = nullptr;
-				struct DescriptorHeap
-				{
-					D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-					Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_GPU;
-					D3D12_CPU_DESCRIPTOR_HANDLE start_cpu = {};
-					D3D12_GPU_DESCRIPTOR_HANDLE start_gpu = {};
-					uint32_t ringOffset = 0;
-				};
-				std::vector<DescriptorHeap> heaps_resource;
-				std::vector<DescriptorHeap> heaps_sampler;
-				uint32_t current_resource_heap = 0;
-				uint32_t current_sampler_heap = 0;
-				bool heaps_bound = false;
-				bool dirty = false;
-
-				const GPUBuffer* CBV[GPU_RESOURCE_HEAP_CBV_COUNT];
-				const GPUResource* SRV[GPU_RESOURCE_HEAP_SRV_COUNT];
-				int SRV_index[GPU_RESOURCE_HEAP_SRV_COUNT];
-				const GPUResource* UAV[GPU_RESOURCE_HEAP_UAV_COUNT];
-				int UAV_index[GPU_RESOURCE_HEAP_UAV_COUNT];
-				const Sampler* SAM[GPU_SAMPLER_HEAP_COUNT];
-
-				struct DescriptorHandles
-				{
-					D3D12_GPU_DESCRIPTOR_HANDLE sampler_handle = {};
-					D3D12_GPU_DESCRIPTOR_HANDLE resource_handle = {};
-				};
-
-				void init(GraphicsDevice_DX12* device);
-
-				void reset();
-				void request_heaps(uint32_t resources, uint32_t samplers, CommandList cmd);
-				void validate(bool graphics, CommandList cmd);
-				DescriptorHandles commit(const DescriptorTable* table, CommandList cmd);
-			};
-			DescriptorTableFrameAllocator descriptors[COMMANDLIST_COUNT];
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> commandLists[COMMANDLIST_COUNT];
 
 			struct ResourceFrameAllocator
 			{
@@ -138,11 +233,49 @@ namespace wiGraphics
 		};
 		FrameResources frames[BACKBUFFER_COUNT];
 		FrameResources& GetFrameResources() { return frames[GetFrameCount() % BACKBUFFER_COUNT]; }
-		inline ID3D12GraphicsCommandList6* GetDirectCommandList(CommandList cmd) { return static_cast<ID3D12GraphicsCommandList6*>(GetFrameResources().commandLists[cmd].Get()); }
+		inline ID3D12GraphicsCommandList6* GetDirectCommandList(CommandList cmd) { return GetFrameResources().commandLists[cmd].Get(); }
+
+		struct DescriptorBinder
+		{
+			GraphicsDevice_DX12* device = nullptr;
+			uint32_t ringOffset_res = 0;
+			uint32_t ringOffset_sam = 0;
+			bool dirty_res = false;
+			bool dirty_sam = false;
+
+			const GPUBuffer* CBV[GPU_RESOURCE_HEAP_CBV_COUNT];
+			const GPUResource* SRV[GPU_RESOURCE_HEAP_SRV_COUNT];
+			int SRV_index[GPU_RESOURCE_HEAP_SRV_COUNT];
+			const GPUResource* UAV[GPU_RESOURCE_HEAP_UAV_COUNT];
+			int UAV_index[GPU_RESOURCE_HEAP_UAV_COUNT];
+			const Sampler* SAM[GPU_SAMPLER_HEAP_COUNT];
+
+			uint32_t dirty_root_cbvs_gfx = 0; // bitmask
+			uint32_t dirty_root_cbvs_compute = 0; // bitmask
+
+			struct DescriptorHandles
+			{
+				D3D12_GPU_DESCRIPTOR_HANDLE sampler_handle = {};
+				D3D12_GPU_DESCRIPTOR_HANDLE resource_handle = {};
+			};
+
+			void init(GraphicsDevice_DX12* device);
+
+			void reset();
+			void request_heaps(uint32_t resources, uint32_t samplers, CommandList cmd);
+			void validate(bool graphics, CommandList cmd);
+			DescriptorHandles commit(const DescriptorTable* table, CommandList cmd);
+		};
+		DescriptorBinder descriptors[COMMANDLIST_COUNT];
 
 		Microsoft::WRL::ComPtr<IDXGISwapChain3> swapChain;
 
+		std::vector<D3D12_RESOURCE_BARRIER> frame_barriers[COMMANDLIST_COUNT];
+
 		PRIMITIVETOPOLOGY prev_pt[COMMANDLIST_COUNT] = {};
+
+		std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D12RootSignature>> rootsignature_cache;
+		std::mutex rootsignature_cache_mutex;
 
 		std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> pipelines_global;
 		std::vector<std::pair<size_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>>> pipelines_worker[COMMANDLIST_COUNT];
@@ -150,25 +283,26 @@ namespace wiGraphics
 		const PipelineState* active_pso[COMMANDLIST_COUNT] = {};
 		const Shader* active_cs[COMMANDLIST_COUNT] = {};
 		const RaytracingPipelineState* active_rt[COMMANDLIST_COUNT] = {};
-		const RootSignature* active_rootsig_graphics[COMMANDLIST_COUNT] = {};
-		const RootSignature* active_rootsig_compute[COMMANDLIST_COUNT] = {};
+		const ID3D12RootSignature* active_rootsig_graphics[COMMANDLIST_COUNT] = {};
+		const ID3D12RootSignature* active_rootsig_compute[COMMANDLIST_COUNT] = {};
 		const RenderPass* active_renderpass[COMMANDLIST_COUNT] = {};
-		D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS resolve_subresources[COMMANDLIST_COUNT][D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-		D3D12_SHADING_RATE prev_shadingrate[COMMANDLIST_COUNT] = {};
+		SHADING_RATE prev_shadingrate[COMMANDLIST_COUNT] = {};
 
 		bool dirty_pso[COMMANDLIST_COUNT] = {};
 		void pso_validate(CommandList cmd);
 
+		void query_flush(CommandList cmd);
+		void barrier_flush(CommandList cmd);
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
 		void preraytrace(CommandList cmd);
 
-		struct Query_Resolve
-		{
-			GPU_QUERY_TYPE type;
-			UINT index;
-		};
-		std::vector<Query_Resolve> query_resolves[COMMANDLIST_COUNT] = {};
+		constexpr uint64_t QueryResolveCreate(uint32_t block, uint32_t index) const { return (uint64_t(block) << 32) | uint64_t(index); }
+		constexpr uint32_t QueryResolveBlock(uint64_t resolve) const { return resolve >> 32; }
+		constexpr uint32_t QueryResolveIndex(uint64_t resolve) const { return resolve & 0xFFFFFFFF; }
+		std::vector<uint64_t> query_resolves_timestamp[COMMANDLIST_COUNT] = {};
+		std::vector<uint64_t> query_resolves_occlusion[COMMANDLIST_COUNT] = {};
+		std::vector<uint64_t> query_resolves_occlusionpred[COMMANDLIST_COUNT] = {};
 
 		std::atomic<CommandList> cmd_count{ 0 };
 
@@ -178,11 +312,7 @@ namespace wiGraphics
 
 		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) override;
 		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) override;
-		bool CreateInputLayout(const InputLayoutDesc *pInputElementDescs, uint32_t NumElements, const Shader* shader, InputLayout *pInputLayout) override;
 		bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) override;
-		bool CreateBlendState(const BlendStateDesc *pBlendStateDesc, BlendState *pBlendState) override;
-		bool CreateDepthStencilState(const DepthStencilStateDesc *pDepthStencilStateDesc, DepthStencilState *pDepthStencilState) override;
-		bool CreateRasterizerState(const RasterizerStateDesc *pRasterizerStateDesc, RasterizerState *pRasterizerState) override;
 		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) override;
 		bool CreateQuery(const GPUQueryDesc *pDesc, GPUQuery *pQuery) override;
 		bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) override;
@@ -204,6 +334,8 @@ namespace wiGraphics
 		void Map(const GPUResource* resource, Mapping* mapping) override;
 		void Unmap(const GPUResource* resource) override;
 		bool QueryRead(const GPUQuery* query, GPUQueryResult* result) override;
+
+		void SetCommonSampler(const StaticSampler* sam) override;
 
 		void SetName(GPUResource* pResource, const char* name) override;
 
@@ -239,7 +371,6 @@ namespace wiGraphics
 		void BindStencilRef(uint32_t value, CommandList cmd) override;
 		void BindBlendFactor(float r, float g, float b, float a, CommandList cmd) override;
 		void BindShadingRate(SHADING_RATE rate, CommandList cmd) override;
-		void BindShadingRateImage(const Texture* texture, CommandList cmd) override;
 		void BindPipelineState(const PipelineState* pso, CommandList cmd) override;
 		void BindComputeShader(const Shader* cs, CommandList cmd) override;
 		void Draw(uint32_t vertexCount, uint32_t startVertexLocation, CommandList cmd) override;
@@ -278,21 +409,172 @@ namespace wiGraphics
 			Microsoft::WRL::ComPtr<ID3D12Device> device;
 			uint64_t framecount = 0;
 			std::mutex destroylocker;
+
+			struct DescriptorAllocator
+			{
+				GraphicsDevice_DX12* device = nullptr;
+				std::mutex locker;
+				D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+				std::vector<Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>> heaps;
+				uint32_t descriptor_size = 0;
+				std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> freelist;
+
+				void init(GraphicsDevice_DX12* device, D3D12_DESCRIPTOR_HEAP_TYPE type)
+				{
+					this->device = device;
+					desc.Type = type;
+					desc.NumDescriptors = 1024;
+					descriptor_size = device->device->GetDescriptorHandleIncrementSize(type);
+				}
+				void block_allocate()
+				{
+					heaps.emplace_back();
+					HRESULT hr = device->device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heaps.back()));
+					assert(SUCCEEDED(hr));
+					D3D12_CPU_DESCRIPTOR_HANDLE heap_start = heaps.back()->GetCPUDescriptorHandleForHeapStart();
+					for (UINT i = 0; i < desc.NumDescriptors; ++i)
+					{
+						D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_start;
+						handle.ptr += i * descriptor_size;
+						freelist.push_back(handle);
+					}
+				}
+				D3D12_CPU_DESCRIPTOR_HANDLE allocate()
+				{
+					locker.lock();
+					if (freelist.empty())
+					{
+						block_allocate();
+					}
+					assert(!freelist.empty());
+					D3D12_CPU_DESCRIPTOR_HANDLE handle = freelist.back();
+					freelist.pop_back();
+					locker.unlock();
+					return handle;
+				}
+				void free(D3D12_CPU_DESCRIPTOR_HANDLE index)
+				{
+					locker.lock();
+					freelist.push_back(index);
+					locker.unlock();
+				}
+			};
+			DescriptorAllocator descriptors_res;
+			DescriptorAllocator descriptors_sam;
+			DescriptorAllocator descriptors_rtv;
+			DescriptorAllocator descriptors_dsv;
+
+			struct QueryAllocator
+			{
+				AllocationHandler* allocationhandler = nullptr;
+				std::mutex locker;
+				D3D12_QUERY_HEAP_DESC desc = {};
+
+				struct Block
+				{
+					Microsoft::WRL::ComPtr<ID3D12QueryHeap> pool;
+					Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+					D3D12MA::Allocation* allocation = nullptr;
+				};
+				std::vector<Block> blocks;
+
+				struct Query
+				{
+					uint32_t block = ~0;
+					uint32_t index = ~0;
+				};
+				std::vector<Query> freelist;
+
+				void init(AllocationHandler* allocationhandler, D3D12_QUERY_HEAP_TYPE type)
+				{
+					this->allocationhandler = allocationhandler;
+					desc.Type = type;
+					desc.Count = 1024;
+				}
+				void destroy()
+				{
+					for (auto& x : blocks)
+					{
+						x.allocation->Release();
+					}
+				}
+				void block_allocate()
+				{
+					uint32_t block_index = (uint32_t)blocks.size();
+					blocks.emplace_back();
+					auto& block = blocks.back();
+					HRESULT hr = allocationhandler->device->CreateQueryHeap(&desc, IID_PPV_ARGS(&block.pool));
+					assert(SUCCEEDED(hr));
+					for (UINT i = 0; i < desc.Count; ++i)
+					{
+						freelist.emplace_back();
+						freelist.back().block = block_index;
+						freelist.back().index = i;
+					}
+
+					D3D12MA::ALLOCATION_DESC allocationDesc = {};
+					allocationDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
+
+					D3D12_RESOURCE_DESC resdesc = {};
+					resdesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+					resdesc.Format = DXGI_FORMAT_UNKNOWN;
+					resdesc.Width = (UINT64)(desc.Count * sizeof(uint64_t));
+					resdesc.Height = 1;
+					resdesc.MipLevels = 1;
+					resdesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+					resdesc.DepthOrArraySize = 1;
+					resdesc.Alignment = 0;
+					resdesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+					resdesc.SampleDesc.Count = 1;
+					resdesc.SampleDesc.Quality = 0;
+
+					hr = allocationhandler->allocator->CreateResource(
+						&allocationDesc,
+						&resdesc,
+						D3D12_RESOURCE_STATE_COPY_DEST,
+						nullptr,
+						&block.allocation,
+						IID_PPV_ARGS(&block.readback)
+					);
+					assert(SUCCEEDED(hr));
+				}
+				Query allocate()
+				{
+					locker.lock();
+					if (freelist.empty())
+					{
+						block_allocate();
+					}
+					assert(!freelist.empty());
+					auto query = freelist.back();
+					freelist.pop_back();
+					locker.unlock();
+					return query;
+				}
+				void free(Query query)
+				{
+					locker.lock();
+					freelist.push_back(query);
+					locker.unlock();
+				}
+			};
+			QueryAllocator queries_timestamp;
+			QueryAllocator queries_occlusion;
+
 			std::deque<std::pair<D3D12MA::Allocation*, uint64_t>> destroyer_allocations;
 			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12Resource>, uint64_t>> destroyer_resources;
-			std::deque<std::pair<uint32_t, uint64_t>> destroyer_queries_timestamp;
-			std::deque<std::pair<uint32_t, uint64_t>> destroyer_queries_occlusion;
+			std::deque<std::pair<QueryAllocator::Query, uint64_t>> destroyer_queries_timestamp;
+			std::deque<std::pair<QueryAllocator::Query, uint64_t>> destroyer_queries_occlusion;
 			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12PipelineState>, uint64_t>> destroyer_pipelines;
 			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12RootSignature>, uint64_t>> destroyer_rootSignatures;
 			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12StateObject>, uint64_t>> destroyer_stateobjects;
 			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>, uint64_t>> destroyer_descriptorHeaps;
 
-			wiContainers::ThreadSafeRingBuffer<uint32_t, timestamp_query_count> free_timestampqueries;
-			wiContainers::ThreadSafeRingBuffer<uint32_t, occlusion_query_count> free_occlusionqueries;
-
 			~AllocationHandler()
 			{
 				Update(~0, 0); // destroy all remaining
+				queries_occlusion.destroy();
+				queries_timestamp.destroy();
 				if (allocator) allocator->Release();
 			}
 
@@ -332,7 +614,7 @@ namespace wiGraphics
 					{
 						auto item = destroyer_queries_occlusion.front();
 						destroyer_queries_occlusion.pop_front();
-						free_occlusionqueries.push_back(item.first);
+						queries_occlusion.free(item.first);
 					}
 					else
 					{
@@ -345,7 +627,7 @@ namespace wiGraphics
 					{
 						auto item = destroyer_queries_timestamp.front();
 						destroyer_queries_timestamp.pop_front();
-						free_timestampqueries.push_back(item.first);
+						queries_timestamp.free(item.first);
 					}
 					else
 					{

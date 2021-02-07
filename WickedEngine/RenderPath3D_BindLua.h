@@ -6,6 +6,8 @@
 
 class RenderPath3D_BindLua : public RenderPath2D_BindLua
 {
+private:
+	RenderPath3D renderpath;
 public:
 	static const char className[];
 	static Luna<RenderPath3D_BindLua>::FunctionType methods[];
@@ -18,8 +20,7 @@ public:
 	}
 	RenderPath3D_BindLua(lua_State* L)
 	{
-		component = new RenderPath3D;
-		owning = true;
+		this->component = &renderpath;
 	}
 
 	int SetAO(lua_State* L);
@@ -35,7 +36,6 @@ public:
 	int SetLightShaftsEnabled(lua_State* L);
 	int SetLensFlareEnabled(lua_State* L);
 	int SetMotionBlurEnabled(lua_State* L);
-	int SetSSSEnabled(lua_State* L);
 	int SetDitherEnabled(lua_State* L);
 	int SetDepthOfFieldEnabled(lua_State* L);
 	int SetEyeAdaptionEnabled(lua_State* L);

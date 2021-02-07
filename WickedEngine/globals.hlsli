@@ -5,11 +5,9 @@
 
 TEXTURE2D(texture_depth, float, TEXSLOT_DEPTH);
 TEXTURE2D(texture_lineardepth, float, TEXSLOT_LINEARDEPTH);
-TEXTURE2D(texture_gbuffer0, float4, TEXSLOT_GBUFFER0);
+TEXTURE2D(texture_gbuffer0, float3, TEXSLOT_GBUFFER0);
 TEXTURE2D(texture_gbuffer1, float4, TEXSLOT_GBUFFER1);
-#ifdef RAYTRACING_INLINE
-RAYTRACINGACCELERATIONSTRUCTURE(scene_acceleration_structure, TEXSLOT_ACCELERATION_STRUCTURE);
-#endif // RAYTRACING_INLINE
+TEXTURE2D(texture_gbuffer2, float2, TEXSLOT_GBUFFER2);
 TEXTURECUBE(texture_globalenvmap, float4, TEXSLOT_GLOBALENVMAP);
 TEXTURE2D(texture_globallightmap, float4, TEXSLOT_GLOBALLIGHTMAP);
 TEXTURECUBEARRAY(texture_envmaparray, float4, TEXSLOT_ENVMAPARRAY);
@@ -17,11 +15,13 @@ TEXTURE2D(texture_decalatlas, float4, TEXSLOT_DECALATLAS);
 TEXTURE2D(texture_skyviewlut, float4, TEXSLOT_SKYVIEWLUT);
 TEXTURE2D(texture_transmittancelut, float4, TEXSLOT_TRANSMITTANCELUT);
 TEXTURE2D(texture_multiscatteringlut, float4, TEXSLOT_MULTISCATTERINGLUT);
+TEXTURE2D(texture_skyluminancelut, float4, TEXSLOT_SKYLUMINANCELUT);
 TEXTURE2DARRAY(texture_shadowarray_2d, float, TEXSLOT_SHADOWARRAY_2D);
 TEXTURECUBEARRAY(texture_shadowarray_cube, float, TEXSLOT_SHADOWARRAY_CUBE);
-TEXTURE2DARRAY(texture_shadowarray_transparent, float4, TEXSLOT_SHADOWARRAY_TRANSPARENT);
+TEXTURE2DARRAY(texture_shadowarray_transparent_2d, float4, TEXSLOT_SHADOWARRAY_TRANSPARENT_2D);
+TEXTURECUBEARRAY(texture_shadowarray_transparent_cube, float4, TEXSLOT_SHADOWARRAY_TRANSPARENT_CUBE);
 TEXTURE3D(texture_voxelradiance, float4, TEXSLOT_VOXELRADIANCE);
-STRUCTUREDBUFFER(EntityTiles, uint, SBSLOT_ENTITYTILES);
+TEXTURE2D(texture_sheenlut, float, TEXSLOT_SHEENLUT);
 STRUCTUREDBUFFER(EntityArray, ShaderEntity, SBSLOT_ENTITYARRAY);
 STRUCTUREDBUFFER(MatrixArray, float4x4, SBSLOT_MATRIXARRAY);
 
@@ -37,8 +37,10 @@ SAMPLERSTATE(			sampler_aniso_mirror,	SSLOT_ANISO_MIRROR	);
 SAMPLERCOMPARISONSTATE(	sampler_cmp_depth,		SSLOT_CMP_DEPTH		);
 SAMPLERSTATE(			sampler_objectshader,	SSLOT_OBJECTSHADER	);
 
-static const float		PI = 3.14159265358979323846;
-static const float	 SQRT2 = 1.41421356237309504880;
+#define PI 3.14159265358979323846
+#define SQRT2 1.41421356237309504880
+#define FLT_MAX 3.402823466e+38
+#define FLT_EPSILON 1.192092896e-07
 
 #define sqr(a)		((a)*(a))
 
@@ -63,14 +65,7 @@ inline float GetScreenHeight() { return g_xFrame_ScreenWidthHeight.y; }
 inline float2 GetInternalResolution() { return g_xFrame_InternalResolution; }
 inline float GetTime() { return g_xFrame_Time; }
 inline uint2 GetTemporalAASampleRotation() { return uint2((g_xFrame_TemporalAASampleRotation >> 0) & 0x000000FF, (g_xFrame_TemporalAASampleRotation >> 8) & 0x000000FF); }
-inline bool IsStaticSky() { return g_xFrame_StaticSkyGamma > 0.0f; }
-inline void ConvertToSpecularGlossiness(inout float4 surface_occlusion_roughness_metallic_reflectance)
-{
-	surface_occlusion_roughness_metallic_reflectance.r = 1;
-	surface_occlusion_roughness_metallic_reflectance.g = 1 - surface_occlusion_roughness_metallic_reflectance.a;
-	surface_occlusion_roughness_metallic_reflectance.b = max(surface_occlusion_roughness_metallic_reflectance.r, max(surface_occlusion_roughness_metallic_reflectance.g, surface_occlusion_roughness_metallic_reflectance.b));
-	surface_occlusion_roughness_metallic_reflectance.a = 0.02f;
-}
+inline bool IsStaticSky() { return g_xFrame_StaticSkyGamma > 0.0; }
 
 inline float GetFogAmount(float dist)
 {
@@ -92,8 +87,8 @@ float3 inverseTonemap(float3 x)
 // returns a random float in range (0, 1). seed must be >0!
 inline float rand(inout float seed, in float2 uv)
 {
-	float result = frac(sin(seed * dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f);
-	seed += 1.0f;
+	float result = frac(sin(seed * dot(uv, float2(12.9898, 78.233))) * 43758.5453);
+	seed += 1;
 	return result;
 }
 
@@ -116,10 +111,10 @@ inline float2 hammersley2d(uint idx, uint num) {
 // http://advances.realtimerendering.com/s2014/index.html
 float InterleavedGradientNoise(float2 uv, uint frameCount)
 {
-	const float2 magicFrameScale = float2(47, 17) * 0.695f;
+	const float2 magicFrameScale = float2(47, 17) * 0.695;
 	uv += frameCount * magicFrameScale;
 
-	const float3 magic = float3(0.06711056f, 0.00583715f, 52.9829189f);
+	const float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
 	return frac(magic.z * frac(dot(uv, magic.xy)));
 }
 
@@ -168,17 +163,17 @@ inline float3 CreateCube(in uint vertexID)
 // Creates a full screen triangle from 3 vertices:
 inline void FullScreenTriangle(in uint vertexID, out float4 pos)
 {
-	pos.x = (float)(vertexID / 2) * 4.0f - 1.0f;
-	pos.y = (float)(vertexID % 2) * 4.0f - 1.0f;
-	pos.z = 0.0f;
-	pos.w = 1.0f;
+	pos.x = (float)(vertexID / 2) * 4.0 - 1.0;
+	pos.y = (float)(vertexID % 2) * 4.0 - 1.0;
+	pos.z = 0;
+	pos.w = 1;
 }
 inline void FullScreenTriangle(in uint vertexID, out float4 pos, out float2 uv)
 {
 	FullScreenTriangle(vertexID, pos);
 
-	uv.x = (float)(vertexID / 2) * 2.0f;
-	uv.y = 1.0f - (float)(vertexID % 2) * 2.0f;
+	uv.x = (float)(vertexID / 2) * 2;
+	uv.y = 1 - (float)(vertexID % 2) * 2;
 }
 
 // Computes a tangent-basis matrix for a surface using screen-space derivatives
@@ -220,8 +215,8 @@ inline float3x3 compute_tangent_frame(float3 N, float3 P, float2 UV)
 // Computes linear depth from post-projection depth
 inline float getLinearDepth(in float z, in float near, in float far)
 {
-	float z_n = 2.0 * z - 1.0;
-	float lin = 2.0 * far * near / (near + far - z_n * (near - far));
+	float z_n = 2 * z - 1;
+	float lin = 2 * far * near / (near + far - z_n * (near - far));
 	return lin;
 }
 inline float getLinearDepth(in float z)
@@ -232,7 +227,7 @@ inline float getLinearDepth(in float z)
 inline float3x3 GetTangentSpace(in float3 normal)
 {
 	// Choose a helper vector for the cross product
-	float3 helper = abs(normal.x) > 0.99f ? float3(0, 0, 1) : float3(1, 0, 0);
+	float3 helper = abs(normal.x) > 0.99 ? float3(0, 0, 1) : float3(1, 0, 0);
 
 	// Generate vectors
 	float3 tangent = normalize(cross(normal, helper));
@@ -243,17 +238,17 @@ inline float3x3 GetTangentSpace(in float3 normal)
 // Point on hemisphere with uniform distribution
 //	u, v : in range [0, 1]
 float3 hemispherepoint_uniform(float u, float v) {
-	float phi = v * 2.0 * PI;
-	float cosTheta = 1.0 - u;
-	float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+	float phi = v * 2 * PI;
+	float cosTheta = 1 - u;
+	float sinTheta = sqrt(1 - cosTheta * cosTheta);
 	return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
 }
 // Point on hemisphere with cosine-weighted distribution
 //	u, v : in range [0, 1]
 float3 hemispherepoint_cos(float u, float v) {
-	float phi = v * 2.0 * PI;
-	float cosTheta = sqrt(1.0 - u);
-	float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+	float phi = v * 2 * PI;
+	float cosTheta = sqrt(1 - u);
+	float sinTheta = sqrt(1 - cosTheta * cosTheta);
 	return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
 }
 // Get random hemisphere sample in world-space along the normal (uniform distribution)
@@ -273,9 +268,9 @@ inline float3 SampleHemisphere_cos(in float3 normal, inout float seed, in float2
 //	InvVP	: Inverse of the View-Projection matrix that was used to generate the depth value
 inline float3 reconstructPosition(in float2 uv, in float z, in float4x4 InvVP)
 {
-	float x = uv.x * 2.0f - 1.0f;
-	float y = (1.0 - uv.y) * 2.0f - 1.0f;
-	float4 position_s = float4(x, y, z, 1.0f);
+	float x = uv.x * 2 - 1;
+	float y = (1 - uv.y) * 2 - 1;
+	float4 position_s = float4(x, y, z, 1);
 	float4 position_v = mul(InvVP, position_s);
 	return position_v.xyz / position_v.w;
 }
@@ -289,12 +284,12 @@ inline float3 reconstructPosition(in float2 uv, in float z)
 //  [Commented out optimized parts, because we don't need to normalize range when storing to float format]
 inline float2 encodeNormal(in float3 N)
 {
-	return float2(atan2(N.y, N.x) /*/ PI*/, N.z)/* * 0.5f + 0.5f*/;
+	return float2(atan2(N.y, N.x) /*/ PI*/, N.z)/* * 0.5 + 0.5*/;
 }
 inline float3 decodeNormal(in float2 spherical)
 {
 	float2 sinCosTheta, sinCosPhi;
-	//spherical = spherical * 2.0f - 1.0f;
+	//spherical = spherical * 2 - 1;
 	sincos(spherical.x /** PI*/, sinCosTheta.x, sinCosTheta.y);
 	sinCosPhi = float2(sqrt(1.0 - spherical.y * spherical.y), spherical.y);
 	return float3(sinCosTheta.y * sinCosPhi.x, sinCosTheta.x * sinCosPhi.x, sinCosPhi.y);
@@ -367,7 +362,7 @@ float4 SampleTextureCatmullRom(in Texture2D<float4> tex, in SamplerState linearS
 	// down the sample location to get the exact center of our "starting" texel. The starting texel will be at
 	// location [1, 1] in the grid, where [0, 0] is the top left corner.
 	float2 samplePos = uv * texSize;
-	float2 texPos1 = floor(samplePos - 0.5f) + 0.5f;
+	float2 texPos1 = floor(samplePos - 0.5) + 0.5;
 
 	// Compute the fractional offset from our starting texel to our original sample location, which we'll
 	// feed into the Catmull-Rom spline function to get our filter weights.
@@ -376,10 +371,10 @@ float4 SampleTextureCatmullRom(in Texture2D<float4> tex, in SamplerState linearS
 	// Compute the Catmull-Rom weights using the fractional offset that we calculated earlier.
 	// These equations are pre-expanded based on our knowledge of where the texels will be located,
 	// which lets us avoid having to evaluate a piece-wise function.
-	float2 w0 = f * (-0.5f + f * (1.0f - 0.5f * f));
-	float2 w1 = 1.0f + f * f * (-2.5f + 1.5f * f);
-	float2 w2 = f * (0.5f + f * (2.0f - 1.5f * f));
-	float2 w3 = f * f * (-0.5f + 0.5f * f);
+	float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+	float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+	float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+	float2 w3 = f * f * (-0.5 + 0.5 * f);
 
 	// Work out weighting factors and sampling offsets that will let us use bilinear filtering to
 	// simultaneously evaluate the middle 2 samples from the 4x4 grid.
@@ -395,18 +390,18 @@ float4 SampleTextureCatmullRom(in Texture2D<float4> tex, in SamplerState linearS
 	texPos3 /= texSize;
 	texPos12 /= texSize;
 
-	float4 result = 0.0f;
-	result += tex.SampleLevel(linearSampler, float2(texPos0.x, texPos0.y), 0.0f) * w0.x * w0.y;
-	result += tex.SampleLevel(linearSampler, float2(texPos12.x, texPos0.y), 0.0f) * w12.x * w0.y;
-	result += tex.SampleLevel(linearSampler, float2(texPos3.x, texPos0.y), 0.0f) * w3.x * w0.y;
+	float4 result = 0.0;
+	result += tex.SampleLevel(linearSampler, float2(texPos0.x, texPos0.y), 0) * w0.x * w0.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos12.x, texPos0.y), 0) * w12.x * w0.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos3.x, texPos0.y), 0) * w3.x * w0.y;
 
-	result += tex.SampleLevel(linearSampler, float2(texPos0.x, texPos12.y), 0.0f) * w0.x * w12.y;
-	result += tex.SampleLevel(linearSampler, float2(texPos12.x, texPos12.y), 0.0f) * w12.x * w12.y;
-	result += tex.SampleLevel(linearSampler, float2(texPos3.x, texPos12.y), 0.0f) * w3.x * w12.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos0.x, texPos12.y), 0) * w0.x * w12.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos12.x, texPos12.y), 0) * w12.x * w12.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos3.x, texPos12.y), 0) * w3.x * w12.y;
 
-	result += tex.SampleLevel(linearSampler, float2(texPos0.x, texPos3.y), 0.0f) * w0.x * w3.y;
-	result += tex.SampleLevel(linearSampler, float2(texPos12.x, texPos3.y), 0.0f) * w12.x * w3.y;
-	result += tex.SampleLevel(linearSampler, float2(texPos3.x, texPos3.y), 0.0f) * w3.x * w3.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos0.x, texPos3.y), 0) * w0.x * w3.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos12.x, texPos3.y), 0) * w12.x * w3.y;
+	result += tex.SampleLevel(linearSampler, float2(texPos3.x, texPos3.y), 0) * w3.x * w3.y;
 
 	return result;
 }
@@ -414,36 +409,55 @@ float4 SampleTextureCatmullRom(in Texture2D<float4> tex, in SamplerState linearS
 inline uint pack_unitvector(in float3 value)
 {
 	uint retVal = 0;
-	retVal |= (uint)((value.x * 0.5f + 0.5f) * 255.0f) << 0;
-	retVal |= (uint)((value.y * 0.5f + 0.5f) * 255.0f) << 8;
-	retVal |= (uint)((value.z * 0.5f + 0.5f) * 255.0f) << 16;
+	retVal |= (uint)((value.x * 0.5 + 0.5) * 255.0) << 0;
+	retVal |= (uint)((value.y * 0.5 + 0.5) * 255.0) << 8;
+	retVal |= (uint)((value.z * 0.5 + 0.5) * 255.0) << 16;
 	return retVal;
 }
 inline float3 unpack_unitvector(in uint value)
 {
 	float3 retVal;
-	retVal.x = (float)((value >> 0) & 0x000000FF) / 255.0f * 2.0f - 1.0f;
-	retVal.y = (float)((value >> 8) & 0x000000FF) / 255.0f * 2.0f - 1.0f;
-	retVal.z = (float)((value >> 16) & 0x000000FF) / 255.0f * 2.0f - 1.0f;
+	retVal.x = (float)((value >> 0) & 0xFF) / 255.0 * 2 - 1;
+	retVal.y = (float)((value >> 8) & 0xFF) / 255.0 * 2 - 1;
+	retVal.z = (float)((value >> 16) & 0xFF) / 255.0 * 2 - 1;
+	return retVal;
+}
+
+inline uint pack_utangent(in float4 value)
+{
+	uint retVal = 0;
+	retVal |= (uint)((value.x * 0.5 + 0.5) * 255.0) << 0;
+	retVal |= (uint)((value.y * 0.5 + 0.5) * 255.0) << 8;
+	retVal |= (uint)((value.z * 0.5 + 0.5) * 255.0) << 16;
+	retVal |= (uint)((value.w * 0.5 + 0.5) * 255.0) << 24;
+	return retVal;
+}
+inline float4 unpack_utangent(in uint value)
+{
+	float4 retVal;
+	retVal.x = (float)((value >> 0) & 0xFF) / 255.0;
+	retVal.y = (float)((value >> 8) & 0xFF) / 255.0;
+	retVal.z = (float)((value >> 16) & 0xFF) / 255.0;
+	retVal.w = (float)((value >> 24) & 0xFF) / 255.0;
 	return retVal;
 }
 
 inline uint pack_rgba(in float4 value)
 {
 	uint retVal = 0;
-	retVal |= (uint)(value.x * 255.0f) << 0;
-	retVal |= (uint)(value.y * 255.0f) << 8;
-	retVal |= (uint)(value.z * 255.0f) << 16;
-	retVal |= (uint)(value.w * 255.0f) << 24;
+	retVal |= (uint)(value.x * 255.0) << 0;
+	retVal |= (uint)(value.y * 255.0) << 8;
+	retVal |= (uint)(value.z * 255.0) << 16;
+	retVal |= (uint)(value.w * 255.0) << 24;
 	return retVal;
 }
 inline float4 unpack_rgba(in uint value)
 {
 	float4 retVal;
-	retVal.x = (float)((value >> 0) & 0x000000FF) / 255.0f;
-	retVal.y = (float)((value >> 8) & 0x000000FF) / 255.0f;
-	retVal.z = (float)((value >> 16) & 0x000000FF) / 255.0f;
-	retVal.w = (float)((value >> 24) & 0x000000FF) / 255.0f;
+	retVal.x = (float)((value >> 0) & 0xFF) / 255.0;
+	retVal.y = (float)((value >> 8) & 0xFF) / 255.0;
+	retVal.z = (float)((value >> 16) & 0xFF) / 255.0;
+	retVal.w = (float)((value >> 24) & 0xFF) / 255.0;
 	return retVal;
 }
 
@@ -508,9 +522,9 @@ inline uint expandBits(uint v)
 // given 3D point located within the unit cube [0,1].
 inline uint morton3D(in float3 pos)
 {
-	pos.x = min(max(pos.x * 1024.0f, 0.0f), 1023.0f);
-	pos.y = min(max(pos.y * 1024.0f, 0.0f), 1023.0f);
-	pos.z = min(max(pos.z * 1024.0f, 0.0f), 1023.0f);
+	pos.x = min(max(pos.x * 1024, 0), 1023);
+	pos.y = min(max(pos.y * 1024, 0), 1023);
+	pos.z = min(max(pos.z * 1024, 0), 1023);
 	uint xx = expandBits((uint)pos.x);
 	uint yy = expandBits((uint)pos.y);
 	uint zz = expandBits((uint)pos.z);
@@ -617,8 +631,8 @@ float Trace_triangle(float3 o, float3 d, float3 A, float3 B, float3 C)
 	float d0 = dot(N1, N2);
 	float d1 = dot(N2, N3);
 
-	float threshold = 1.0f - 0.001f;
-	return (d0 > threshold && d1 > threshold) ? 1.0f : 0.0f;
+	float threshold = 1.0 - 0.001;
+	return (d0 > threshold && d1 > threshold) ? 1.0 : 0.0;
 }
 // o		: ray origin
 // d		: ray direction
@@ -654,5 +668,73 @@ float3 ClosestPointOnSegment(float3 a, float3 b, float3 c)
 	float t = dot(c - a, ab) / dot(ab, ab);
 	return a + saturate(t) * ab;
 }
+
+static const float4 halton64[] = {
+	float4(0.5000000000f, 0.3333333333f, 0.2000000000f, 0.1428571429f),
+	float4(0.2500000000f, 0.6666666667f, 0.4000000000f, 0.2857142857f),
+	float4(0.7500000000f, 0.1111111111f, 0.6000000000f, 0.4285714286f),
+	float4(0.1250000000f, 0.4444444444f, 0.8000000000f, 0.5714285714f),
+	float4(0.6250000000f, 0.7777777778f, 0.0400000000f, 0.7142857143f),
+	float4(0.3750000000f, 0.2222222222f, 0.2400000000f, 0.8571428571f),
+	float4(0.8750000000f, 0.5555555556f, 0.4400000000f, 0.0204081633f),
+	float4(0.0625000000f, 0.8888888889f, 0.6400000000f, 0.1632653061f),
+	float4(0.5625000000f, 0.0370370370f, 0.8400000000f, 0.3061224490f),
+	float4(0.3125000000f, 0.3703703704f, 0.0800000000f, 0.4489795918f),
+	float4(0.8125000000f, 0.7037037037f, 0.2800000000f, 0.5918367347f),
+	float4(0.1875000000f, 0.1481481481f, 0.4800000000f, 0.7346938776f),
+	float4(0.6875000000f, 0.4814814815f, 0.6800000000f, 0.8775510204f),
+	float4(0.4375000000f, 0.8148148148f, 0.8800000000f, 0.0408163265f),
+	float4(0.9375000000f, 0.2592592593f, 0.1200000000f, 0.1836734694f),
+	float4(0.0312500000f, 0.5925925926f, 0.3200000000f, 0.3265306122f),
+	float4(0.5312500000f, 0.9259259259f, 0.5200000000f, 0.4693877551f),
+	float4(0.2812500000f, 0.0740740741f, 0.7200000000f, 0.6122448980f),
+	float4(0.7812500000f, 0.4074074074f, 0.9200000000f, 0.7551020408f),
+	float4(0.1562500000f, 0.7407407407f, 0.1600000000f, 0.8979591837f),
+	float4(0.6562500000f, 0.1851851852f, 0.3600000000f, 0.0612244898f),
+	float4(0.4062500000f, 0.5185185185f, 0.5600000000f, 0.2040816327f),
+	float4(0.9062500000f, 0.8518518519f, 0.7600000000f, 0.3469387755f),
+	float4(0.0937500000f, 0.2962962963f, 0.9600000000f, 0.4897959184f),
+	float4(0.5937500000f, 0.6296296296f, 0.0080000000f, 0.6326530612f),
+	float4(0.3437500000f, 0.9629629630f, 0.2080000000f, 0.7755102041f),
+	float4(0.8437500000f, 0.0123456790f, 0.4080000000f, 0.9183673469f),
+	float4(0.2187500000f, 0.3456790123f, 0.6080000000f, 0.0816326531f),
+	float4(0.7187500000f, 0.6790123457f, 0.8080000000f, 0.2244897959f),
+	float4(0.4687500000f, 0.1234567901f, 0.0480000000f, 0.3673469388f),
+	float4(0.9687500000f, 0.4567901235f, 0.2480000000f, 0.5102040816f),
+	float4(0.0156250000f, 0.7901234568f, 0.4480000000f, 0.6530612245f),
+	float4(0.5156250000f, 0.2345679012f, 0.6480000000f, 0.7959183673f),
+	float4(0.2656250000f, 0.5679012346f, 0.8480000000f, 0.9387755102f),
+	float4(0.7656250000f, 0.9012345679f, 0.0880000000f, 0.1020408163f),
+	float4(0.1406250000f, 0.0493827160f, 0.2880000000f, 0.2448979592f),
+	float4(0.6406250000f, 0.3827160494f, 0.4880000000f, 0.3877551020f),
+	float4(0.3906250000f, 0.7160493827f, 0.6880000000f, 0.5306122449f),
+	float4(0.8906250000f, 0.1604938272f, 0.8880000000f, 0.6734693878f),
+	float4(0.0781250000f, 0.4938271605f, 0.1280000000f, 0.8163265306f),
+	float4(0.5781250000f, 0.8271604938f, 0.3280000000f, 0.9591836735f),
+	float4(0.3281250000f, 0.2716049383f, 0.5280000000f, 0.1224489796f),
+	float4(0.8281250000f, 0.6049382716f, 0.7280000000f, 0.2653061224f),
+	float4(0.2031250000f, 0.9382716049f, 0.9280000000f, 0.4081632653f),
+	float4(0.7031250000f, 0.0864197531f, 0.1680000000f, 0.5510204082f),
+	float4(0.4531250000f, 0.4197530864f, 0.3680000000f, 0.6938775510f),
+	float4(0.9531250000f, 0.7530864198f, 0.5680000000f, 0.8367346939f),
+	float4(0.0468750000f, 0.1975308642f, 0.7680000000f, 0.9795918367f),
+	float4(0.5468750000f, 0.5308641975f, 0.9680000000f, 0.0029154519f),
+	float4(0.2968750000f, 0.8641975309f, 0.0160000000f, 0.1457725948f),
+	float4(0.7968750000f, 0.3086419753f, 0.2160000000f, 0.2886297376f),
+	float4(0.1718750000f, 0.6419753086f, 0.4160000000f, 0.4314868805f),
+	float4(0.6718750000f, 0.9753086420f, 0.6160000000f, 0.5743440233f),
+	float4(0.4218750000f, 0.0246913580f, 0.8160000000f, 0.7172011662f),
+	float4(0.9218750000f, 0.3580246914f, 0.0560000000f, 0.8600583090f),
+	float4(0.1093750000f, 0.6913580247f, 0.2560000000f, 0.0233236152f),
+	float4(0.6093750000f, 0.1358024691f, 0.4560000000f, 0.1661807580f),
+	float4(0.3593750000f, 0.4691358025f, 0.6560000000f, 0.3090379009f),
+	float4(0.8593750000f, 0.8024691358f, 0.8560000000f, 0.4518950437f),
+	float4(0.2343750000f, 0.2469135802f, 0.0960000000f, 0.5947521866f),
+	float4(0.7343750000f, 0.5802469136f, 0.2960000000f, 0.7376093294f),
+	float4(0.4843750000f, 0.9135802469f, 0.4960000000f, 0.8804664723f),
+	float4(0.9843750000f, 0.0617283951f, 0.6960000000f, 0.0437317784f),
+	float4(0.0078125000f, 0.3950617284f, 0.8960000000f, 0.1865889213f),
+	float4(0.5078125000f, 0.7283950617f, 0.1360000000f, 0.3294460641f),
+};
 
 #endif // WI_SHADER_GLOBALS_HF

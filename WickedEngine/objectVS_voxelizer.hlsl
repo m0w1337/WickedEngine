@@ -1,3 +1,4 @@
+#define OBJECTSHADER_LAYOUT_COMMON
 #include "objectHF.hlsli"
 
 struct VSOut
@@ -6,19 +7,21 @@ struct VSOut
 	float4 color : COLOR;
 	float4 uvsets : UVSETS;
 	float3 nor : NORMAL;
+	uint emissiveColor : EMISSIVECOLOR;
 };
 
-VSOut main(Input_Object_ALL input)
+VSOut main(VertexInput input)
 {
+	VertexSurface surface;
+	surface.create(g_xMaterial, input);
+
 	VSOut Out;
-
-	float4x4 WORLD = MakeWorldMatrixFromInstance(input.inst);
-	VertexSurface surface = MakeVertexSurfaceFromInput(input);
-
-	Out.pos = mul(WORLD, surface.position);
+	Out.pos = surface.position;
 	Out.color = surface.color;
 	Out.uvsets = surface.uvsets;
-	Out.nor = normalize(mul((float3x3)WORLD, surface.normal));
+	Out.nor = surface.normal;
+	Out.emissiveColor = surface.emissiveColor;
 
 	return Out;
 }
+

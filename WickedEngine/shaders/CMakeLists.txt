@@ -128,26 +128,25 @@ set(SHADERS_CS
         "blur_bilateral_float3CS.hlsl"
         "blur_bilateral_float4CS.hlsl"
         "blur_bilateral_unorm1CS.hlsl"
-		"bloomcombineCS.hlsl"
-		"voxelSceneCopyClearCS_TemporalSmoothing.hlsl"
-		"normalsfromdepthCS.hlsl"
-		"volumetricCloud_shapenoiseCS.hlsl"
-		"volumetricCloud_detailnoiseCS.hlsl"
-		"volumetricCloud_curlnoiseCS.hlsl"
-		"volumetricCloud_weathermapCS.hlsl"
-		"volumetricCloud_renderCS.hlsl"
-		"volumetricCloud_reprojectCS.hlsl"
-		"volumetricCloud_finalCS.hlsl"
-		"shadingRateClassificationCS.hlsl"
-		"shadingRateClassificationCS_DEBUG.hlsl"
-        "denoiseCS.hlsl"
+        "bloomcombineCS.hlsl"
+        "voxelSceneCopyClearCS_TemporalSmoothing.hlsl"
+        "normalsfromdepthCS.hlsl"
+        "volumetricCloud_shapenoiseCS.hlsl"
+        "volumetricCloud_detailnoiseCS.hlsl"
+        "volumetricCloud_curlnoiseCS.hlsl"
+        "volumetricCloud_weathermapCS.hlsl"
+        "volumetricCloud_renderCS.hlsl"
+        "volumetricCloud_reprojectCS.hlsl"
+        "volumetricCloud_finalCS.hlsl"
+        "shadingRateClassificationCS.hlsl"
+        "shadingRateClassificationCS_DEBUG.hlsl"
         "skyAtmosphere_transmittanceLutCS.hlsl"
         "skyAtmosphere_skyViewLutCS.hlsl"
         "skyAtmosphere_multiScatteredLuminanceLutCS.hlsl"
-)
-
-set(SHADERS_DS
-        "objectDS.hlsl"
+		"skyAtmosphere_skyLuminanceLutCS.hlsl"
+        "rtao_denoise_blurCS.hlsl"
+        "rtao_denoise_temporalCS.hlsl"
+        "rtshadow_denoise_temporalCS.hlsl"
 )
 
 set(SHADERS_PS
@@ -161,7 +160,6 @@ set(SHADERS_PS
         "imagePS.hlsl"
         "emittedparticlePS_soft_lighting.hlsl"
         "oceanSurfacePS.hlsl"
-        "deferredPS.hlsl"
         "hairparticlePS.hlsl"
         "impostorPS.hlsl"
         "volumetricLight_SpotPS.hlsl"
@@ -171,10 +169,9 @@ set(SHADERS_PS
         "vertexcolorPS.hlsl"
         "upsample_bilateralPS.hlsl"
         "sunPS.hlsl"
-        "sssPS.hlsl"
-        "sssPS_snow.hlsl"
         "skyPS_dynamic.hlsl"
         "skyPS_static.hlsl"
+        "skyPS_velocity.hlsl"
         "shadowPS_transparent.hlsl"
         "shadowPS_water.hlsl"
         "shadowPS_alphatest.hlsl"
@@ -191,16 +188,21 @@ set(SHADERS_PS
         "objectPS_planarreflection.hlsl"
         "objectPS_pom.hlsl"
         "objectPS_terrain.hlsl"
-        "objectPS_textureonly.hlsl"
         "objectPS.hlsl"
         "objectPS_hologram.hlsl"
         "objectPS_paintradius.hlsl"
         "objectPS_simplest.hlsl"
-        "objectPS_blackout.hlsl"
         "objectPS_debug.hlsl"
-        "objectPS_alphatestonly.hlsl"
+        "objectPS_prepass.hlsl"
+        "objectPS_prepass_alphatest.hlsl"
         "objectPS_anisotropic.hlsl"
         "objectPS_transparent_anisotropic.hlsl"
+        "objectPS_cloth.hlsl"
+        "objectPS_transparent_cloth.hlsl"
+        "objectPS_clearcoat.hlsl"
+        "objectPS_transparent_clearcoat.hlsl"
+        "objectPS_cloth_clearcoat.hlsl"
+        "objectPS_transparent_cloth_clearcoat.hlsl"
         "objectPS_cartoon.hlsl"
         "objectPS_transparent_cartoon.hlsl"
         "objectPS_unlit.hlsl"
@@ -209,9 +211,9 @@ set(SHADERS_PS
         "lensFlarePS.hlsl"
         "impostorPS_wire.hlsl"
         "impostorPS_simple.hlsl"
-        "impostorPS_alphatestonly.hlsl"
+        "impostorPS_prepass.hlsl"
         "hairparticlePS_simplest.hlsl"
-        "hairparticlePS_alphatestonly.hlsl"
+        "hairparticlePS_prepass.hlsl"
         "forceFieldVisualizerPS.hlsl"
         "fontPS.hlsl"
         "envMap_skyPS_static.hlsl"
@@ -239,11 +241,7 @@ set(SHADERS_VS
         "volumetriclight_pointVS.hlsl"
         "volumetriclight_spotVS.hlsl"
         "vSpotLightVS.hlsl"
-        "vTubeLightVS.hlsl"
-        "vDiscLightVS.hlsl"
         "vPointLightVS.hlsl"
-        "vRectangleLightVS.hlsl"
-        "vSphereLightVS.hlsl"
         "sphereVS.hlsl"
         "skyVS.hlsl"
         "shadowVS_transparent.hlsl"
@@ -254,12 +252,14 @@ set(SHADERS_VS
         "raytrace_screenVS.hlsl"
         "oceanSurfaceVS.hlsl"
         "objectVS_simple.hlsl"
-        "objectVS_simple_tessellation.hlsl"
         "objectVS_voxelizer.hlsl"
         "objectVS_common.hlsl"
         "objectVS_common_tessellation.hlsl"
+        "objectVS_prepass.hlsl"
+        "objectVS_prepass_alphatest.hlsl"
+        "objectVS_prepass_tessellation.hlsl"
+        "objectVS_prepass_alphatest_tessellation.hlsl"
         "objectVS_debug.hlsl"
-        "objectVS_positionstream.hlsl"
         "lensFlareVS.hlsl"
         "impostorVS.hlsl"
         "forceFieldPointVisualizerVS.hlsl"
@@ -272,6 +272,8 @@ set(SHADERS_VS
         "cubeShadowVS_alphatest.hlsl"
         "cubeShadowVS_emulation.hlsl"
         "cubeShadowVS_alphatest_emulation.hlsl"
+        "cubeShadowVS_transparent.hlsl"
+        "cubeShadowVS_transparent_emulation.hlsl"
         "cubeVS.hlsl"
 )
 
@@ -280,6 +282,7 @@ set(SHADERS_GS
         "envMapGS_emulation.hlsl"
         "cubeShadowGS_emulation.hlsl"
         "cubeShadowGS_alphatest_emulation.hlsl"
+        "cubeShadowGS_transparent_emulation.hlsl"
         "voxelGS.hlsl"
         "objectGS_voxelizer.hlsl"
         "lensFlareGS.hlsl"
@@ -287,9 +290,20 @@ set(SHADERS_GS
 
 set(SHADERS_HS
         "objectHS.hlsl"
+        "objectHS_prepass.hlsl"
+        "objectHS_prepass_alphatest.hlsl"
+)
+
+set(SHADERS_DS
+        "objectDS.hlsl"
+        "objectDS_prepass.hlsl"
+        "objectDS_prepass_alphatest.hlsl"
 )
 
 set(SHADERS_LIB
+        "rtaoLIB.hlsl"
+        "rtreflectionLIB.hlsl"
+        "rtshadowLIB.hlsl"
 )
 
 
@@ -301,13 +315,10 @@ function(Generate_Shaders SHADERS_SRC_LIST SHADER_TYPE)
     foreach (Shader IN LISTS ${SHADERS_SRC_LIST})
         get_filename_component(FILE_NAME ${Shader} NAME_WLE)
         message(STATUS "CALCULATING DEPENDENCIES FOR SHADER ${SHADER_TYPE} ${FILE_NAME}")
-        if (${SHADER_TYPE} STREQUAL vs OR ${SHADER_TYPE} STREQUAL ds OR ${SHADER_TYPE} STREQUAL gs)
-            set(INVERT_Y TRUE)
-        endif()
         if(${SHADER_TYPE} STREQUAL lib)
-		    set(VK_VERSION "vulkan1.2")
+            set(VK_VERSION "vulkan1.2")
         else()
-		    set(VK_VERSION "vulkan1.1")
+            set(VK_VERSION "vulkan1.1")
         endif()
         set(SPIRV_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/${OUTPUT_DIR}/${FILE_NAME}.cso")
         set(SPIRV_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../${Shader}")
@@ -316,18 +327,21 @@ function(Generate_Shaders SHADERS_SRC_LIST SHADER_TYPE)
                 -T "${SHADER_TYPE}_6_5"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../"
                 -D SPIRV
-                $<$<BOOL:${INVERT_Y}>:-fvk-invert-y>
+                -all-resources-bound
+                -pack-optimized
+                -res-may-alias
+                -no-legacy-cbuf-layout
                 -spirv
-                #-O1
+                -fspv-target-env=${VK_VERSION}
                 -fvk-use-dx-layout
                 -fvk-use-dx-position-w
                 -flegacy-macro-expansion
                 -Fo ${SPIRV_OUTPUT}
-                -fspv-target-env=${VK_VERSION}
                 -fvk-t-shift 1000 all
                 -fvk-u-shift 2000 all
                 -fvk-s-shift 3000 all
                 #-fspv-extension=KHR
+                -Vd #DISABLE VALIDATION: There is currently a validation bug with raytracing RayTCurrent()!!!
                 )
 
         # Determine include dependencies (recursively)

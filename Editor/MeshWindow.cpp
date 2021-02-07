@@ -76,7 +76,7 @@ struct TerraGen : public wiWindow
 void MeshWindow::Create(EditorComponent* editor)
 {
 	wiWindow::Create("Mesh Window");
-	SetSize(XMFLOAT2(580, 500));
+	SetSize(XMFLOAT2(580, 520));
 
 	float x = 150;
 	float y = 0;
@@ -118,6 +118,7 @@ void MeshWindow::Create(EditorComponent* editor)
 			{
 				SoftBodyPhysicsComponent& softbody = scene.softbodies.Create(entity);
 				softbody.friction = frictionSlider.GetValue();
+				softbody.restitution = restitutionSlider.GetValue();
 				softbody.mass = massSlider.GetValue();
 			}
 		}
@@ -132,7 +133,7 @@ void MeshWindow::Create(EditorComponent* editor)
 	});
 	AddWidget(&softbodyCheckBox);
 
-	massSlider.Create(0, 10, 0, 100000, "Mass: ");
+	massSlider.Create(0, 10, 1, 100000, "Mass: ");
 	massSlider.SetTooltip("Set the mass amount for the physics engine.");
 	massSlider.SetSize(XMFLOAT2(100, hei));
 	massSlider.SetPos(XMFLOAT2(x, y += step));
@@ -145,7 +146,7 @@ void MeshWindow::Create(EditorComponent* editor)
 	});
 	AddWidget(&massSlider);
 
-	frictionSlider.Create(0, 2, 0, 100000, "Friction: ");
+	frictionSlider.Create(0, 1, 0.5f, 100000, "Friction: ");
 	frictionSlider.SetTooltip("Set the friction amount for the physics engine.");
 	frictionSlider.SetSize(XMFLOAT2(100, hei));
 	frictionSlider.SetPos(XMFLOAT2(x, y += step));
@@ -157,6 +158,19 @@ void MeshWindow::Create(EditorComponent* editor)
 		}
 	});
 	AddWidget(&frictionSlider);
+
+	restitutionSlider.Create(0, 1, 0, 100000, "Restitution: ");
+	restitutionSlider.SetTooltip("Set the restitution amount for the physics engine.");
+	restitutionSlider.SetSize(XMFLOAT2(100, hei));
+	restitutionSlider.SetPos(XMFLOAT2(x, y += step));
+	restitutionSlider.OnSlide([&](wiEventArgs args) {
+		SoftBodyPhysicsComponent* physicscomponent = wiScene::GetScene().softbodies.GetComponent(entity);
+		if (physicscomponent != nullptr)
+		{
+			physicscomponent->restitution = args.fValue;
+		}
+		});
+	AddWidget(&restitutionSlider);
 
 	impostorCreateButton.Create("Create Impostor");
 	impostorCreateButton.SetTooltip("Create an impostor image of the mesh. The mesh will be replaced by this image when far away, to render faster.");
@@ -498,7 +512,9 @@ void MeshWindow::Create(EditorComponent* editor)
 			params.extensions.push_back("dds");
 			params.extensions.push_back("png");
 			params.extensions.push_back("jpg");
+			params.extensions.push_back("jpeg");
 			params.extensions.push_back("tga");
+			params.extensions.push_back("bmp");
 			wiHelper::FileDialog(params, [=](std::string fileName) {
 				wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
 					if (terragen.rgb != nullptr)
@@ -524,7 +540,7 @@ void MeshWindow::Create(EditorComponent* editor)
 	morphTargetCombo.SetPos(XMFLOAT2(x + 280, y += step));
 	morphTargetCombo.OnSelect([&](wiEventArgs args) {
 	    MeshComponent* mesh = wiScene::GetScene().meshes.GetComponent(entity);
-	    if (mesh != nullptr && args.iValue < mesh->targets.size())
+	    if (mesh != nullptr && args.iValue < (int)mesh->targets.size())
 	    {
 			morphTargetSlider.SetValue(mesh->targets[args.iValue].weight);
 	    }
@@ -538,7 +554,7 @@ void MeshWindow::Create(EditorComponent* editor)
 	morphTargetSlider.SetPos(XMFLOAT2(x + 280, y += step));
 	morphTargetSlider.OnSlide([&](wiEventArgs args) {
 	    MeshComponent* mesh = wiScene::GetScene().meshes.GetComponent(entity);
-	    if (mesh != nullptr && morphTargetCombo.GetSelected() < mesh->targets.size())
+	    if (mesh != nullptr && morphTargetCombo.GetSelected() < (int)mesh->targets.size())
 	    {
 			mesh->targets[morphTargetCombo.GetSelected()].weight = args.fValue;
 			mesh->SetDirtyMorph();
@@ -583,7 +599,9 @@ void MeshWindow::SetEntity(Entity entity)
 		if (mesh->vertexBuffer_COL.IsValid()) ss << "color; ";
 		if (mesh->vertexBuffer_PRE.IsValid()) ss << "prevPos; ";
 		if (mesh->vertexBuffer_BON.IsValid()) ss << "bone; ";
-		if (mesh->streamoutBuffer_POS.IsValid()) ss << "streamout; ";
+		if (mesh->vertexBuffer_TAN.IsValid()) ss << "tangent; ";
+		if (mesh->streamoutBuffer_POS.IsValid()) ss << "streamout_position; ";
+		if (mesh->streamoutBuffer_TAN.IsValid()) ss << "streamout_tangents; ";
 		if (mesh->IsTerrain()) ss << endl << endl << "Terrain will use 4 blend materials and blend by vertex colors, the default one is always the subset material and uses RED vertex color channel mask, the other 3 are selectable below.";
 		meshInfoLabel.SetText(ss.str());
 
@@ -634,6 +652,7 @@ void MeshWindow::SetEntity(Entity entity)
 			softbodyCheckBox.SetCheck(true);
 			massSlider.SetValue(physicscomponent->mass);
 			frictionSlider.SetValue(physicscomponent->friction);
+			restitutionSlider.SetValue(physicscomponent->restitution);
 		}
 
 		uint8_t selected = morphTargetCombo.GetSelected();

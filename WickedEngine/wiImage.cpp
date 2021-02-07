@@ -4,7 +4,6 @@
 #include "wiHelper.h"
 #include "SamplerMapping.h"
 #include "ResourceMapping.h"
-#include "wiScene.h"
 #include "ShaderInterop_Image.h"
 #include "wiBackLog.h"
 #include "wiEvent.h"
@@ -105,54 +104,30 @@ namespace wiImage
 			return;
 		}
 
-		XMMATRIX M;
-		if (params.typeFlag == SCREEN)
+		XMMATRIX M = XMMatrixScaling(params.scale.x * params.siz.x, params.scale.y * params.siz.y, 1);
+		M = M * XMMatrixRotationZ(params.rotation);
+
+		if (params.customRotation != nullptr)
 		{
-			M =
-				XMMatrixScaling(params.scale.x*params.siz.x, params.scale.y*params.siz.y, 1)
-				* XMMatrixRotationZ(params.rotation)
-				* XMMatrixTranslation(params.pos.x, params.pos.y, 0)
-				* device->GetScreenProjection()
-				;
+			M = M * (*params.customRotation);
 		}
-		else if (params.typeFlag == WORLD)
+
+		M = M * XMMatrixTranslation(params.pos.x, params.pos.y, params.pos.z);
+
+		if (params.customProjection != nullptr)
 		{
-			XMMATRIX faceRot = XMMatrixIdentity();
-			if (params.lookAt.w)
-			{
-				XMVECTOR vvv = (params.lookAt.x == 1 && !params.lookAt.y && !params.lookAt.z) ? XMVectorSet(0, 1, 0, 0) : XMVectorSet(1, 0, 0, 0);
-				faceRot =
-					XMMatrixLookAtLH(XMVectorSet(0, 0, 0, 0)
-						, XMLoadFloat4(&params.lookAt)
-						, XMVector3Cross(
-							vvv, XMLoadFloat4(&params.lookAt)
-						)
-					);
-			}
-			else
-			{
-				faceRot = XMLoadFloat3x3(&wiRenderer::GetCamera().rotationMatrix);
-			}
-
-			XMMATRIX view = wiRenderer::GetCamera().GetView();
-			XMMATRIX projection = wiRenderer::GetCamera().GetProjection();
-			// Remove possible jittering from temporal camera:
-			projection.r[2] = XMVectorSetX(projection.r[2], 0);
-			projection.r[2] = XMVectorSetY(projection.r[2], 0);
-
-			M =
-				XMMatrixScaling(params.scale.x*params.siz.x, -1 * params.scale.y*params.siz.y, 1)
-				*XMMatrixRotationZ(params.rotation)
-				*faceRot
-				*XMMatrixTranslation(params.pos.x, params.pos.y, params.pos.z)
-				*view * projection
-				;
+			M = XMMatrixScaling(1, -1, 1) * M; // reason: screen projection is Y down (like UV-space) and that is the common case for image rendering. But custom projections will use the "world space"
+			M = M * (*params.customProjection);
+		}
+		else
+		{
+			M = M * device->GetScreenProjection();
 		}
 
 		for (int i = 0; i < 4; ++i)
 		{
 			XMVECTOR V = XMVectorSet(params.corners[i].x - params.pivot.x, params.corners[i].y - params.pivot.y, 0, 1);
-			V = XMVector2Transform(V, M);
+			V = XMVector2Transform(V, M); // division by w will happen on GPU
 			XMStoreFloat4(&cb.xCorners[i], V);
 		}
 
@@ -306,27 +281,27 @@ namespace wiImage
 			device->CreateBuffer(&bd, nullptr, &constantBuffer);
 		}
 
-		RasterizerStateDesc rs;
+		RasterizerState rs;
 		rs.FillMode = FILL_SOLID;
 		rs.CullMode = CULL_NONE;
 		rs.FrontCounterClockwise = false;
 		rs.DepthBias = 0;
 		rs.DepthBiasClamp = 0;
 		rs.SlopeScaledDepthBias = 0;
-		rs.DepthClipEnable = false;
+		rs.DepthClipEnable = true;
 		rs.MultisampleEnable = false;
 		rs.AntialiasedLineEnable = false;
-		device->CreateRasterizerState(&rs, &rasterizerState);
+		rasterizerState = rs;
 
 
 
 
 		for (int i = 0; i < STENCILREFMODE_COUNT; ++i)
 		{
-			DepthStencilStateDesc dsd;
+			DepthStencilState dsd;
 			dsd.DepthEnable = false;
 			dsd.StencilEnable = false;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_DISABLED][i]);
+			depthStencilStates[STENCILMODE_DISABLED][i] = dsd;
 
 			dsd.StencilEnable = true;
 			switch (i)
@@ -351,35 +326,35 @@ namespace wiImage
 
 			dsd.FrontFace.StencilFunc = COMPARISON_EQUAL;
 			dsd.BackFace.StencilFunc = COMPARISON_EQUAL;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_EQUAL][i]);
+			depthStencilStates[STENCILMODE_EQUAL][i] = dsd;
 
 			dsd.FrontFace.StencilFunc = COMPARISON_LESS;
 			dsd.BackFace.StencilFunc = COMPARISON_LESS;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_LESS][i]);
+			depthStencilStates[STENCILMODE_LESS][i] = dsd;
 
 			dsd.FrontFace.StencilFunc = COMPARISON_LESS_EQUAL;
 			dsd.BackFace.StencilFunc = COMPARISON_LESS_EQUAL;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_LESSEQUAL][i]);
+			depthStencilStates[STENCILMODE_LESSEQUAL][i] = dsd;
 
 			dsd.FrontFace.StencilFunc = COMPARISON_GREATER;
 			dsd.BackFace.StencilFunc = COMPARISON_GREATER;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_GREATER][i]);
+			depthStencilStates[STENCILMODE_GREATER][i] = dsd;
 
 			dsd.FrontFace.StencilFunc = COMPARISON_GREATER_EQUAL;
 			dsd.BackFace.StencilFunc = COMPARISON_GREATER_EQUAL;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_GREATEREQUAL][i]);
+			depthStencilStates[STENCILMODE_GREATEREQUAL][i] = dsd;
 
 			dsd.FrontFace.StencilFunc = COMPARISON_NOT_EQUAL;
 			dsd.BackFace.StencilFunc = COMPARISON_NOT_EQUAL;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_NOT][i]);
+			depthStencilStates[STENCILMODE_NOT][i] = dsd;
 
 			dsd.FrontFace.StencilFunc = COMPARISON_ALWAYS;
 			dsd.BackFace.StencilFunc = COMPARISON_ALWAYS;
-			device->CreateDepthStencilState(&dsd, &depthStencilStates[STENCILMODE_ALWAYS][i]);
+			depthStencilStates[STENCILMODE_ALWAYS][i] = dsd;
 		}
 
 
-		BlendStateDesc bd;
+		BlendState bd;
 		bd.RenderTarget[0].BlendEnable = true;
 		bd.RenderTarget[0].SrcBlend = BLEND_SRC_ALPHA;
 		bd.RenderTarget[0].DestBlend = BLEND_INV_SRC_ALPHA;
@@ -389,7 +364,7 @@ namespace wiImage
 		bd.RenderTarget[0].BlendOpAlpha = BLEND_OP_ADD;
 		bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
 		bd.IndependentBlendEnable = false;
-		device->CreateBlendState(&bd, &blendStates[BLENDMODE_ALPHA]);
+		blendStates[BLENDMODE_ALPHA] = bd;
 
 		bd.RenderTarget[0].BlendEnable = true;
 		bd.RenderTarget[0].SrcBlend = BLEND_ONE;
@@ -400,12 +375,12 @@ namespace wiImage
 		bd.RenderTarget[0].BlendOpAlpha = BLEND_OP_ADD;
 		bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
 		bd.IndependentBlendEnable = false;
-		device->CreateBlendState(&bd, &blendStates[BLENDMODE_PREMULTIPLIED]);
+		blendStates[BLENDMODE_PREMULTIPLIED] = bd;
 
 		bd.RenderTarget[0].BlendEnable = false;
 		bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
 		bd.IndependentBlendEnable = false;
-		device->CreateBlendState(&bd, &blendStates[BLENDMODE_OPAQUE]);
+		blendStates[BLENDMODE_OPAQUE] = bd;
 
 		bd.RenderTarget[0].BlendEnable = true;
 		bd.RenderTarget[0].SrcBlend = BLEND_SRC_ALPHA;
@@ -416,7 +391,7 @@ namespace wiImage
 		bd.RenderTarget[0].BlendOpAlpha = BLEND_OP_ADD;
 		bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
 		bd.IndependentBlendEnable = false;
-		device->CreateBlendState(&bd, &blendStates[BLENDMODE_ADDITIVE]);
+		blendStates[BLENDMODE_ADDITIVE] = bd;
 
 		static wiEvent::Handle handle = wiEvent::Subscribe(SYSTEM_EVENT_RELOAD_SHADERS, [](uint64_t userdata) { LoadShaders(); });
 		LoadShaders();

@@ -224,73 +224,46 @@ namespace wiScene
 		XMStoreFloat3(&scale_local, S);
 	}
 
-	const Texture* MaterialComponent::GetBaseColorMap() const
-	{
-		if (baseColorMap != nullptr)
-		{
-			return baseColorMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetNormalMap() const
-	{
-		if (normalMap != nullptr)
-		{
-			return normalMap->texture;
-		}
-		return nullptr;
-	}
-	const Texture* MaterialComponent::GetSurfaceMap() const
-	{
-		if (surfaceMap != nullptr)
-		{
-			return surfaceMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetDisplacementMap() const
-	{
-		if (displacementMap != nullptr)
-		{
-			return displacementMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetEmissiveMap() const
-	{
-		if (emissiveMap != nullptr)
-		{
-			return emissiveMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetOcclusionMap() const
-	{
-		if (occlusionMap != nullptr)
-		{
-			return occlusionMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
 	void MaterialComponent::WriteShaderMaterial(ShaderMaterial* dest) const
 	{
 		dest->baseColor = baseColor;
+		dest->specularColor = specularColor;
 		dest->emissiveColor = emissiveColor;
 		dest->texMulAdd = texMulAdd;
 		dest->roughness = roughness;
 		dest->reflectance = reflectance;
 		dest->metalness = metalness;
-		dest->refractionIndex = refractionIndex;
-		dest->normalMapStrength = (normalMap == nullptr ? 0 : normalMapStrength);
+		dest->refraction = refraction;
+		dest->normalMapStrength = (textures[NORMALMAP].resource == nullptr ? 0 : normalMapStrength);
 		dest->parallaxOcclusionMapping = parallaxOcclusionMapping;
 		dest->displacementMapping = displacementMapping;
-		dest->uvset_baseColorMap = baseColorMap == nullptr ? -1 : (int)uvset_baseColorMap;
-		dest->uvset_surfaceMap = surfaceMap == nullptr ? -1 : (int)uvset_surfaceMap;
-		dest->uvset_normalMap = normalMap == nullptr ? -1 : (int)uvset_normalMap;
-		dest->uvset_displacementMap = displacementMap == nullptr ? -1 : (int)uvset_displacementMap;
-		dest->uvset_emissiveMap = emissiveMap == nullptr ? -1 : (int)uvset_emissiveMap;
-		dest->uvset_occlusionMap = occlusionMap == nullptr ? -1 : (int)uvset_occlusionMap;
+		dest->subsurfaceScattering = subsurfaceScattering;
+		dest->subsurfaceScattering.x *= dest->subsurfaceScattering.w;
+		dest->subsurfaceScattering.y *= dest->subsurfaceScattering.w;
+		dest->subsurfaceScattering.z *= dest->subsurfaceScattering.w;
+		dest->subsurfaceScattering_inv.x = 1.0f / ((1 + dest->subsurfaceScattering.x) * (1 + dest->subsurfaceScattering.x));
+		dest->subsurfaceScattering_inv.y = 1.0f / ((1 + dest->subsurfaceScattering.y) * (1 + dest->subsurfaceScattering.y));
+		dest->subsurfaceScattering_inv.z = 1.0f / ((1 + dest->subsurfaceScattering.z) * (1 + dest->subsurfaceScattering.z));
+		dest->subsurfaceScattering_inv.w = 1.0f / ((1 + dest->subsurfaceScattering.w) * (1 + dest->subsurfaceScattering.w));
+		dest->uvset_baseColorMap = textures[BASECOLORMAP].GetUVSet();
+		dest->uvset_surfaceMap = textures[SURFACEMAP].GetUVSet();
+		dest->uvset_normalMap = textures[NORMALMAP].GetUVSet();
+		dest->uvset_displacementMap = textures[DISPLACEMENTMAP].GetUVSet();
+		dest->uvset_emissiveMap = textures[EMISSIVEMAP].GetUVSet();
+		dest->uvset_occlusionMap = textures[OCCLUSIONMAP].GetUVSet();
+		dest->uvset_transmissionMap = textures[TRANSMISSIONMAP].GetUVSet();
+		dest->uvset_sheenColorMap = textures[SHEENCOLORMAP].GetUVSet();
+		dest->uvset_sheenRoughnessMap = textures[SHEENROUGHNESSMAP].GetUVSet();
+		dest->uvset_clearcoatMap = textures[CLEARCOATMAP].GetUVSet();
+		dest->uvset_clearcoatRoughnessMap = textures[CLEARCOATROUGHNESSMAP].GetUVSet();
+		dest->uvset_clearcoatNormalMap = textures[CLEARCOATNORMALMAP].GetUVSet();
+		dest->sheenColor = sheenColor;
+		dest->sheenRoughness = sheenRoughness;
+		dest->clearcoat = clearcoat;
+		dest->clearcoatRoughness = clearcoatRoughness;
 		dest->alphaTest = 1 - alphaRef + 1.0f / 256.0f; // 256 so that it is just about smaller than 1 unorm unit (1.0/255.0)
+		dest->layerMask = layerMask;
+		dest->transmission = transmission;
 		dest->options = 0;
 		if (IsUsingVertexColors())
 		{
@@ -318,6 +291,14 @@ namespace wiScene
 		dest->emissiveMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
 		dest->normalMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
 	}
+	void MaterialComponent::WriteTextures(const wiGraphics::GPUResource** dest, int count) const
+	{
+		count = std::min(count, (int)TEXTURESLOT_COUNT);
+		for (int i = 0; i < count; ++i)
+		{
+			dest[i] = textures[i].GetGPUResource();
+		}
+	}
 	uint32_t MaterialComponent::GetRenderTypes() const
 	{
 		if (IsCustomShader() && customShaderID < (int)wiRenderer::GetCustomShaders().size())
@@ -329,6 +310,10 @@ namespace wiScene
 		{
 			return RENDERTYPE_TRANSPARENT | RENDERTYPE_WATER;
 		}
+		if (transmission > 0)
+		{
+			return RENDERTYPE_TRANSPARENT;
+		}
 		if (userBlendMode == BLENDMODE_OPAQUE)
 		{
 			return RENDERTYPE_OPAQUE;
@@ -337,31 +322,13 @@ namespace wiScene
 	}
 	void MaterialComponent::CreateRenderData(const std::string& content_dir)
 	{
-		if (!baseColorMapName.empty())
+		for (auto& x : textures)
 		{
-			baseColorMap = wiResourceManager::Load(content_dir + baseColorMapName);
+			if (!x.name.empty())
+			{
+				x.resource = wiResourceManager::Load(content_dir + x.name);
+			}
 		}
-		if (!surfaceMapName.empty())
-		{
-			surfaceMap = wiResourceManager::Load(content_dir + surfaceMapName);
-		}
-		if (!normalMapName.empty())
-		{
-			normalMap = wiResourceManager::Load(content_dir + normalMapName);
-		}
-		if (!displacementMapName.empty())
-		{
-			displacementMap = wiResourceManager::Load(content_dir + displacementMapName);
-		}
-		if (!emissiveMapName.empty())
-		{
-			emissiveMap = wiResourceManager::Load(content_dir + emissiveMapName);
-		}
-		if (!occlusionMapName.empty())
-		{
-			occlusionMap = wiResourceManager::Load(content_dir + occlusionMapName);
-		}
-
 
 		ShaderMaterial shadermat;
 		WriteShaderMaterial(&shadermat);
@@ -601,9 +568,12 @@ namespace wiScene
 			device->CreateBuffer(&bd, nullptr, &streamoutBuffer_POS);
 			device->SetName(&streamoutBuffer_POS, "streamoutBuffer_POS");
 
-			bd.ByteWidth = (uint32_t)(sizeof(Vertex_TAN) * vertex_tangents.size());
-			device->CreateBuffer(&bd, nullptr, &streamoutBuffer_TAN);
-			device->SetName(&streamoutBuffer_TAN, "streamoutBuffer_TAN");
+			if (!vertex_tangents.empty())
+			{
+				bd.ByteWidth = (uint32_t)(sizeof(Vertex_TAN) * vertex_tangents.size());
+				device->CreateBuffer(&bd, nullptr, &streamoutBuffer_TAN);
+				device->SetName(&streamoutBuffer_TAN, "streamoutBuffer_TAN");
+			}
 		}
 
 		// vertexBuffer - UV SET 0
@@ -1337,18 +1307,19 @@ namespace wiScene
 	void Scene::Update(float dt)
 	{
 		GraphicsDevice* device = wiRenderer::GetDevice();
-		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_DESCRIPTOR_MANAGEMENT) && !descriptorTable.IsValid())
+		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_DESCRIPTOR_MANAGEMENT) && !descriptorTables[0].IsValid())
 		{
-			descriptorTable.resources.resize(DESCRIPTORTABLE_ENTRY_COUNT);
-			descriptorTable.resources[DESCRIPTORTABLE_ENTRY_SUBSETS_MATERIAL] = { CONSTANTBUFFER, 0, MAX_DESCRIPTOR_INDEXING };
-			descriptorTable.resources[DESCRIPTORTABLE_ENTRY_SUBSETS_TEXTURE_BASECOLOR] = { TEXTURE2D, 0, MAX_DESCRIPTOR_INDEXING };
-			descriptorTable.resources[DESCRIPTORTABLE_ENTRY_SUBSETS_INDEXBUFFER] = { TYPEDBUFFER, MAX_DESCRIPTOR_INDEXING, MAX_DESCRIPTOR_INDEXING };
-			descriptorTable.resources[DESCRIPTORTABLE_ENTRY_SUBSETS_VERTEXBUFFER_POSITION_NORMAL_WIND] = { RAWBUFFER, MAX_DESCRIPTOR_INDEXING * 2, MAX_DESCRIPTOR_INDEXING };
-			descriptorTable.resources[DESCRIPTORTABLE_ENTRY_SUBSETS_VERTEXBUFFER_UV0] = { TYPEDBUFFER, MAX_DESCRIPTOR_INDEXING * 3, MAX_DESCRIPTOR_INDEXING };
-			descriptorTable.resources[DESCRIPTORTABLE_ENTRY_SUBSETS_VERTEXBUFFER_UV1] = { TYPEDBUFFER, MAX_DESCRIPTOR_INDEXING * 4, MAX_DESCRIPTOR_INDEXING };
+			descriptorTables[DESCRIPTORTABLE_SUBSETS_MATERIAL].resources.push_back({ CONSTANTBUFFER, 0, MAX_SUBSET_DESCRIPTOR_INDEXING });
+			descriptorTables[DESCRIPTORTABLE_SUBSETS_TEXTURES].resources.push_back({ TEXTURE2D, 0, MAX_SUBSET_DESCRIPTOR_INDEXING * MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT });
+			descriptorTables[DESCRIPTORTABLE_SUBSETS_INDEXBUFFER].resources.push_back({ TYPEDBUFFER, 0, MAX_SUBSET_DESCRIPTOR_INDEXING });
+			descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_RAW].resources.push_back({ RAWBUFFER, 0, MAX_SUBSET_DESCRIPTOR_INDEXING * VERTEXBUFFER_DESCRIPTOR_RAW_COUNT });
+			descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UVSETS].resources.push_back({ TYPEDBUFFER, 0, MAX_SUBSET_DESCRIPTOR_INDEXING * VERTEXBUFFER_DESCRIPTOR_UV_COUNT });
 
-			bool success = device->CreateDescriptorTable(&descriptorTable);
-			assert(success);
+			for (int i = 0; i < DESCRIPTORTABLE_COUNT; ++i)
+			{
+				bool success = device->CreateDescriptorTable(&descriptorTables[i]);
+				assert(success);
+			}
 		}
 
 		wiJobSystem::context ctx;
@@ -1633,7 +1604,8 @@ namespace wiScene
 		const XMFLOAT3& position,
 		const XMFLOAT3& color,
 		float energy,
-		float range)
+		float range,
+		LightComponent::LightType type)
 	{
 		Entity entity = CreateEntity();
 
@@ -1652,7 +1624,7 @@ namespace wiScene
 		light.range_local = range;
 		light.fov = XM_PIDIV4;
 		light.color = color;
-		light.SetType(LightComponent::POINT);
+		light.SetType(type);
 
 		return entity;
 	}
@@ -1718,17 +1690,9 @@ namespace wiScene
 		decals.Create(entity);
 
 		MaterialComponent& material = materials.Create(entity);
-
-		if (!textureName.empty())
-		{
-			material.baseColorMapName = textureName;
-			material.baseColorMap = wiResourceManager::Load(material.baseColorMapName);
-		}
-		if (!normalMapName.empty())
-		{
-			material.normalMapName = normalMapName;
-			material.normalMap = wiResourceManager::Load(material.normalMapName);
-		}
+		material.textures[MaterialComponent::BASECOLORMAP].name = textureName;
+		material.textures[MaterialComponent::NORMALMAP].name = normalMapName;
+		material.CreateRenderData();
 
 		return entity;
 	}
@@ -1876,8 +1840,7 @@ namespace wiScene
 		{
 			layer_child = &layers.Create(entity);
 		}
-		// Save the initial layermask of the child so that it can be restored if detached:
-		parentcomponent.layerMask_bind = layer_child->GetLayerMask();
+		layer_child->propagationMask = layer_parent->GetLayerMask();
 	}
 	void Scene::Component_Detach(Entity entity)
 	{
@@ -1894,7 +1857,7 @@ namespace wiScene
 			LayerComponent* layer = layers.GetComponent(entity);
 			if (layer != nullptr)
 			{
-				layer->layerMask = parent->layerMask_bind;
+				layer->propagationMask = ~0;
 			}
 
 			hierarchy.Remove_KeepSorted(entity);
@@ -1978,10 +1941,36 @@ namespace wiScene
 
 				float left = animationdata->keyframe_times[keyLeft];
 
-				TransformComponent& target_transform = *transforms.GetComponent(channel.target);
-				TransformComponent transform = target_transform;
+				TransformComponent transform;
 
-				if (sampler.mode == AnimationComponent::AnimationSampler::Mode::STEP || keyLeft == keyRight)
+				TransformComponent* target_transform = nullptr;
+				MeshComponent* target_mesh = nullptr;
+
+				if (channel.path == AnimationComponent::AnimationChannel::Path::WEIGHTS)
+				{
+					ObjectComponent* object = objects.GetComponent(channel.target);
+					assert(object != nullptr);
+					if (object == nullptr)
+						continue;
+					target_mesh = meshes.GetComponent(object->meshID);
+					assert(target_mesh != nullptr);
+					if (target_mesh == nullptr)
+						continue;
+					animation.morph_weights_temp.resize(target_mesh->targets.size());
+				}
+				else
+				{
+					target_transform = transforms.GetComponent(channel.target);
+					assert(target_transform != nullptr);
+					if (target_transform == nullptr)
+						continue;
+					transform = *target_transform;
+				}
+
+				switch (sampler.mode)
+				{
+				default:
+				case AnimationComponent::AnimationSampler::Mode::STEP:
 				{
 					// Nearest neighbor method (snap to left):
 					switch (channel.path)
@@ -2005,13 +1994,31 @@ namespace wiScene
 						transform.scale_local = ((const XMFLOAT3*)animationdata->keyframe_data.data())[keyLeft];
 					}
 					break;
+					case AnimationComponent::AnimationChannel::Path::WEIGHTS:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * animation.morph_weights_temp.size());
+						for (size_t j = 0; j < animation.morph_weights_temp.size(); ++j)
+						{
+							animation.morph_weights_temp[j] = animationdata->keyframe_data[keyLeft * animation.morph_weights_temp.size() + j];
+						}
+					}
+					break;
 					}
 				}
-				else
+				break;
+				case AnimationComponent::AnimationSampler::Mode::LINEAR:
 				{
 					// Linear interpolation method:
-					float right = animationdata->keyframe_times[keyRight];
-					float t = (animation.timer - left) / (right - left);
+					float t;
+					if (keyLeft == keyRight)
+					{
+						t = 0;
+					}
+					else
+					{
+						float right = animationdata->keyframe_times[keyRight];
+						t = (animation.timer - left) / (right - left);
+					}
 
 					switch (channel.path)
 					{
@@ -2047,28 +2054,131 @@ namespace wiScene
 						XMStoreFloat3(&transform.scale_local, vAnim);
 					}
 					break;
+					case AnimationComponent::AnimationChannel::Path::WEIGHTS:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * animation.morph_weights_temp.size());
+						for (size_t j = 0; j < animation.morph_weights_temp.size(); ++j)
+						{
+							float vLeft = animationdata->keyframe_data[keyLeft * animation.morph_weights_temp.size() + j];
+							float vRight = animationdata->keyframe_data[keyLeft * animation.morph_weights_temp.size() + j];
+							float vAnim = wiMath::Lerp(vLeft, vRight, t);
+							animation.morph_weights_temp[j] = vAnim;
+						}
+					}
+					break;
 					}
 				}
+				break;
+				case AnimationComponent::AnimationSampler::Mode::CUBICSPLINE:
+				{
+					// Cubic Spline interpolation method:
+					float t;
+					if (keyLeft == keyRight)
+					{
+						t = 0;
+					}
+					else
+					{
+						float right = animationdata->keyframe_times[keyRight];
+						t = (animation.timer - left) / (right - left);
+					}
 
-				target_transform.SetDirty();
+					const float t2 = t * t;
+					const float t3 = t2 * t;
 
-				const float t = animation.amount;
+					switch (channel.path)
+					{
+					default:
+					case AnimationComponent::AnimationChannel::Path::TRANSLATION:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3 * 3);
+						const XMFLOAT3* data = (const XMFLOAT3*)animationdata->keyframe_data.data();
+						XMVECTOR vLeft = XMLoadFloat3(&data[keyLeft * 3 + 1]);
+						XMVECTOR vLeftTanOut = dt * XMLoadFloat3(&data[keyLeft * 3 + 2]);
+						XMVECTOR vRightTanIn = dt * XMLoadFloat3(&data[keyRight * 3 + 0]);
+						XMVECTOR vRight = XMLoadFloat3(&data[keyRight * 3 + 1]);
+						XMVECTOR vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+						XMStoreFloat3(&transform.translation_local, vAnim);
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::ROTATION:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 4 * 3);
+						const XMFLOAT4* data = (const XMFLOAT4*)animationdata->keyframe_data.data();
+						XMVECTOR vLeft = XMLoadFloat4(&data[keyLeft * 3 + 1]);
+						XMVECTOR vLeftTanOut = dt * XMLoadFloat4(&data[keyLeft * 3 + 2]);
+						XMVECTOR vRightTanIn = dt * XMLoadFloat4(&data[keyRight * 3 + 0]);
+						XMVECTOR vRight = XMLoadFloat4(&data[keyRight * 3 + 1]);
+						XMVECTOR vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+						vAnim = XMQuaternionNormalize(vAnim);
+						XMStoreFloat4(&transform.rotation_local, vAnim);
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::SCALE:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3 * 3);
+						const XMFLOAT3* data = (const XMFLOAT3*)animationdata->keyframe_data.data();
+						XMVECTOR vLeft = XMLoadFloat3(&data[keyLeft * 3 + 1]);
+						XMVECTOR vLeftTanOut = dt * XMLoadFloat3(&data[keyLeft * 3 + 2]);
+						XMVECTOR vRightTanIn = dt * XMLoadFloat3(&data[keyRight * 3 + 0]);
+						XMVECTOR vRight = XMLoadFloat3(&data[keyRight * 3 + 1]);
+						XMVECTOR vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+						XMStoreFloat3(&transform.scale_local, vAnim);
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::WEIGHTS:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * animation.morph_weights_temp.size() * 3);
+						for (size_t j = 0; j < animation.morph_weights_temp.size(); ++j)
+						{
+							float vLeft = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 1];
+							float vLeftTanOut = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 2];
+							float vRightTanIn = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 0];
+							float vRight = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 1];
+							float vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+							animation.morph_weights_temp[j] = vAnim;
+						}
+					}
+					break;
+					}
+				}
+				break;
+				}
 
-				const XMVECTOR aS = XMLoadFloat3(&target_transform.scale_local);
-				const XMVECTOR aR = XMLoadFloat4(&target_transform.rotation_local);
-				const XMVECTOR aT = XMLoadFloat3(&target_transform.translation_local);
+				if (target_transform != nullptr)
+				{
+					target_transform->SetDirty();
 
-				const XMVECTOR bS = XMLoadFloat3(&transform.scale_local);
-				const XMVECTOR bR = XMLoadFloat4(&transform.rotation_local);
-				const XMVECTOR bT = XMLoadFloat3(&transform.translation_local);
+					const float t = animation.amount;
 
-				const XMVECTOR S = XMVectorLerp(aS, bS, t);
-				const XMVECTOR R = XMQuaternionSlerp(aR, bR, t);
-				const XMVECTOR T = XMVectorLerp(aT, bT, t);
+					const XMVECTOR aS = XMLoadFloat3(&target_transform->scale_local);
+					const XMVECTOR aR = XMLoadFloat4(&target_transform->rotation_local);
+					const XMVECTOR aT = XMLoadFloat3(&target_transform->translation_local);
 
-				XMStoreFloat3(&target_transform.scale_local, S);
-				XMStoreFloat4(&target_transform.rotation_local, R);
-				XMStoreFloat3(&target_transform.translation_local, T);
+					const XMVECTOR bS = XMLoadFloat3(&transform.scale_local);
+					const XMVECTOR bR = XMLoadFloat4(&transform.rotation_local);
+					const XMVECTOR bT = XMLoadFloat3(&transform.translation_local);
+
+					const XMVECTOR S = XMVectorLerp(aS, bS, t);
+					const XMVECTOR R = XMQuaternionSlerp(aR, bR, t);
+					const XMVECTOR T = XMVectorLerp(aT, bT, t);
+
+					XMStoreFloat3(&target_transform->scale_local, S);
+					XMStoreFloat4(&target_transform->rotation_local, R);
+					XMStoreFloat3(&target_transform->translation_local, T);
+				}
+
+				if (target_mesh != nullptr)
+				{
+					const float t = animation.amount;
+
+					for (size_t j = 0; j < target_mesh->targets.size(); ++j)
+					{
+						target_mesh->targets[j].weight = wiMath::Lerp(target_mesh->targets[j].weight, animation.morph_weights_temp[j], t);
+					}
+
+					target_mesh->SetDirtyMorph(true);
+				}
 
 			}
 
@@ -2112,7 +2222,7 @@ namespace wiScene
 			LayerComponent* layer_parent = layers.GetComponent(parentcomponent.parentID);
 			if (layer_child != nullptr && layer_parent != nullptr)
 			{
-				layer_child->layerMask = parentcomponent.layerMask_bind & layer_parent->GetLayerMask();
+				layer_child->propagationMask = layer_parent->GetLayerMask();
 			}
 
 		}
@@ -2371,45 +2481,87 @@ namespace wiScene
 				const MaterialComponent* material = materials.GetComponent(subset.materialID);
 				if (material != nullptr)
 				{
-					if (descriptorTable.IsValid())
+					if (descriptorTables[0].IsValid())
 					{
 						uint32_t global_geometryIndex = mesh.TLAS_geometryOffset + subsetIndex;
 						device->WriteDescriptor(
-							&descriptorTable,
-							DESCRIPTORTABLE_ENTRY_SUBSETS_MATERIAL,
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_MATERIAL],
+							0,
 							global_geometryIndex,
 							&material->constantBuffer
 						);
 						device->WriteDescriptor(
-							&descriptorTable,
-							DESCRIPTORTABLE_ENTRY_SUBSETS_TEXTURE_BASECOLOR,
-							global_geometryIndex,
-							material->baseColorMap ? material->baseColorMap->texture : nullptr
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_TEXTURES],
+							0,
+							global_geometryIndex * MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT + MATERIAL_TEXTURE_SLOT_DESCRIPTOR_BASECOLOR,
+							material->textures[MaterialComponent::BASECOLORMAP].GetGPUResource()
 						);
 						device->WriteDescriptor(
-							&descriptorTable,
-							DESCRIPTORTABLE_ENTRY_SUBSETS_INDEXBUFFER,
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_TEXTURES],
+							0,
+							global_geometryIndex * MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT + MATERIAL_TEXTURE_SLOT_DESCRIPTOR_NORMAL,
+							material->textures[MaterialComponent::NORMALMAP].GetGPUResource()
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_TEXTURES],
+							0,
+							global_geometryIndex * MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT + MATERIAL_TEXTURE_SLOT_DESCRIPTOR_SURFACE,
+							material->textures[MaterialComponent::SURFACEMAP].GetGPUResource()
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_TEXTURES],
+							0,
+							global_geometryIndex * MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT + MATERIAL_TEXTURE_SLOT_DESCRIPTOR_OCCLUSION,
+							material->textures[MaterialComponent::OCCLUSIONMAP].GetGPUResource()
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_TEXTURES],
+							0,
+							global_geometryIndex * MATERIAL_TEXTURE_SLOT_DESCRIPTOR_COUNT + MATERIAL_TEXTURE_SLOT_DESCRIPTOR_EMISSIVE,
+							material->textures[MaterialComponent::EMISSIVEMAP].GetGPUResource()
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_INDEXBUFFER],
+							0,
 							global_geometryIndex,
 							&mesh.indexBuffer,
 							subset.indexBuffer_subresource
 						);
 						device->WriteDescriptor(
-							&descriptorTable,
-							DESCRIPTORTABLE_ENTRY_SUBSETS_VERTEXBUFFER_POSITION_NORMAL_WIND,
-							global_geometryIndex,
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_RAW],
+							0,
+							global_geometryIndex * VERTEXBUFFER_DESCRIPTOR_RAW_COUNT + VERTEXBUFFER_DESCRIPTOR_RAW_POS,
 							&mesh.vertexBuffer_POS
 						);
 						device->WriteDescriptor(
-							&descriptorTable,
-							DESCRIPTORTABLE_ENTRY_SUBSETS_VERTEXBUFFER_UV0,
-							global_geometryIndex,
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_RAW],
+							0,
+							global_geometryIndex * VERTEXBUFFER_DESCRIPTOR_RAW_COUNT + VERTEXBUFFER_DESCRIPTOR_RAW_TAN,
+							&mesh.vertexBuffer_TAN
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_RAW],
+							0,
+							global_geometryIndex * VERTEXBUFFER_DESCRIPTOR_RAW_COUNT + VERTEXBUFFER_DESCRIPTOR_RAW_COL,
+							&mesh.vertexBuffer_COL
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UVSETS],
+							0,
+							global_geometryIndex * VERTEXBUFFER_DESCRIPTOR_UV_COUNT + VERTEXBUFFER_DESCRIPTOR_UV_0,
 							&mesh.vertexBuffer_UV0
 						);
 						device->WriteDescriptor(
-							&descriptorTable,
-							DESCRIPTORTABLE_ENTRY_SUBSETS_VERTEXBUFFER_UV1,
-							global_geometryIndex,
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UVSETS],
+							0,
+							global_geometryIndex * VERTEXBUFFER_DESCRIPTOR_UV_COUNT + VERTEXBUFFER_DESCRIPTOR_UV_1,
 							&mesh.vertexBuffer_UV1
+						);
+						device->WriteDescriptor(
+							&descriptorTables[DESCRIPTORTABLE_SUBSETS_VERTEXBUFFER_UVSETS],
+							0,
+							global_geometryIndex * VERTEXBUFFER_DESCRIPTOR_UV_COUNT + VERTEXBUFFER_DESCRIPTOR_UV_ATL,
+							&mesh.vertexBuffer_ATL
 						);
 					}
 
@@ -2472,7 +2624,7 @@ namespace wiScene
 			    mesh.aabb = AABB(_min, _max);
 
 				mesh.SetDirtyMorph(false);
-				wiRenderer::AddDeferredMorphUpdate(args.jobIndex);
+				wiRenderer::AddDeferredMorphUpdate(meshes.GetEntity(args.jobIndex));
 			}
 
 		});
@@ -2482,6 +2634,12 @@ namespace wiScene
 		wiJobSystem::Dispatch(ctx, (uint32_t)materials.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			MaterialComponent& material = materials[args.jobIndex];
+			Entity entity = materials.GetEntity(args.jobIndex);
+			const LayerComponent* layer = layers.GetComponent(entity);
+			if (layer != nullptr)
+			{
+				material.layerMask = layer->layerMask;
+			}
 
 			if (!material.constantBuffer.IsValid())
 			{
@@ -2504,19 +2662,10 @@ namespace wiScene
 				material.engineStencilRef = STENCILREF_CUSTOMSHADER;
 			}
 
-			if (material.subsurfaceProfile == MaterialComponent::SUBSURFACE_SKIN)
-			{
-				material.engineStencilRef = STENCILREF_SKIN;
-			}
-			else if (material.subsurfaceProfile == MaterialComponent::SUBSURFACE_SNOW)
-			{
-				material.engineStencilRef = STENCILREF_SNOW;
-			}
-
 			if (material.IsDirty())
 			{
 				material.SetDirty(false);
-				wiRenderer::AddDeferredMaterialUpdate(args.jobIndex);
+				wiRenderer::AddDeferredMaterialUpdate(entity);
 			}
 
 		});
@@ -2707,8 +2856,8 @@ namespace wiScene
 			const MaterialComponent& material = *materials.GetComponent(entity);
 			decal.color = material.baseColor;
 			decal.emissive = material.GetEmissiveStrength();
-			decal.texture = material.baseColorMap;
-			decal.normal = material.normalMap;
+			decal.texture = material.textures[MaterialComponent::BASECOLORMAP].resource;
+			decal.normal = material.textures[MaterialComponent::NORMALMAP].resource;
 		});
 	}
 	void Scene::RunProbeUpdateSystem(wiJobSystem::context& ctx)
@@ -2781,7 +2930,7 @@ namespace wiScene
 			{
 			default:
 			case LightComponent::DIRECTIONAL:
-				aabb.createFromHalfWidth(wiRenderer::GetCamera().Eye, XMFLOAT3(10000, 10000, 10000));
+				aabb.createFromHalfWidth(XMFLOAT3(0, 0, 0), XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX));
 				locker.lock();
 				if (args.jobIndex < weather.most_important_light_index)
 				{
@@ -2797,15 +2946,6 @@ namespace wiScene
 				break;
 			case LightComponent::POINT:
 				aabb.createFromHalfWidth(light.position, XMFLOAT3(light.GetRange(), light.GetRange(), light.GetRange()));
-				break;
-			case LightComponent::SPHERE:
-			case LightComponent::DISC:
-			case LightComponent::RECTANGLE:
-			case LightComponent::TUBE:
-				XMStoreFloat3(&light.right, XMVector3TransformNormal(XMVectorSet(-1, 0, 0, 0), W));
-				XMStoreFloat3(&light.front, XMVector3TransformNormal(XMVectorSet(0, 0, -1, 0), W));
-				// area lights have no bounds, just like directional lights (todo: but they should have real bounds)
-				aabb.createFromHalfWidth(wiRenderer::GetCamera().Eye, XMFLOAT3(10000, 10000, 10000));
 				break;
 			}
 
@@ -2850,7 +2990,7 @@ namespace wiScene
 	}
 	void Scene::RunSoundUpdateSystem(wiJobSystem::context& ctx)
 	{
-		const CameraComponent& camera = wiRenderer::GetCamera();
+		const CameraComponent& camera = GetCamera();
 		wiAudio::SoundInstance3D instance3D;
 		instance3D.listenerPos = camera.Eye;
 		instance3D.listenerUp = camera.Up;

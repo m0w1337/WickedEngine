@@ -1,12 +1,13 @@
-#define DISABLE_TRANSPARENT_SHADOWMAP
+#define DISABLE_SOFT_SHADOWMAP
+#define TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK // fix the lack of depth testing
 #include "volumetricLightHF.hlsli"
 
 float4 main(VertexToPixel input) : SV_TARGET
 {
-	ShaderEntity light = EntityArray[(uint)g_xColor.x];
+	ShaderEntity light = EntityArray[g_xFrame_LightArrayOffset + (uint)g_xColor.x];
 
 	float2 ScreenCoord = input.pos2D.xy / input.pos2D.w * float2(0.5f, -0.5f) + 0.5f;
-	float depth = max(input.pos.z, texture_depth.SampleLevel(sampler_linear_clamp, ScreenCoord, 0));
+	float depth = max(input.pos.z, texture_depth.SampleLevel(sampler_point_clamp, ScreenCoord, 2));
 	float3 P = reconstructPosition(ScreenCoord, depth);
 	float3 V = g_xCamera_CamPos - P;
 	float cameraDistance = length(V);
@@ -28,18 +29,18 @@ float4 main(VertexToPixel input) : SV_TARGET
 	[loop]
 	for (uint i = 0; i < sampleCount; ++i)
 	{
-		float3 L = light.positionWS - P;
+		float3 L = light.position - P;
 		const float dist2 = dot(L, L);
 		const float dist = sqrt(dist2);
 		L /= dist;
 
-		float SpotFactor = dot(L, light.directionWS);
-		float spotCutOff = light.coneAngleCos;
+		float SpotFactor = dot(L, light.GetDirection());
+		float spotCutOff = light.GetConeAngleCos();
 
 		[branch]
 		if (SpotFactor > spotCutOff)
 		{
-			const float range2 = light.range * light.range;
+			const float range2 = light.GetRange() * light.GetRange();
 			const float att = saturate(1.0 - (dist2 / range2));
 			float3 attenuation = att * att;
 			attenuation *= saturate((1.0 - (1.0 - SpotFactor) * 1.0 / (1.0 - spotCutOff)));
@@ -47,7 +48,7 @@ float4 main(VertexToPixel input) : SV_TARGET
 			[branch]
 			if (light.IsCastingShadow())
 			{
-				float4 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + 0], float4(P, 1));
+				float4 ShPos = mul(MatrixArray[light.GetMatrixIndex() + 0], float4(P, 1));
 				ShPos.xyz /= ShPos.w;
 				float2 ShTex = ShPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
 				[branch]
@@ -68,5 +69,5 @@ float4 main(VertexToPixel input) : SV_TARGET
 
 	accumulation /= sampleCount;
 
-	return max(0, float4(accumulation * light.GetColor().rgb * light.energy, 1));
+	return max(0, float4(accumulation * light.GetColor().rgb * light.GetEnergy(), 1));
 }

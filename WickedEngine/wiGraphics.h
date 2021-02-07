@@ -8,10 +8,6 @@
 namespace wiGraphics
 {
 	struct Shader;
-	struct BlendState;
-	struct RasterizerState;
-	struct DepthStencilState;
-	struct InputLayout;
 	struct GPUResource;
 	struct GPUBuffer;
 	struct Texture;
@@ -27,6 +23,7 @@ namespace wiGraphics
 		GS,
 		PS,
 		CS,
+		LIB,
 		SHADERSTAGE_COUNT,
 	};
 	enum PRIMITIVETOPOLOGY
@@ -274,8 +271,7 @@ namespace wiGraphics
 	};
 	enum IMAGE_LAYOUT
 	{
-		IMAGE_LAYOUT_UNDEFINED,					// discard contents
-		IMAGE_LAYOUT_GENERAL,					// supports everything
+		IMAGE_LAYOUT_UNDEFINED,					// invalid state
 		IMAGE_LAYOUT_RENDERTARGET,				// render target, write enabled
 		IMAGE_LAYOUT_DEPTHSTENCIL,				// depth stencil, write enabled
 		IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,		// depth stencil, read only
@@ -287,7 +283,7 @@ namespace wiGraphics
 	};
 	enum BUFFER_STATE
 	{
-		BUFFER_STATE_GENERAL,					// supports everything
+		BUFFER_STATE_UNDEFINED,					// invalid state
 		BUFFER_STATE_VERTEX_BUFFER,				// vertex buffer, read only
 		BUFFER_STATE_INDEX_BUFFER,				// index buffer, read only
 		BUFFER_STATE_CONSTANT_BUFFER,			// constant buffer, read only
@@ -306,7 +302,9 @@ namespace wiGraphics
 		SHADING_RATE_2X2,
 		SHADING_RATE_2X4,
 		SHADING_RATE_4X2,
-		SHADING_RATE_4X4
+		SHADING_RATE_4X4,
+
+		SHADING_RATE_INVALID
 	};
 
 	// Flags ////////////////////////////////////////////
@@ -350,6 +348,7 @@ namespace wiGraphics
 		GRAPHICSDEVICE_CAPABILITY_VARIABLE_RATE_SHADING = 1 << 9,
 		GRAPHICSDEVICE_CAPABILITY_VARIABLE_RATE_SHADING_TIER2 = 1 << 10,
 		GRAPHICSDEVICE_CAPABILITY_MESH_SHADER = 1 << 11,
+		GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS = 1 << 12,
 	};
 
 	// Descriptor structs:
@@ -363,17 +362,21 @@ namespace wiGraphics
 		float MinDepth = 0.0f;
 		float MaxDepth = 1.0f;
 	};
-	struct InputLayoutDesc
+	struct InputLayout
 	{
 		static const uint32_t APPEND_ALIGNED_ELEMENT = 0xffffffff; // automatically figure out AlignedByteOffset depending on Format
 
-		std::string SemanticName;
-		uint32_t SemanticIndex = 0;
-		FORMAT Format = FORMAT_UNKNOWN;
-		uint32_t InputSlot = 0;
-		uint32_t AlignedByteOffset = APPEND_ALIGNED_ELEMENT;
-		INPUT_CLASSIFICATION InputSlotClass = INPUT_CLASSIFICATION::INPUT_PER_VERTEX_DATA;
-		uint32_t InstanceDataStepRate = 0;
+		struct Element
+		{
+			std::string SemanticName;
+			uint32_t SemanticIndex = 0;
+			FORMAT Format = FORMAT_UNKNOWN;
+			uint32_t InputSlot = 0;
+			uint32_t AlignedByteOffset = APPEND_ALIGNED_ELEMENT;
+			INPUT_CLASSIFICATION InputSlotClass = INPUT_CLASSIFICATION::INPUT_PER_VERTEX_DATA;
+			uint32_t InstanceDataStepRate = 0;
+		};
+		std::vector<Element> elements;
 	};
 	union ClearValue
 	{
@@ -404,7 +407,7 @@ namespace wiGraphics
 		uint32_t CPUAccessFlags = 0;
 		uint32_t MiscFlags = 0;
 		ClearValue clear = {};
-		IMAGE_LAYOUT layout = IMAGE_LAYOUT_GENERAL;
+		IMAGE_LAYOUT layout = IMAGE_LAYOUT_SHADER_RESOURCE;
 	};
 	struct SamplerDesc
 	{
@@ -419,7 +422,7 @@ namespace wiGraphics
 		float MinLOD = 0.0f;
 		float MaxLOD = FLT_MAX;
 	};
-	struct RasterizerStateDesc
+	struct RasterizerState
 	{
 		FILL_MODE FillMode = FILL_SOLID;
 		CULL_MODE CullMode = CULL_NONE;
@@ -433,14 +436,7 @@ namespace wiGraphics
 		bool ConservativeRasterizationEnable = false;
 		uint32_t ForcedSampleCount = 0;
 	};
-	struct DepthStencilOpDesc
-	{
-		STENCIL_OP StencilFailOp = STENCIL_OP_KEEP;
-		STENCIL_OP StencilDepthFailOp = STENCIL_OP_KEEP;
-		STENCIL_OP StencilPassOp = STENCIL_OP_KEEP;
-		COMPARISON_FUNC StencilFunc = COMPARISON_NEVER;
-	};
-	struct DepthStencilStateDesc
+	struct DepthStencilState
 	{
 		bool DepthEnable = false;
 		DEPTH_WRITE_MASK DepthWriteMask = DEPTH_WRITE_MASK_ZERO;
@@ -448,25 +444,34 @@ namespace wiGraphics
 		bool StencilEnable = false;
 		uint8_t StencilReadMask = 0xff;
 		uint8_t StencilWriteMask = 0xff;
-		DepthStencilOpDesc FrontFace;
-		DepthStencilOpDesc BackFace;
+
+		struct DepthStencilOp
+		{
+			STENCIL_OP StencilFailOp = STENCIL_OP_KEEP;
+			STENCIL_OP StencilDepthFailOp = STENCIL_OP_KEEP;
+			STENCIL_OP StencilPassOp = STENCIL_OP_KEEP;
+			COMPARISON_FUNC StencilFunc = COMPARISON_NEVER;
+		};
+		DepthStencilOp FrontFace;
+		DepthStencilOp BackFace;
 	};
-	struct RenderTargetBlendStateDesc
-	{
-		bool BlendEnable = false;
-		BLEND SrcBlend = BLEND_SRC_ALPHA;
-		BLEND DestBlend = BLEND_INV_SRC_ALPHA;
-		BLEND_OP BlendOp = BLEND_OP_ADD;
-		BLEND SrcBlendAlpha = BLEND_ONE;
-		BLEND DestBlendAlpha = BLEND_ONE;
-		BLEND_OP BlendOpAlpha = BLEND_OP_ADD;
-		uint8_t RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
-	};
-	struct BlendStateDesc
+	struct BlendState
 	{
 		bool AlphaToCoverageEnable = false;
 		bool IndependentBlendEnable = false;
-		RenderTargetBlendStateDesc RenderTarget[8];
+
+		struct RenderTargetBlendState
+		{
+			bool BlendEnable = false;
+			BLEND SrcBlend = BLEND_SRC_ALPHA;
+			BLEND DestBlend = BLEND_INV_SRC_ALPHA;
+			BLEND_OP BlendOp = BLEND_OP_ADD;
+			BLEND SrcBlendAlpha = BLEND_ONE;
+			BLEND DestBlendAlpha = BLEND_ONE;
+			BLEND_OP BlendOpAlpha = BLEND_OP_ADD;
+			uint8_t RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
+		};
+		RenderTargetBlendState RenderTarget[8];
 	};
 	struct GPUBufferDesc
 	{
@@ -490,20 +495,20 @@ namespace wiGraphics
 	};
 	struct PipelineStateDesc
 	{
-		const RootSignature* rootSignature = nullptr;
-		const Shader*				vs = nullptr;
-		const Shader*				ps = nullptr;
-		const Shader*				hs = nullptr;
-		const Shader*				ds = nullptr;
-		const Shader*				gs = nullptr;
-		const Shader*				ms = nullptr;
-		const Shader*				as = nullptr;
-		const BlendState*			bs = nullptr;
-		const RasterizerState*		rs = nullptr;
-		const DepthStencilState*	dss = nullptr;
-		const InputLayout*			il = nullptr;
-		PRIMITIVETOPOLOGY			pt = TRIANGLELIST;
-		uint32_t					sampleMask = 0xFFFFFFFF;
+		const RootSignature*	rootSignature = nullptr;
+		const Shader*			vs = nullptr;
+		const Shader*			ps = nullptr;
+		const Shader*			hs = nullptr;
+		const Shader*			ds = nullptr;
+		const Shader*			gs = nullptr;
+		const Shader*			ms = nullptr;
+		const Shader*			as = nullptr;
+		const BlendState*		bs = nullptr;
+		const RasterizerState*	rs = nullptr;
+		const DepthStencilState* dss = nullptr;
+		const InputLayout*		il = nullptr;
+		PRIMITIVETOPOLOGY		pt = TRIANGLELIST;
+		uint32_t				sampleMask = 0xFFFFFFFF;
 	};
 	struct GPUBarrier
 	{
@@ -523,6 +528,8 @@ namespace wiGraphics
 			const Texture* texture;
 			IMAGE_LAYOUT layout_before;
 			IMAGE_LAYOUT layout_after;
+			int mip;
+			int slice;
 		};
 		struct Buffer
 		{
@@ -544,13 +551,16 @@ namespace wiGraphics
 			barrier.memory.resource = resource;
 			return barrier;
 		}
-		static GPUBarrier Image(const Texture* texture, IMAGE_LAYOUT before, IMAGE_LAYOUT after)
+		static GPUBarrier Image(const Texture* texture, IMAGE_LAYOUT before, IMAGE_LAYOUT after,
+			int mip = -1, int slice = -1)
 		{
 			GPUBarrier barrier;
 			barrier.type = IMAGE_BARRIER;
 			barrier.image.texture = texture;
 			barrier.image.layout_before = before;
 			barrier.image.layout_after = after;
+			barrier.image.mip = mip;
+			barrier.image.slice = slice;
 			return barrier;
 		}
 		static GPUBarrier Buffer(const GPUBuffer* buffer, BUFFER_STATE before, BUFFER_STATE after)
@@ -570,6 +580,7 @@ namespace wiGraphics
 			RENDERTARGET,
 			DEPTH_STENCIL,
 			RESOLVE,
+			SHADING_RATE_SOURCE
 		} type = RENDERTARGET;
 		enum LOAD_OPERATION
 		{
@@ -584,17 +595,17 @@ namespace wiGraphics
 			STOREOP_STORE,
 			STOREOP_DONTCARE,
 		} storeop = STOREOP_STORE;
-		IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_GENERAL;		// layout before the render pass
-		IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_GENERAL;		// layout after the render pass
-		IMAGE_LAYOUT subpass_layout = IMAGE_LAYOUT_RENDERTARGET;// layout within the render pass
+		IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_UNDEFINED;	// layout before the render pass
+		IMAGE_LAYOUT subpass_layout = IMAGE_LAYOUT_UNDEFINED;	// layout within the render pass
+		IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_UNDEFINED;		// layout after the render pass
 
 		static RenderPassAttachment RenderTarget(
 			const Texture* resource = nullptr,
 			LOAD_OPERATION load_op = LOADOP_LOAD,
 			STORE_OPERATION store_op = STOREOP_STORE,
-			IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_GENERAL,
+			IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_SHADER_RESOURCE,
 			IMAGE_LAYOUT subpass_layout = IMAGE_LAYOUT_RENDERTARGET,
-			IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_GENERAL
+			IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_SHADER_RESOURCE
 		)
 		{
 			RenderPassAttachment attachment;
@@ -630,14 +641,29 @@ namespace wiGraphics
 
 		static RenderPassAttachment Resolve(
 			const Texture* resource = nullptr,
-			IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_GENERAL,
-			IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_GENERAL
+			IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_SHADER_RESOURCE,
+			IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_SHADER_RESOURCE
 		)
 		{
 			RenderPassAttachment attachment;
 			attachment.type = RESOLVE;
 			attachment.texture = resource;
 			attachment.initial_layout = initial_layout;
+			attachment.final_layout = final_layout;
+			return attachment;
+		}
+
+		static RenderPassAttachment ShadingRateSource(
+			const Texture* resource = nullptr,
+			IMAGE_LAYOUT initial_layout = IMAGE_LAYOUT_SHADING_RATE_SOURCE,
+			IMAGE_LAYOUT final_layout = IMAGE_LAYOUT_SHADING_RATE_SOURCE
+		)
+		{
+			RenderPassAttachment attachment;
+			attachment.type = SHADING_RATE_SOURCE;
+			attachment.texture = resource;
+			attachment.initial_layout = initial_layout;
+			attachment.subpass_layout = IMAGE_LAYOUT_SHADING_RATE_SOURCE;
 			attachment.final_layout = final_layout;
 			return attachment;
 		}
@@ -710,18 +736,23 @@ namespace wiGraphics
 		inline bool IsValid() const { return internal_state.get() != nullptr; }
 	};
 
-	struct Shader : public GraphicsDeviceChild
-	{
-		SHADERSTAGE stage = SHADERSTAGE_COUNT;
-		std::vector<uint8_t> code;
-		const RootSignature* rootSignature = nullptr;
-	};
-
 	struct Sampler : public GraphicsDeviceChild
 	{
 		SamplerDesc desc;
 
 		const SamplerDesc& GetDesc() const { return desc; }
+	};
+	struct StaticSampler
+	{
+		Sampler sampler;
+		uint32_t slot = 0;
+	};
+
+	struct Shader : public GraphicsDeviceChild
+	{
+		SHADERSTAGE stage = SHADERSTAGE_COUNT;
+		const RootSignature* rootSignature = nullptr;
+		std::vector<StaticSampler> auto_samplers; // ability to set static samplers without explicit root signature
 	};
 
 	struct GPUResource : public GraphicsDeviceChild
@@ -743,32 +774,6 @@ namespace wiGraphics
 		GPUBufferDesc desc;
 
 		const GPUBufferDesc& GetDesc() const { return desc; }
-	};
-
-	struct InputLayout : public GraphicsDeviceChild
-	{
-		std::vector<InputLayoutDesc> desc;
-	};
-
-	struct BlendState : public GraphicsDeviceChild
-	{
-		BlendStateDesc desc;
-
-		const BlendStateDesc& GetDesc() const { return desc; }
-	};
-
-	struct DepthStencilState : public GraphicsDeviceChild
-	{
-		DepthStencilStateDesc desc;
-
-		const DepthStencilStateDesc& GetDesc() const { return desc; }
-	};
-
-	struct RasterizerState : public GraphicsDeviceChild
-	{
-		RasterizerStateDesc desc;
-
-		const RasterizerStateDesc& GetDesc() const { return desc; }
 	};
 
 	struct Texture : public GPUResource
@@ -997,11 +1002,6 @@ namespace wiGraphics
 	{
 		uint32_t slot = 0;
 		uint32_t count = 1;
-	};
-	struct StaticSampler
-	{
-		Sampler sampler;
-		uint32_t slot = 0;
 	};
 	struct DescriptorTable : public GraphicsDeviceChild
 	{

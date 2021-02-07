@@ -101,15 +101,10 @@ namespace wiScene
 			{
 				archive >> emissiveColor.w;
 			}
-			archive >> refractionIndex;
+			archive >> refraction;
 			if (archive.GetVersion() < 52)
 			{
-				float subsurfaceScattering;
-				archive >> subsurfaceScattering;
-				if (subsurfaceScattering > 0)
-				{
-					subsurfaceProfile = SUBSURFACE_SKIN;
-				}
+				archive >> subsurfaceScattering.w;
 			}
 			archive >> normalMapStrength;
 			archive >> parallaxOcclusionMapping;
@@ -118,26 +113,26 @@ namespace wiScene
 			archive >> texAnimFrameRate;
 			archive >> texAnimElapsedTime;
 
-			archive >> baseColorMapName;
-			archive >> surfaceMapName;
-			archive >> normalMapName;
-			archive >> displacementMapName;
+			archive >> textures[BASECOLORMAP].name;
+			archive >> textures[SURFACEMAP].name;
+			archive >> textures[NORMALMAP].name;
+			archive >> textures[DISPLACEMENTMAP].name;
 
 			if (archive.GetVersion() >= 24)
 			{
-				archive >> emissiveMapName;
+				archive >> textures[EMISSIVEMAP].name;
 			}
 
 			if (archive.GetVersion() >= 28)
 			{
-				archive >> occlusionMapName;
+				archive >> textures[OCCLUSIONMAP].name;
 
-				archive >> uvset_baseColorMap;
-				archive >> uvset_surfaceMap;
-				archive >> uvset_normalMap;
-				archive >> uvset_displacementMap;
-				archive >> uvset_emissiveMap;
-				archive >> uvset_occlusionMap;
+				archive >> textures[BASECOLORMAP].uvset;
+				archive >> textures[SURFACEMAP].uvset;
+				archive >> textures[NORMALMAP].uvset;
+				archive >> textures[DISPLACEMENTMAP].uvset;
+				archive >> textures[EMISSIVEMAP].uvset;
+				archive >> textures[OCCLUSIONMAP].uvset;
 
 				archive >> displacementMapping;
 			}
@@ -168,9 +163,46 @@ namespace wiScene
 				}
 			}
 
-			if (archive.GetVersion() >= 52)
+			if (archive.GetVersion() >= 52 && archive.GetVersion() < 54)
 			{
-				archive >> (uint32_t&)subsurfaceProfile;
+				uint32_t subsurfaceProfile;
+				archive >> subsurfaceProfile;
+			}
+
+			if (archive.GetVersion() >= 54)
+			{
+				archive >> subsurfaceScattering;
+			}
+
+			if (archive.GetVersion() >= 56)
+			{
+				archive >> specularColor;
+			}
+
+			if (archive.GetVersion() >= 59)
+			{
+				archive >> transmission;
+				archive >> textures[TRANSMISSIONMAP].name;
+				archive >> textures[TRANSMISSIONMAP].uvset;
+			}
+
+			if (archive.GetVersion() >= 61)
+			{
+				archive >> sheenColor;
+				archive >> sheenRoughness;
+				archive >> textures[SHEENCOLORMAP].name;
+				archive >> textures[SHEENROUGHNESSMAP].name;
+				archive >> textures[SHEENCOLORMAP].uvset;
+				archive >> textures[SHEENROUGHNESSMAP].uvset;
+
+				archive >> clearcoat;
+				archive >> clearcoatRoughness;
+				archive >> textures[CLEARCOATMAP].name;
+				archive >> textures[CLEARCOATROUGHNESSMAP].name;
+				archive >> textures[CLEARCOATNORMALMAP].name;
+				archive >> textures[CLEARCOATMAP].uvset;
+				archive >> textures[CLEARCOATROUGHNESSMAP].uvset;
+				archive >> textures[CLEARCOATNORMALMAP].uvset;
 			}
 
 			wiJobSystem::Execute(seri.ctx, [&](wiJobArgs args) {
@@ -196,7 +228,7 @@ namespace wiScene
 			{
 				archive << emissiveColor.w;
 			}
-			archive << refractionIndex;
+			archive << refraction;
 			if (archive.GetVersion() < 52)
 			{
 				float subsurfaceScattering = 0;
@@ -212,57 +244,36 @@ namespace wiScene
 			// If detecting an absolute path in textures, remove it and convert to relative:
 			if(!dir.empty())
 			{
-				size_t found = baseColorMapName.rfind(dir);
-				if (found != std::string::npos)
+				for (auto& x : textures)
 				{
-					baseColorMapName = baseColorMapName.substr(found + dir.length());
-				}
-
-				found = surfaceMapName.rfind(dir);
-				if (found != std::string::npos)
-				{
-					surfaceMapName = surfaceMapName.substr(found + dir.length());
-				}
-
-				found = normalMapName.rfind(dir);
-				if (found != std::string::npos)
-				{
-					normalMapName = normalMapName.substr(found + dir.length());
-				}
-
-				found = displacementMapName.rfind(dir);
-				if (found != std::string::npos)
-				{
-					displacementMapName = displacementMapName.substr(found + dir.length());
-				}
-
-				found = emissiveMapName.rfind(dir);
-				if (found != std::string::npos)
-				{
-					emissiveMapName = emissiveMapName.substr(found + dir.length());
+					size_t found = x.name.rfind(dir);
+					if (found != std::string::npos)
+					{
+						x.name = x.name.substr(found + dir.length());
+					}
 				}
 			}
 
-			archive << baseColorMapName;
-			archive << surfaceMapName;
-			archive << normalMapName;
-			archive << displacementMapName;
+			archive << textures[BASECOLORMAP].name;
+			archive << textures[SURFACEMAP].name;
+			archive << textures[NORMALMAP].name;
+			archive << textures[DISPLACEMENTMAP].name;
 
 			if (archive.GetVersion() >= 24)
 			{
-				archive << emissiveMapName;
+				archive << textures[EMISSIVEMAP].name;
 			}
 
 			if (archive.GetVersion() >= 28)
 			{
-				archive << occlusionMapName;
+				archive << textures[OCCLUSIONMAP].name;
 
-				archive << uvset_baseColorMap;
-				archive << uvset_surfaceMap;
-				archive << uvset_normalMap;
-				archive << uvset_displacementMap;
-				archive << uvset_emissiveMap;
-				archive << uvset_occlusionMap;
+				archive << textures[BASECOLORMAP].uvset;
+				archive << textures[SURFACEMAP].uvset;
+				archive << textures[NORMALMAP].uvset;
+				archive << textures[DISPLACEMENTMAP].uvset;
+				archive << textures[EMISSIVEMAP].uvset;
+				archive << textures[OCCLUSIONMAP].uvset;
 
 				archive << displacementMapping;
 			}
@@ -278,9 +289,40 @@ namespace wiScene
 				archive << customShaderID;
 			}
 
-			if (archive.GetVersion() >= 52)
+			if (archive.GetVersion() >= 54)
 			{
-				archive << (uint32_t&)subsurfaceProfile;
+				archive << subsurfaceScattering;
+			}
+
+			if (archive.GetVersion() >= 56)
+			{
+				archive << specularColor;
+			}
+
+			if (archive.GetVersion() >= 59)
+			{
+				archive << transmission;
+				archive << textures[TRANSMISSIONMAP].name;
+				archive << textures[TRANSMISSIONMAP].uvset;
+			}
+
+			if (archive.GetVersion() >= 61)
+			{
+				archive << sheenColor;
+				archive << sheenRoughness;
+				archive << textures[SHEENCOLORMAP].name;
+				archive << textures[SHEENROUGHNESSMAP].name;
+				archive << textures[SHEENCOLORMAP].uvset;
+				archive << textures[SHEENROUGHNESSMAP].uvset;
+
+				archive << clearcoat;
+				archive << clearcoatRoughness;
+				archive << textures[CLEARCOATMAP].name;
+				archive << textures[CLEARCOATROUGHNESSMAP].name;
+				archive << textures[CLEARCOATNORMALMAP].name;
+				archive << textures[CLEARCOATMAP].uvset;
+				archive << textures[CLEARCOATROUGHNESSMAP].uvset;
+				archive << textures[CLEARCOATNORMALMAP].uvset;
 			}
 		}
 	}
@@ -444,6 +486,10 @@ namespace wiScene
 			{
 				archive >> userStencilRef;
 			}
+			if (archive.GetVersion() >= 60)
+			{
+				archive >> emissiveColor;
+			}
 		}
 		else
 		{
@@ -463,6 +509,10 @@ namespace wiScene
 			{
 				archive << userStencilRef;
 			}
+			if (archive.GetVersion() >= 60)
+			{
+				archive << emissiveColor;
+			}
 		}
 	}
 	void RigidBodyPhysicsComponent::Serialize(wiArchive& archive, EntitySerializer& seri)
@@ -474,7 +524,27 @@ namespace wiScene
 			archive >> mass;
 			archive >> friction;
 			archive >> restitution;
-			archive >> damping;
+			archive >> damping_linear;
+
+			if (archive.GetVersion() >= 57)
+			{
+				archive >> damping_angular;
+			}
+			else
+			{
+				// these were previously untested:
+				friction = 0.5f;
+				restitution = 0.0f;
+				damping_linear = 0;
+			}
+
+			if (archive.GetVersion() >= 58)
+			{
+				archive >> box.halfextents;
+				archive >> sphere.radius;
+				archive >> capsule.height;
+				archive >> capsule.radius;
+			}
 		}
 		else
 		{
@@ -483,7 +553,20 @@ namespace wiScene
 			archive << mass;
 			archive << friction;
 			archive << restitution;
-			archive << damping;
+			archive << damping_linear;
+
+			if (archive.GetVersion() >= 57)
+			{
+				archive << damping_angular;
+			}
+
+			if (archive.GetVersion() >= 58)
+			{
+				archive << box.halfextents;
+				archive << sphere.radius;
+				archive << capsule.height;
+				archive << capsule.radius;
+			}
 		}
 	}
 	void SoftBodyPhysicsComponent::Serialize(wiArchive& archive, EntitySerializer& seri)
@@ -503,6 +586,16 @@ namespace wiScene
 				archive >> temp;
 			}
 
+			if (archive.GetVersion() >= 57)
+			{
+				archive >> restitution;
+			}
+			else
+			{
+				// these were previously untested:
+				friction = 0.5f;
+			}
+
 			_flags &= ~SAFE_TO_REGISTER;
 		}
 		else
@@ -513,6 +606,11 @@ namespace wiScene
 			archive << physicsToGraphicsVertexMapping;
 			archive << graphicsToPhysicsVertexMapping;
 			archive << weights;
+
+			if (archive.GetVersion() >= 57)
+			{
+				archive << restitution;
+			}
 		}
 	}
 	void ArmatureComponent::Serialize(wiArchive& archive, EntitySerializer& seri)
@@ -572,29 +670,26 @@ namespace wiScene
 			archive >> _flags;
 			archive >> color;
 			archive >> (uint32_t&)type;
+			if (type > SPOT)
+			{
+				type = POINT; // fallback from old area light
+			}
 			archive >> energy;
 			archive >> range_local;
 			archive >> fov;
-			archive >> shadowBias;
-			archive >> radius;
-			archive >> width;
-			archive >> height;
+			if (archive.GetVersion() < 55)
+			{
+				float shadowBias;
+				float radius;
+				float width;
+				float height;
+				archive >> shadowBias;
+				archive >> radius;
+				archive >> width;
+				archive >> height;
+			}
 
 			archive >> lensFlareNames;
-
-			if (archive.GetVersion() < 33)
-			{
-				switch (GetType())
-				{
-				case LightComponent::POINT:
-				case LightComponent::SPHERE:
-				case LightComponent::DISC:
-				case LightComponent::RECTANGLE:
-				case LightComponent::TUBE:
-					shadowBias = 0.0001f;
-					break;
-				}
-			}
 
 			wiJobSystem::Execute(seri.ctx, [&](wiJobArgs args) {
 				lensFlareRimTextures.resize(lensFlareNames.size());
@@ -615,10 +710,17 @@ namespace wiScene
 			archive << energy;
 			archive << range_local;
 			archive << fov;
-			archive << shadowBias;
-			archive << radius;
-			archive << width;
-			archive << height;
+			if (archive.GetVersion() < 55)
+			{
+				float shadowBias = 0;
+				float radius = 0;
+				float width = 0;
+				float height = 0;
+				archive << shadowBias;
+				archive << radius;
+				archive << width;
+				archive << height;
+			}
 
 			// If detecting an absolute path in textures, remove it and convert to relative:
 			if (!dir.empty())

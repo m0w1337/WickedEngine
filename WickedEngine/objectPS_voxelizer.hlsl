@@ -1,4 +1,5 @@
 #define DISABLE_SOFT_SHADOWMAP
+#define DISABLE_VOXELGI
 #include "objectHF.hlsli"
 #include "voxelHF.hlsli"
 
@@ -28,7 +29,7 @@ void main(PSInput input)
 	{
 		float4 baseColor;
 		[branch]
-		if (g_xMaterial.uvset_baseColorMap >= 0)
+		if (g_xMaterial.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 		{
 			const float2 UV_baseColorMap = g_xMaterial.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
 			baseColor = texture_basecolormap.Sample(sampler_linear_wrap, UV_baseColorMap);
@@ -54,35 +55,21 @@ void main(PSInput input)
 
 
 #ifdef TERRAIN
-		Surface surface;
-		surface.P = P;
-		surface.N = N;
 		color = 0;
 		emissiveColor = 0;
 		float4 blend_weights = input.color;
 		blend_weights /= blend_weights.x + blend_weights.y + blend_weights.z + blend_weights.w;
-		float3 triplanar = abs(surface.N);
-		triplanar /= triplanar.x + triplanar.y + triplanar.z;
-		float4 sam, sam_x, sam_y, sam_z;
-		float2 uv_x, uv_y, uv_z;
+		float4 sam;
 
 		[branch]
 		if (blend_weights.x > 0)
 		{
-			uv_x = surface.P.yz * g_xMaterial.texMulAdd.xy + g_xMaterial.texMulAdd.zw;
-			uv_y = surface.P.xz * g_xMaterial.texMulAdd.xy + g_xMaterial.texMulAdd.zw;
-			uv_z = surface.P.xy * g_xMaterial.texMulAdd.xy + g_xMaterial.texMulAdd.zw;
-
 			[branch]
-			if (g_xMaterial.uvset_baseColorMap >= 0)
+			if (g_xMaterial.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 			{
-				sam_x = texture_basecolormap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_basecolormap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_basecolormap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_basecolormap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
 			}
 			else
 			{
@@ -91,40 +78,24 @@ void main(PSInput input)
 			color += sam * g_xMaterial.baseColor * blend_weights.x;
 
 			[branch]
-			if (g_xMaterial.uvset_emissiveMap >= 0)
+			if (g_xMaterial.uvset_emissiveMap >= 0 && any(g_xMaterial.emissiveColor))
 			{
-				sam_x = texture_emissivemap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_emissivemap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_emissivemap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial.uvset_emissiveMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_emissivemap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
+				emissiveColor += sam * g_xMaterial.emissiveColor * blend_weights.x;
 			}
-			else
-			{
-				sam = 1;
-			}
-			emissiveColor += sam * g_xMaterial.emissiveColor * blend_weights.x;
 		}
 
 		[branch]
 		if (blend_weights.y > 0)
 		{
-			uv_x = surface.P.yz * g_xMaterial_blend1.texMulAdd.xy + g_xMaterial_blend1.texMulAdd.zw;
-			uv_y = surface.P.xz * g_xMaterial_blend1.texMulAdd.xy + g_xMaterial_blend1.texMulAdd.zw;
-			uv_z = surface.P.xy * g_xMaterial_blend1.texMulAdd.xy + g_xMaterial_blend1.texMulAdd.zw;
-
 			[branch]
-			if (g_xMaterial_blend1.uvset_baseColorMap >= 0)
+			if (g_xMaterial_blend1.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 			{
-				sam_x = texture_blend1_basecolormap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_blend1_basecolormap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_blend1_basecolormap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial_blend1.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_blend1_basecolormap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
 			}
 			else
 			{
@@ -133,40 +104,24 @@ void main(PSInput input)
 			color += sam * g_xMaterial_blend1.baseColor * blend_weights.y;
 
 			[branch]
-			if (g_xMaterial_blend1.uvset_emissiveMap >= 0)
+			if (g_xMaterial_blend1.uvset_emissiveMap >= 0 && any(g_xMaterial_blend1.emissiveColor))
 			{
-				sam_x = texture_blend1_emissivemap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_blend1_emissivemap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_blend1_emissivemap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial_blend1.uvset_emissiveMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_blend1_emissivemap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
+				emissiveColor += sam * g_xMaterial_blend1.emissiveColor * blend_weights.y;
 			}
-			else
-			{
-				sam = 1;
-			}
-			emissiveColor += sam * g_xMaterial_blend1.emissiveColor * blend_weights.y;
 		}
 
 		[branch]
 		if (blend_weights.z > 0)
 		{
-			uv_x = surface.P.yz * g_xMaterial_blend2.texMulAdd.xy + g_xMaterial_blend2.texMulAdd.zw;
-			uv_y = surface.P.xz * g_xMaterial_blend2.texMulAdd.xy + g_xMaterial_blend2.texMulAdd.zw;
-			uv_z = surface.P.xy * g_xMaterial_blend2.texMulAdd.xy + g_xMaterial_blend2.texMulAdd.zw;
-
 			[branch]
-			if (g_xMaterial_blend2.uvset_baseColorMap >= 0)
+			if (g_xMaterial_blend2.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 			{
-				sam_x = texture_blend2_basecolormap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_blend2_basecolormap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_blend2_basecolormap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial_blend2.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_blend2_basecolormap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
 			}
 			else
 			{
@@ -175,40 +130,24 @@ void main(PSInput input)
 			color += sam * g_xMaterial_blend2.baseColor * blend_weights.z;
 
 			[branch]
-			if (g_xMaterial_blend2.uvset_emissiveMap >= 0)
+			if (g_xMaterial_blend2.uvset_emissiveMap >= 0 && any(g_xMaterial_blend2.emissiveColor))
 			{
-				sam_x = texture_blend2_emissivemap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_blend2_emissivemap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_blend2_emissivemap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial_blend2.uvset_emissiveMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_blend2_emissivemap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
+				emissiveColor += sam * g_xMaterial_blend2.emissiveColor * blend_weights.z;
 			}
-			else
-			{
-				sam = 1;
-			}
-			emissiveColor += sam * g_xMaterial_blend2.emissiveColor * blend_weights.z;
 		}
 
 		[branch]
 		if (blend_weights.w > 0)
 		{
-			uv_x = surface.P.yz * g_xMaterial_blend3.texMulAdd.xy + g_xMaterial_blend3.texMulAdd.zw;
-			uv_y = surface.P.xz * g_xMaterial_blend3.texMulAdd.xy + g_xMaterial_blend3.texMulAdd.zw;
-			uv_z = surface.P.xy * g_xMaterial_blend3.texMulAdd.xy + g_xMaterial_blend3.texMulAdd.zw;
-
 			[branch]
-			if (g_xMaterial_blend3.uvset_baseColorMap >= 0)
+			if (g_xMaterial_blend3.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 			{
-				sam_x = texture_blend3_basecolormap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_blend3_basecolormap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_blend3_basecolormap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial_blend3.uvset_baseColorMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_blend3_basecolormap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
 			}
 			else
 			{
@@ -217,28 +156,21 @@ void main(PSInput input)
 			color += sam * g_xMaterial_blend3.baseColor * blend_weights.w;
 
 			[branch]
-			if (g_xMaterial_blend3.uvset_emissiveMap >= 0)
+			if (g_xMaterial_blend3.uvset_emissiveMap >= 0 && any(g_xMaterial_blend3.emissiveColor))
 			{
-				sam_x = texture_blend3_emissivemap.Sample(sampler_objectshader, uv_x);
-				sam_y = texture_blend3_emissivemap.Sample(sampler_objectshader, uv_y);
-				sam_z = texture_blend3_emissivemap.Sample(sampler_objectshader, uv_z);
-				sam_x.rgb = DEGAMMA(sam_x.rgb);
-				sam_y.rgb = DEGAMMA(sam_y.rgb);
-				sam_z.rgb = DEGAMMA(sam_z.rgb);
-				sam = (sam_x * triplanar.x + sam_y * triplanar.y + sam_z * triplanar.z);
+				float2 uv = g_xMaterial_blend3.uvset_emissiveMap == 0 ? input.uvsets.xy : input.uvsets.zw;
+				sam = texture_blend3_emissivemap.Sample(sampler_objectshader, uv);
+				sam.rgb = DEGAMMA(sam.rgb);
+				emissiveColor += sam * g_xMaterial_blend3.emissiveColor * blend_weights.w;
 			}
-			else
-			{
-				sam = 1;
-			}
-			emissiveColor += sam * g_xMaterial_blend3.emissiveColor * blend_weights.w;
 		}
 
 		color.a = 1;
 
 #endif // TERRAIN
 
-		Lighting lighting = CreateLighting(0, 0, 0, 0);
+		Lighting lighting;
+		lighting.create(0, 0, 0, 0);
 
 		[branch]
 		if (any(xForwardLightMask))
@@ -272,19 +204,19 @@ void main(PSInput input)
 					{
 					case ENTITY_TYPE_DIRECTIONALLIGHT:
 					{
-						float3 L = light.directionWS;
+						float3 L = light.GetDirection();
 						const float NdotL = saturate(dot(L, N));
 
 						[branch]
 						if (NdotL > 0)
 						{
-							float3 lightColor = light.GetColor().rgb * light.energy * NdotL;
+							float3 lightColor = light.GetColor().rgb * light.GetEnergy() * NdotL;
 
 							[branch]
 							if (light.IsCastingShadow() >= 0)
 							{
 								const uint cascade = g_xFrame_ShadowCascadeCount - 1; // biggest cascade (coarsest resolution) will be used to voxelize
-								float3 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + cascade], float4(P, 1)).xyz; // ortho matrix, no divide by .w
+								float3 ShPos = mul(MatrixArray[light.GetMatrixIndex() + cascade], float4(P, 1)).xyz; // ortho matrix, no divide by .w
 								float3 ShTex = ShPos.xyz * float3(0.5f, -0.5f, 0.5f) + 0.5f;
 
 								[branch] if ((saturate(ShTex.x) == ShTex.x) && (saturate(ShTex.y) == ShTex.y) && (saturate(ShTex.z) == ShTex.z))
@@ -299,9 +231,9 @@ void main(PSInput input)
 					break;
 					case ENTITY_TYPE_POINTLIGHT:
 					{
-						float3 L = light.positionWS - P;
+						float3 L = light.position - P;
 						const float dist2 = dot(L, L);
-						const float range2 = light.range * light.range;
+						const float range2 = light.GetRange() * light.GetRange();
 
 						[branch]
 						if (dist2 < range2)
@@ -317,11 +249,11 @@ void main(PSInput input)
 								const float att = saturate(1.0 - (dist2 / range2));
 								const float attenuation = att * att;
 
-								float3 lightColor = light.GetColor().rgb * light.energy * NdotL * attenuation;
+								float3 lightColor = light.GetColor().rgb * light.GetEnergy() * NdotL * attenuation;
 
 								[branch]
 								if (light.IsCastingShadow() >= 0) {
-									lightColor *= shadowCube(light, Lunnormalized);
+									lightColor *= shadowCube(light, L, Lunnormalized);
 								}
 
 								lighting.direct.diffuse += lightColor;
@@ -331,9 +263,9 @@ void main(PSInput input)
 					break;
 					case ENTITY_TYPE_SPOTLIGHT:
 					{
-						float3 L = light.positionWS - P;
+						float3 L = light.position - P;
 						const float dist2 = dot(L, L);
-						const float range2 = light.range * light.range;
+						const float range2 = light.GetRange() * light.GetRange();
 
 						[branch]
 						if (dist2 < range2)
@@ -345,23 +277,23 @@ void main(PSInput input)
 							[branch]
 							if (NdotL > 0)
 							{
-								const float SpotFactor = dot(L, light.directionWS);
-								const float spotCutOff = light.coneAngleCos;
+								const float SpotFactor = dot(L, light.GetDirection());
+								const float spotCutOff = light.GetConeAngleCos();
 
 								[branch]
 								if (SpotFactor > spotCutOff)
 								{
-									const float range2 = light.range * light.range;
+									const float range2 = light.GetRange() * light.GetRange();
 									const float att = saturate(1.0 - (dist2 / range2));
 									float attenuation = att * att;
 									attenuation *= saturate((1.0 - (1.0 - SpotFactor) * 1.0 / (1.0 - spotCutOff)));
 
-									float3 lightColor = light.GetColor().rgb * light.energy * NdotL * attenuation;
+									float3 lightColor = light.GetColor().rgb * light.GetEnergy() * NdotL * attenuation;
 
 									[branch]
 									if (light.IsCastingShadow() >= 0)
 									{
-										float4 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + 0], float4(P, 1));
+										float4 ShPos = mul(MatrixArray[light.GetMatrixIndex() + 0], float4(P, 1));
 										ShPos.xyz /= ShPos.w;
 										float2 ShTex = ShPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
 										[branch]
@@ -382,7 +314,7 @@ void main(PSInput input)
 			}
 		}
 
-		color.rgb *= lighting.direct.diffuse;
+		color.rgb *= lighting.direct.diffuse + GetAmbient(N);
 		
 		color.rgb += emissiveColor.rgb * emissiveColor.a;
 

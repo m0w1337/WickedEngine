@@ -14,7 +14,6 @@
 #include "Utility/stb_truetype.h"
 
 #include <fstream>
-#include <sstream>
 #include <atomic>
 #include <unordered_map>
 #include <unordered_set>
@@ -86,9 +85,8 @@ namespace wiFont_Internal
 
 			if (!stbtt_InitFont(&fontInfo, fontBuffer.data(), offset))
 			{
-				stringstream ss("");
-				ss << "Failed to load font: " << name;
-				wiHelper::messageBox(ss.str());
+				string ss = "Failed to load font: " + name;
+				wiHelper::messageBox(ss.c_str());
 			}
 
 			stbtt_GetFontVMetrics(&fontInfo, &ascent, &descent, &lineGap);
@@ -241,6 +239,11 @@ void LoadShaders()
 
 	wiRenderer::LoadShader(VS, vertexShader, "fontVS.cso");
 
+
+	pixelShader.auto_samplers.emplace_back();
+	pixelShader.auto_samplers.back().sampler = sampler;
+	pixelShader.auto_samplers.back().slot = SSLOT_ONDEMAND1;
+
 	wiRenderer::LoadShader(PS, pixelShader, "fontPS.cso");
 
 
@@ -280,7 +283,7 @@ void Initialize()
 
 
 
-	RasterizerStateDesc rs;
+	RasterizerState rs;
 	rs.FillMode = FILL_SOLID;
 	rs.CullMode = CULL_FRONT;
 	rs.FrontCounterClockwise = true;
@@ -290,9 +293,9 @@ void Initialize()
 	rs.DepthClipEnable = false;
 	rs.MultisampleEnable = false;
 	rs.AntialiasedLineEnable = false;
-	device->CreateRasterizerState(&rs, &rasterizerState);
+	rasterizerState = rs;
 
-	BlendStateDesc bd;
+	BlendState bd;
 	bd.RenderTarget[0].BlendEnable = true;
 	bd.RenderTarget[0].SrcBlend = BLEND_SRC_ALPHA;
 	bd.RenderTarget[0].DestBlend = BLEND_INV_SRC_ALPHA;
@@ -302,12 +305,12 @@ void Initialize()
 	bd.RenderTarget[0].BlendOpAlpha = BLEND_OP_ADD;
 	bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
 	bd.IndependentBlendEnable = false;
-	device->CreateBlendState(&bd, &blendState);
+	blendState = bd;
 
-	DepthStencilStateDesc dsd;
+	DepthStencilState dsd;
 	dsd.DepthEnable = false;
 	dsd.StencilEnable = false;
-	device->CreateDepthStencilState(&dsd, &depthStencilState);
+	depthStencilState = dsd;
 
 	SamplerDesc samplerDesc;
 	samplerDesc.Filter = FILTER_MIN_MAG_LINEAR_MIP_POINT;
@@ -595,7 +598,6 @@ void Draw_internal(const T* text, size_t text_length, const wiFontParams& params
 		device->BindConstantBuffer(VS, &constantBuffer, CB_GETBINDSLOT(FontCB), cmd);
 		device->BindConstantBuffer(PS, &constantBuffer, CB_GETBINDSLOT(FontCB), cmd);
 		device->BindResource(PS, &texture, TEXSLOT_FONTATLAS, cmd);
-		device->BindSampler(PS, &sampler, SSLOT_ONDEMAND1, cmd);
 
 		device->BindResource(VS, mem.buffer, 0, cmd);
 

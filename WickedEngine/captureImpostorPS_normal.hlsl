@@ -1,6 +1,7 @@
+#define OBJECTSHADER_LAYOUT_COMMON
 #include "objectHF.hlsli"
 
-float4 main(PixelInputType input) : SV_Target0
+float4 main(PixelInput input) : SV_Target0
 {
 	float3 N = normalize(input.nor);
 	float3 P = input.pos3D;
@@ -11,7 +12,7 @@ float4 main(PixelInputType input) : SV_Target0
 	if (g_xMaterial.uvset_normalMap >= 0)
 	{
 		float3 bumpColor;
-		NormalMapping(input.uvsets, P, N, TBN, bumpColor);
+		NormalMapping(input.uvsets, N, TBN, bumpColor);
 	}
 
 	return float4(N * 0.5f + 0.5f, 1);

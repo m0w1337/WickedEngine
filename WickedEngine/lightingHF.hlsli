@@ -7,13 +7,9 @@
 
 #ifdef BRDF_CARTOON
 #define DISABLE_SOFT_SHADOWMAP
+#define DISABLE_SOFT_RTSHADOW
 #endif // BRDF_CARTOON
 
-struct LightingContribution
-{
-	float diffuse;
-	float specular;
-};
 struct LightingPart
 {
 	float3 diffuse;
@@ -23,75 +19,109 @@ struct Lighting
 {
 	LightingPart direct;
 	LightingPart indirect;
-};
+	uint4 shadow_mask;
+	uint shadow_index;
 
-inline Lighting CreateLighting(
-	in float3 diffuse_direct,
-	in float3 specular_direct,
-	in float3 diffuse_indirect,
-	in float3 specular_indirect)
-{
-	Lighting lighting;
-	lighting.direct.diffuse = diffuse_direct;
-	lighting.direct.specular = specular_direct;
-	lighting.indirect.diffuse = diffuse_indirect;
-	lighting.indirect.specular = specular_indirect;
-	return lighting;
-}
+	inline void create(
+		in float3 diffuse_direct,
+		in float3 specular_direct,
+		in float3 diffuse_indirect,
+		in float3 specular_indirect
+	)
+	{
+		direct.diffuse = diffuse_direct;
+		direct.specular = specular_direct;
+		indirect.diffuse = diffuse_indirect;
+		indirect.specular = specular_indirect;
+		shadow_mask = 1; // fully lit by default
+		shadow_index = 0;
+	}
+};
 
 // Combine the direct and indirect lighting into final contribution
 inline LightingPart CombineLighting(in Surface surface, in Lighting lighting)
 {
 	LightingPart result;
 	result.diffuse = lighting.direct.diffuse + lighting.indirect.diffuse * surface.occlusion;
-	result.specular = lighting.direct.specular + lighting.indirect.specular * surface.F * surface.occlusion;
+	result.specular = lighting.direct.specular + lighting.indirect.specular * surface.occlusion;
 
 	return result;
 }
 
-inline float3 shadowCascade(in ShaderEntity light, in float3 shadowPos, in float2 shadowUV, in uint cascade) 
+inline float3 shadowCascade(in ShaderEntity light, in float3 shadowPos, in float2 shadowUV, in uint cascade)
 {
-	const float realDistance = shadowPos.z + light.shadowBias;
+	const float slice = light.GetTextureIndex() + cascade;
+	const float realDistance = shadowPos.z; // bias was already applied when shadow map was rendered
 	float3 shadow = 0;
 #ifndef DISABLE_SOFT_SHADOWMAP
-	const float range = 1.5f;
-	[loop]
-	for (float y = -range; y <= range; y += 1.0f)
-	{
-		[loop]
-		for (float x = -range; x <= range; x += 1.0f)
-		{
-			shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(x, y) * light.shadowKernel, light.GetShadowMapIndex() + cascade), realDistance).r;
-			shadow.y++;
-		}
-	}
-	shadow = shadow.x / shadow.y;
+	// sample along a rectangle pattern around center:
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(-1, -1) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(-1, 0) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(-1, 1) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(0, -1) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(0, 1) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(1, -1) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(1, 0) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(1, 1) * g_xFrame_ShadowKernel2D, slice), realDistance);
+	shadow = shadow.xxx / 9.0;
 #else
-	shadow = texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV, light.GetShadowMapIndex() + cascade), realDistance).r;
+	shadow = texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV, slice), realDistance);
 #endif // DISABLE_SOFT_SHADOWMAP
 
 #ifndef DISABLE_TRANSPARENT_SHADOWMAP
 	if (g_xFrame_Options & OPTION_BIT_TRANSPARENTSHADOWS_ENABLED)
 	{
-		// unfortunately transparents will not receive transparent shadow map
-		// because we cannot distinguish without using secondary depth buffer for transparents
-		// but I don't wanna do that, not overly important for now
-		float4 transparent_shadowmap = texture_shadowarray_transparent.SampleLevel(sampler_linear_clamp, float3(shadowUV, light.GetShadowMapIndex() + cascade), 0).rgba;
-		// Tint the shadow:
-		shadow *= transparent_shadowmap.rgb;
-		// Reduce shadow by caustics (caustics can also increase total light above maximum):
-		const float causticsStrength = 20;
-		shadow += transparent_shadowmap.a * causticsStrength;
+		float4 transparent_shadow = texture_shadowarray_transparent_2d.SampleLevel(sampler_linear_clamp, float3(shadowUV, slice), 0);
+#ifdef TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK
+		if (transparent_shadow.a > realDistance)
+#endif // TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK
+		{
+			shadow *= transparent_shadow.rgb;
+		}
 	}
 #endif //DISABLE_TRANSPARENT_SHADOWMAP
 
 	return shadow;
 }
 
-inline float shadowCube(in ShaderEntity light, float3 Lunnormalized)
+inline float3 shadowCube(in ShaderEntity light, in float3 L, in float3 Lunnormalized)
 {
-	const float remappedDistance = light.GetCubemapDepthRemapNear() + light.GetCubemapDepthRemapFar() / max(max(abs(Lunnormalized.x), abs(Lunnormalized.y)), abs(Lunnormalized.z));
-	return texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(-Lunnormalized, light.GetShadowMapIndex()), remappedDistance + light.shadowBias).r;
+	const float slice = light.GetTextureIndex();
+	float remappedDistance = light.GetCubemapDepthRemapNear() +
+		light.GetCubemapDepthRemapFar() / (max(max(abs(Lunnormalized.x), abs(Lunnormalized.y)), abs(Lunnormalized.z)) * 0.989); // little bias to avoid border sampling artifact
+	float3 shadow = 0;
+#ifndef DISABLE_SOFT_SHADOWMAP
+	// sample along a cube pattern around center:
+	L = -L;
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(-1, -1, -1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(1, -1, -1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(-1, 1, -1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(1, 1, -1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L, slice), remappedDistance).r;
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(-1, -1, 1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(1, -1, 1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(-1, 1, 1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow += texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(L + float3(1, 1, 1) * g_xFrame_ShadowKernelCube, slice), remappedDistance);
+	shadow /= 9.0;
+#else
+	shadow = texture_shadowarray_cube.SampleCmpLevelZero(sampler_cmp_depth, float4(-Lunnormalized, slice), remappedDistance).r;
+#endif // DISABLE_SOFT_SHADOWMAP
+
+#ifndef DISABLE_TRANSPARENT_SHADOWMAP
+	if (g_xFrame_Options & OPTION_BIT_TRANSPARENTSHADOWS_ENABLED)
+	{
+		float4 transparent_shadow = texture_shadowarray_transparent_cube.SampleLevel(sampler_linear_clamp, float4(-Lunnormalized, slice), 0);
+#ifdef TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK
+		if (transparent_shadow.a > remappedDistance)
+#endif // TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK
+		{
+			shadow *= transparent_shadow.rgb;
+		}
+	}
+#endif //DISABLE_TRANSPARENT_SHADOWMAP
+
+	return shadow;
 }
 
 inline float shadowTrace(in Surface surface, in float3 L, in float dist)
@@ -103,26 +133,38 @@ inline float shadowTrace(in Surface surface, in float3 L, in float dist)
 		RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
 	> q;
 
+	float seed = g_xFrame_FrameCount * 0.001;
+	float2 uv = surface.screenUV;
+
 	RayDesc ray;
 	ray.TMin = 0.001;
 	ray.TMax = dist;
 	ray.Origin = surface.P + surface.N * 0.01;
-	ray.Direction = L;
 
-#ifndef BRDF_CARTOON
-	float seed = g_xFrame_FrameCount * 0.001f;
-	float2 uv = surface.screenUV;
-	float3 sampling_offset = float3(rand(seed, uv), rand(seed, uv), rand(seed, uv)) * 2 - 1; // todo: should be specific to light surface
-	ray.Direction = normalize(ray.Direction + sampling_offset * 0.025f);
-#endif // BRDF_CARTOON
+	float shadow = 0;
+	uint sampleCount = 1;
 
-	q.TraceRayInline(scene_acceleration_structure, 0, 0xFF, ray);
-	q.Proceed();
-
-	if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+#ifndef DISABLE_SOFT_RTSHADOW
+	sampleCount = g_xFrame_RaytracedShadowsSampleCount;
+	for (uint i = 0; i < sampleCount; ++i)
 	{
-		return 0;
+		float3 sampling_offset = float3(rand(seed, uv), rand(seed, uv), rand(seed, uv)) * 2 - 1; // todo: should be specific to light surface
+		ray.Direction = normalize(L + sampling_offset * 0.025);
+#else
+	{
+		ray.Direction = L;
+#endif // DISABLE_SOFT_RTSHADOW
+
+		q.TraceRayInline(scene_acceleration_structure, 0, 0xFF, ray);
+		q.Proceed();
+
+		if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+		{
+			shadow += 1;
+		}
 	}
+
+	return shadow / sampleCount;
 #endif // RAYTRACING_INLINE
 
 	return 1;
@@ -131,13 +173,15 @@ inline float shadowTrace(in Surface surface, in float3 L, in float dist)
 
 inline void DirectionalLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
-	float3 L = light.directionWS.xyz;
-	SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+	float3 L = light.GetDirection();
+
+	SurfaceToLight surfaceToLight;
+	surfaceToLight.create(surface, L);
 
 	[branch]
-	if (surfaceToLight.NdotL > 0)
+	if (any(surfaceToLight.NdotL_sss))
 	{
-		float3 sh = surfaceToLight.NdotL.xxx;
+		float3 shadow = 1;
 
 		[branch]
 		if (light.IsCastingShadow())
@@ -145,24 +189,24 @@ inline void DirectionalLight(in ShaderEntity light, in Surface surface, inout Li
 			[branch]
 			if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
 			{
-				sh *= shadowTrace(surface, normalize(L), 100000);
+				shadow *= shadowTrace(surface, normalize(L), FLT_MAX);
 			}
 			else
 			{
-				// Loop through cascades from closest (smallest) to farest (biggest)
+				// Loop through cascades from closest (smallest) to furthest (biggest)
 				[loop]
 				for (uint cascade = 0; cascade < g_xFrame_ShadowCascadeCount; ++cascade)
 				{
 					// Project into shadow map space (no need to divide by .w because ortho projection!):
-					float3 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + cascade], float4(surface.P, 1)).xyz;
-					float3 ShTex = ShPos * float3(0.5f, -0.5f, 0.5f) + 0.5f;
+					float3 ShPos = mul(MatrixArray[light.GetMatrixIndex() + cascade], float4(surface.P, 1)).xyz;
+					float3 ShTex = ShPos * float3(0.5, -0.5, 0.5) + 0.5;
 
 					// Determine if pixel is inside current cascade bounds and compute shadow if it is:
 					[branch]
 					if (is_saturated(ShTex))
 					{
 						const float3 shadow_main = shadowCascade(light, ShPos, ShTex.xy, cascade);
-						const float3 cascade_edgefactor = saturate(saturate(abs(ShPos)) - 0.8f) * 5.0f; // fade will be on edge and inwards 20%
+						const float3 cascade_edgefactor = saturate(saturate(abs(ShPos)) - 0.8) * 5.0; // fade will be on edge and inwards 20%
 						const float cascade_fade = max(cascade_edgefactor.x, max(cascade_edgefactor.y, cascade_edgefactor.z));
 
 						// If we are on cascade edge threshold and not the last cascade, then fallback to a larger cascade:
@@ -171,43 +215,74 @@ inline void DirectionalLight(in ShaderEntity light, in Surface surface, inout Li
 						{
 							// Project into next shadow cascade (no need to divide by .w because ortho projection!):
 							cascade += 1;
-							ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + cascade], float4(surface.P, 1)).xyz;
-							ShTex = ShPos * float3(0.5f, -0.5f, 0.5f) + 0.5f;
+							ShPos = mul(MatrixArray[light.GetMatrixIndex() + cascade], float4(surface.P, 1)).xyz;
+							ShTex = ShPos * float3(0.5, -0.5, 0.5) + 0.5;
 							const float3 shadow_fallback = shadowCascade(light, ShPos, ShTex.xy, cascade);
 
-							sh *= lerp(shadow_main, shadow_fallback, cascade_fade);
+							shadow *= lerp(shadow_main, shadow_fallback, cascade_fade);
 						}
 						else
 						{
-							sh *= shadow_main;
+							shadow *= shadow_main;
 						}
 						break;
 					}
 				}
 			}
+
+#ifdef SHADOW_MASK_ENABLED
+			[branch]
+			if (g_xFrame_Options & OPTION_BIT_SHADOW_MASK)
+			{
+				uint mask_shift = (lighting.shadow_index % 4) * 8;
+				uint mask_bucket = lighting.shadow_index / 4;
+				uint mask = (lighting.shadow_mask[mask_bucket] >> mask_shift) & 0xFF;
+				shadow *= mask / 255.0;
+			}
+#endif // SHADOW_MASK_ENABLED
 		}
 
 		[branch]
-		if (any(sh))
+		if (any(shadow))
 		{
-			float3 atmosphereTransmittance = 1.0;
+			float3 atmosphereTransmittance = 1;
 			if (g_xFrame_Options & OPTION_BIT_REALISTIC_SKY)
 			{
 				AtmosphereParameters Atmosphere = GetAtmosphereParameters();
 				atmosphereTransmittance = GetAtmosphericLightTransmittance(Atmosphere, surface.P, L, texture_transmittancelut);
 			}
 			
-			float3 lightColor = light.GetColor().rgb * light.energy * sh * atmosphereTransmittance;			
-			lighting.direct.diffuse += max(0.0f, lightColor * BRDF_GetDiffuse(surface, surfaceToLight));
-			lighting.direct.specular += max(0.0f, lightColor * BRDF_GetSpecular(surface, surfaceToLight));
+			float3 lightColor = light.GetColor().rgb * light.GetEnergy() * shadow * atmosphereTransmittance;
+
+			lighting.direct.diffuse +=
+				max(0, lightColor * surfaceToLight.NdotL_sss * BRDF_GetDiffuse(surface, surfaceToLight));
+
+			lighting.direct.specular +=
+				max(0, lightColor * surfaceToLight.NdotL * BRDF_GetSpecular(surface, surfaceToLight));
 		}
 	}
+
+#ifdef SHADOW_MASK_ENABLED
+#ifndef RAYTRACING_INLINE
+	[branch]
+	if (light.IsCastingShadow())
+	{
+		// The shadow contribution for raytraced shadow is detected slightly differently
+		//	in pixel shaders and raytracing step
+		//	So if light is shadowed, we always increment shadow index, even if actual
+		//	contribution might have been skipped.
+		//
+		//	Read more about this in rtshadowLIB.hlsl file (**)
+		lighting.shadow_index++;
+	}
+#endif // RAYTRACING_INLINE
+#endif // SHADOW_MASK_ENABLED
 }
 inline void PointLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
-	float3 L = light.positionWS - surface.P;
+	float3 L = light.position - surface.P;
 	const float dist2 = dot(L, L);
-	const float range2 = light.range * light.range;
+	const float range2 = light.GetRange() * light.GetRange();
 
 	[branch]
 	if (dist2 < range2)
@@ -216,12 +291,13 @@ inline void PointLight(in ShaderEntity light, in Surface surface, inout Lighting
 		const float dist = sqrt(dist2);
 		L /= dist;
 
-		SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+		SurfaceToLight surfaceToLight;
+		surfaceToLight.create(surface, L);
 
 		[branch]
-		if (surfaceToLight.NdotL > 0)
+		if (any(surfaceToLight.NdotL_sss))
 		{
-			float sh = surfaceToLight.NdotL;
+			float3 shadow = 1;
 
 			[branch]
 			if (light.IsCastingShadow())
@@ -229,34 +305,64 @@ inline void PointLight(in ShaderEntity light, in Surface surface, inout Lighting
 				[branch]
 				if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
 				{
-					sh *= shadowTrace(surface, L, dist);
+					shadow *= shadowTrace(surface, L, dist);
 				}
 				else
 				{
-					sh *= shadowCube(light, Lunnormalized);
+					shadow *= shadowCube(light, L, Lunnormalized);
 				}
+
+#ifdef SHADOW_MASK_ENABLED
+				[branch]
+				if (g_xFrame_Options & OPTION_BIT_SHADOW_MASK)
+				{
+					uint mask_shift = (lighting.shadow_index % 4) * 8;
+					uint mask_bucket = lighting.shadow_index / 4;
+					uint mask = (lighting.shadow_mask[mask_bucket] >> mask_shift) & 0xFF;
+					shadow *= mask / 255.0;
+				}
+#endif // SHADOW_MASK_ENABLED
 			}
 
 			[branch]
-			if (sh > 0)
+			if (any(shadow))
 			{
-				float3 lightColor = light.GetColor().rgb * light.energy * sh;
+				float3 lightColor = light.GetColor().rgb * light.GetEnergy() * shadow;
 
-				const float att = saturate(1.0 - (dist2 / range2));
+				const float att = saturate(1 - (dist2 / range2));
 				const float attenuation = att * att;
 				lightColor *= attenuation;
 
-				lighting.direct.diffuse += max(0.0f, lightColor * BRDF_GetDiffuse(surface, surfaceToLight));
-				lighting.direct.specular += max(0.0f, lightColor * BRDF_GetSpecular(surface, surfaceToLight));
+				lighting.direct.diffuse +=
+					max(0, lightColor * surfaceToLight.NdotL_sss * BRDF_GetDiffuse(surface, surfaceToLight));
+
+				lighting.direct.specular +=
+					max(0, lightColor * surfaceToLight.NdotL * BRDF_GetSpecular(surface, surfaceToLight));
 			}
 		}
 	}
+
+#ifdef SHADOW_MASK_ENABLED
+#ifndef RAYTRACING_INLINE
+	[branch]
+	if (light.IsCastingShadow())
+	{
+		// The shadow contribution for raytraced shadow is detected slightly differently
+		//	in pixel shaders and raytracing step
+		//	So if light is shadowed, we always increment shadow index, even if actual
+		//	contribution might have been skipped.
+		//
+		//	Read more about this in rtshadowLIB.hlsl file (**)
+		lighting.shadow_index++;
+	}
+#endif // RAYTRACING_INLINE
+#endif // SHADOW_MASK_ENABLED
 }
 inline void SpotLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
-	float3 L = light.positionWS - surface.P;
+	float3 L = light.position - surface.P;
 	const float dist2 = dot(L, L);
-	const float range2 = light.range * light.range;
+	const float range2 = light.GetRange() * light.GetRange();
 
 	[branch]
 	if (dist2 < range2)
@@ -264,18 +370,19 @@ inline void SpotLight(in ShaderEntity light, in Surface surface, inout Lighting 
 		const float dist = sqrt(dist2);
 		L /= dist;
 
-		SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+		SurfaceToLight surfaceToLight;
+		surfaceToLight.create(surface, L);
 
 		[branch]
-		if (surfaceToLight.NdotL > 0)
+		if (any(surfaceToLight.NdotL_sss))
 		{
-			const float SpotFactor = dot(L, light.directionWS);
-			const float spotCutOff = light.coneAngleCos;
+			const float SpotFactor = dot(L, light.GetDirection());
+			const float spotCutOff = light.GetConeAngleCos();
 
 			[branch]
 			if (SpotFactor > spotCutOff)
 			{
-				float3 sh = surfaceToLight.NdotL.xxx;
+				float3 shadow = 1;
 
 				[branch]
 				if (light.IsCastingShadow())
@@ -283,42 +390,72 @@ inline void SpotLight(in ShaderEntity light, in Surface surface, inout Lighting 
 					[branch]
 					if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
 					{
-						sh *= shadowTrace(surface, L, dist);
+						shadow *= shadowTrace(surface, L, dist);
 					}
 					else
 					{
-						float4 ShPos = mul(MatrixArray[light.GetShadowMatrixIndex() + 0], float4(surface.P, 1));
+						float4 ShPos = mul(MatrixArray[light.GetMatrixIndex() + 0], float4(surface.P, 1));
 						ShPos.xyz /= ShPos.w;
-						float2 ShTex = ShPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
+						float2 ShTex = ShPos.xy * float2(0.5, -0.5) + 0.5;
 						[branch]
 						if (is_saturated(ShTex))
 						{
-							sh *= shadowCascade(light, ShPos.xyz, ShTex.xy, 0);
+							shadow *= shadowCascade(light, ShPos.xyz, ShTex.xy, 0);
 						}
 					}
+
+#ifdef SHADOW_MASK_ENABLED
+					[branch]
+					if (g_xFrame_Options & OPTION_BIT_SHADOW_MASK)
+					{
+						uint mask_shift = (lighting.shadow_index % 4) * 8;
+						uint mask_bucket = lighting.shadow_index / 4;
+						uint mask = (lighting.shadow_mask[mask_bucket] >> mask_shift) & 0xFF;
+						shadow *= mask / 255.0;
+					}
+#endif // SHADOW_MASK_ENABLED
 				}
 
 				[branch]
-				if (any(sh))
+				if (any(shadow))
 				{
-					float3 lightColor = light.GetColor().rgb * light.energy * sh;
+					float3 lightColor = light.GetColor().rgb * light.GetEnergy() * shadow;
 
-					const float att = saturate(1.0 - (dist2 / range2));
+					const float att = saturate(1 - (dist2 / range2));
 					float attenuation = att * att;
-					attenuation *= saturate((1.0 - (1.0 - SpotFactor) * 1.0 / (1.0 - spotCutOff)));
+					attenuation *= saturate((1 - (1 - SpotFactor) * 1 / (1 - spotCutOff)));
 					lightColor *= attenuation;
 
-					lighting.direct.diffuse += max(0.0f, lightColor * BRDF_GetDiffuse(surface, surfaceToLight));
-					lighting.direct.specular += max(0.0f, lightColor * BRDF_GetSpecular(surface, surfaceToLight));
+					lighting.direct.diffuse +=
+						max(0, lightColor * surfaceToLight.NdotL_sss * BRDF_GetDiffuse(surface, surfaceToLight));
+
+					lighting.direct.specular +=
+						max(0, lightColor * surfaceToLight.NdotL * BRDF_GetSpecular(surface, surfaceToLight));
 				}
 			}
 		}
 	}
+
+#ifdef SHADOW_MASK_ENABLED
+#ifndef RAYTRACING_INLINE
+	[branch]
+	if (light.IsCastingShadow())
+	{
+		// The shadow contribution for raytraced shadow is detected slightly differently
+		//	in pixel shaders and raytracing step
+		//	So if light is shadowed, we always increment shadow index, even if actual
+		//	contribution might have been skipped.
+		//
+		//	Read more about this in rtshadowLIB.hlsl file (**)
+		lighting.shadow_index++;
+	}
+#endif // RAYTRACING_INLINE
+#endif // SHADOW_MASK_ENABLED
 }
 
 
 
-
+#if 0 // Currently area lights are disabled
 // AREA LIGHTS
 
 // Based on the Frostbite presentation: 
@@ -341,7 +478,8 @@ float RightPyramidSolidAngle(float dist, float halfWidth, float halfHeight)
 
 	return 4 * asin(a * b / sqrt((a * a + h * h) * (b * b + h * h)));
 }
-float RectangleSolidAngle(float3 worldPos,
+float RectangleSolidAngle(
+	float3 worldPos,
 	float3 p0, float3 p1,
 	float3 p2, float3 p3)
 {
@@ -408,6 +546,7 @@ float illuminanceSphereOrDisk(float cosTheta, float sinSigmaSqr)
 
 inline void SphereLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
+#ifndef DISABLE_AREALIGHT
 	float3 Lunnormalized = light.positionWS - surface.P;
 	float dist = length(Lunnormalized);
 	float3 L = Lunnormalized / dist;
@@ -423,7 +562,7 @@ inline void SphereLight(in ShaderEntity light, in Surface surface, inout Lightin
 		}
 		else
 		{
-			fLight = shadowCube(light, Lunnormalized);
+			fLight = shadowCube(light, L, Lunnormalized);
 		}
 	}
 
@@ -436,7 +575,7 @@ inline void SphereLight(in ShaderEntity light, in Surface surface, inout Lightin
 																// We need to prevent the object penetrating into the surface 
 																// and we must avoid divide by 0, thus the 0.9999f 
 		float sqrLightRadius = light.GetRadius() * light.GetRadius();
-		float sinSigmaSqr = min(sqrLightRadius / sqrDist, 0.9999f);
+		float sinSigmaSqr = min(sqrLightRadius / sqrDist, 0.9999);
 		fLight *= illuminanceSphereOrDisk(cosTheta, sinSigmaSqr);
 
 		[branch]
@@ -452,18 +591,21 @@ inline void SphereLight(in ShaderEntity light, in Surface surface, inout Lightin
 				L = normalize(closestPoint);
 			}
 
-			float3 lightColor = light.GetColor().rgb * light.energy * fLight;
+			float3 lightColor = light.GetColor().rgb * light.GetEnergy() * fLight;
 
 
-			SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+			SurfaceToLight surfaceToLight;
+			surfaceToLight.Create(surface, L);
 
 			lighting.direct.specular += max(0, lightColor * BRDF_GetSpecular(surface, surfaceToLight));
 			lighting.direct.diffuse += max(0, lightColor / PI);
 		}
 	}
+#endif // DISABLE_AREALIGHT
 }
 inline void DiscLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
+#ifndef DISABLE_AREALIGHT
 	float3 Lunnormalized = light.positionWS - surface.P;
 	float dist = length(Lunnormalized);
 	float3 L = Lunnormalized / dist;
@@ -479,7 +621,7 @@ inline void DiscLight(in ShaderEntity light, in Surface surface, inout Lighting 
 		}
 		else
 		{
-			fLight = shadowCube(light, Lunnormalized);
+			fLight = shadowCube(light, L, Lunnormalized);
 		}
 	}
 
@@ -515,17 +657,20 @@ inline void DiscLight(in ShaderEntity light, in Surface surface, inout Lighting 
 				L = normalize(closestPoint);
 			}
 
-			float3 lightColor = light.GetColor().rgb * light.energy * fLight;
+			float3 lightColor = light.GetColor().rgb * light.GetEnergy() * fLight;
 
-			SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+			SurfaceToLight surfaceToLight;
+			surfaceToLight.Create(surface, L);
 
 			lighting.direct.specular += max(0, specularAttenuation * lightColor * BRDF_GetSpecular(surface, surfaceToLight));
 			lighting.direct.diffuse += max(0, lightColor / PI);
 		}
 	}
+#endif // DISABLE_AREALIGHT
 }
 inline void RectangleLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
+#ifndef DISABLE_AREALIGHT
 	float3 L = light.positionWS - surface.P;
 	const float3 Lunnormalized = L;
 	float dist = length(L);
@@ -542,9 +687,8 @@ inline void RectangleLight(in ShaderEntity light, in Surface surface, inout Ligh
 		}
 		else
 		{
-			fLight = shadowCube(light, Lunnormalized);
+			fLight = shadowCube(light, L, Lunnormalized);
 		}
-		fLight = shadowCube(light, Lunnormalized);
 	}
 
 	[branch]
@@ -639,17 +783,20 @@ inline void RectangleLight(in ShaderEntity light, in Surface surface, inout Ligh
 				L = normalize(L); // TODO: Is it necessary?
 			}
 
-			float3 lightColor = light.GetColor().rgb * light.energy * fLight;
+			float3 lightColor = light.GetColor().rgb * light.GetEnergy() * fLight;
 
-			SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+			SurfaceToLight surfaceToLight;
+			surfaceToLight.Create(surface, L);
 
 			lighting.direct.specular += max(0, specularAttenuation * lightColor * BRDF_GetSpecular(surface, surfaceToLight));
 			lighting.direct.diffuse += max(0, lightColor / PI);
 		}
 	}
+#endif // DISABLE_AREALIGHT
 }
 inline void TubeLight(in ShaderEntity light, in Surface surface, inout Lighting lighting)
 {
+#ifndef DISABLE_AREALIGHT
 	float3 Lunnormalized = light.positionWS - surface.P;
 	float dist = length(Lunnormalized);
 	float3 L = Lunnormalized / dist;
@@ -665,7 +812,7 @@ inline void TubeLight(in ShaderEntity light, in Surface surface, inout Lighting 
 		}
 		else
 		{
-			fLight = shadowCube(light, Lunnormalized);
+			fLight = shadowCube(light, L, Lunnormalized);
 		}
 	}
 
@@ -680,8 +827,8 @@ inline void TubeLight(in ShaderEntity light, in Surface surface, inout Lighting 
 		float3 worldNormal = surface.N;
 
 
-		float3 P0 = light.positionWS - lightLeft * lightWidth*0.5f;
-		float3 P1 = light.positionWS + lightLeft * lightWidth*0.5f;
+		float3 P0 = light.positionWS - lightLeft * lightWidth * 0.5;
+		float3 P1 = light.positionWS + lightLeft * lightWidth * 0.5;
 
 		// The sphere is placed at the nearest point on the segment. 
 		// The rectangular plane is define by the following orthonormal frame: 
@@ -731,29 +878,30 @@ inline void TubeLight(in ShaderEntity light, in Surface surface, inout Lighting 
 
 				L = (L0 + saturate(t) * Ld);
 
-				// Then I place a sphere on that point and calculate the lisght vector like for sphere light.
+				// Then I place a sphere on that point and calculate the light vector like for sphere light.
 				float3 centerToRay = dot(L, r) * r - L;
 				float3 closestPoint = L + centerToRay * saturate(light.GetRadius() / length(centerToRay));
 				L = normalize(closestPoint);
 			}
 
-			float3 lightColor = light.GetColor().rgb * light.energy * fLight;
+			float3 lightColor = light.GetColor().rgb * light.GetEnergy() * fLight;
 
-			SurfaceToLight surfaceToLight = CreateSurfaceToLight(surface, L);
+			SurfaceToLight surfaceToLight;
+			surfaceToLight.Create(surface, L);
 
 			lighting.direct.specular += max(0, lightColor * BRDF_GetSpecular(surface, surfaceToLight));
 			lighting.direct.diffuse += max(0, lightColor / PI);
 		}
 	}
+#endif // DISABLE_AREALIGHT
 }
+#endif // AREA LIGHTS
 
 
 // VOXEL RADIANCE
 
-inline LightingContribution VoxelGI(in Surface surface, inout Lighting lighting)
+inline void VoxelGI(in Surface surface, inout Lighting lighting)
 {
-	LightingContribution contribution;
-
 	[branch]if (g_xFrame_VoxelRadianceDataRes != 0)
 	{
 		// determine blending factor (we will blend out voxel GI on grid edges):
@@ -765,9 +913,7 @@ inline LightingContribution VoxelGI(in Surface surface, inout Lighting lighting)
 
 		float4 radiance = ConeTraceRadiance(texture_voxelradiance, surface.P, surface.N);
 
-		contribution.diffuse = radiance.a * blend;
-
-		lighting.indirect.diffuse = lerp(lighting.indirect.diffuse, radiance.rgb, contribution.diffuse);
+		lighting.indirect.diffuse = lerp(lighting.indirect.diffuse, radiance.rgb, radiance.a * blend);
 
 
 		[branch]
@@ -775,22 +921,9 @@ inline LightingContribution VoxelGI(in Surface surface, inout Lighting lighting)
 		{
 			float4 reflection = ConeTraceReflection(texture_voxelradiance, surface.P, surface.N, surface.V, surface.roughness);
 
-			contribution.specular = reflection.a * blend;
-
-			lighting.indirect.specular = lerp(lighting.indirect.specular, reflection.rgb, contribution.specular);
-		}
-		else
-		{
-			contribution.specular = 0;
+			lighting.indirect.specular = lerp(lighting.indirect.specular, reflection.rgb * surface.F, reflection.a * blend);
 		}
 	}
-	else
-	{
-		contribution.diffuse = 0;
-		contribution.specular = 0;
-	}
-
-	return contribution;
 }
 
 
@@ -801,21 +934,24 @@ inline float3 GetAmbient(in float3 N)
 {
 	float3 ambient;
 
-#ifndef ENVMAPRENDERING
-	[branch]
-	if (g_xFrame_GlobalEnvProbeIndex >= 0)
-	{
-		ambient = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(N, g_xFrame_GlobalEnvProbeIndex), g_xFrame_EnvProbeMipCount).rgb;
-	}
-	else
+#ifdef ENVMAPRENDERING
+
+	// Set realistic_sky_stationary to true so we capture ambient at float3(0.0, 0.0, 0.0), similar to the standard sky to avoid flickering and weird behavior
+	ambient = lerp(
+		GetDynamicSkyColor(float3(0, -1, 0), false, false, false, true),
+		GetDynamicSkyColor(float3(0, 1, 0), false, false, false, true),
+		saturate(N.y * 0.5 + 0.5));
+
+#else
+
+	ambient = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(N, g_xFrame_GlobalEnvProbeIndex), g_xFrame_EnvProbeMipCount).rgb;
+
 #endif // ENVMAPRENDERING
-	{
-		// Also set realistic_sky_stationary to true so we capture ambient at float3(0.0, 0.0, 0.0), similar to the standard sky to avoid flickering and weird behavior
-		ambient = lerp(
-			GetDynamicSkyColor(float3(0, -1, 0), false, false, false, true),
-			GetDynamicSkyColor(float3(0, 1, 0), false, false, false, true),
-			saturate(N.y * 0.5f + 0.5f)) + GetAmbientColor();
-	}
+
+	// This is not entirely correct if we have probes, because it shouldn't be added twice.
+	//	However, it is not correct if we leave it out from probes, because if we render a scene
+	//	with dark sky but ambient, we still want some visible result.
+	ambient += GetAmbientColor();
 
 	return ambient;
 }
@@ -823,30 +959,40 @@ inline float3 GetAmbient(in float3 N)
 // surface:				surface descriptor
 // MIP:					mip level to sample
 // return:				color of the environment color (rgb)
-inline float3 EnvironmentReflection_Global(in Surface surface, in float MIP)
+inline float3 EnvironmentReflection_Global(in Surface surface)
 {
 	float3 envColor;
 
-#ifndef ENVMAPRENDERING
-	[branch]
-	if (g_xFrame_GlobalEnvProbeIndex >= 0)
-	{
-		// We have envmap information in a texture:
-		envColor = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(surface.R, g_xFrame_GlobalEnvProbeIndex), MIP).rgb;
-	}
-	else
+#ifdef ENVMAPRENDERING
+
+	// There is no access to envmaps, so approximate sky color:
+	// Set realistic_sky_stationary to true so we capture environment at float3(0.0, 0.0, 0.0), similar to the standard sky to avoid flickering and weird behavior
+	float3 realSkyColor = GetDynamicSkyColor(surface.R, false, false, false, true); // false: disable sun disk and clouds
+	float3 roughSkyColor = lerp(
+		GetDynamicSkyColor(float3(0, -1, 0), false, false, false, true),
+		GetDynamicSkyColor(float3(0, 1, 0), false, false, false, true),
+		saturate(surface.R.y * 0.5 + 0.5));
+
+	envColor = lerp(realSkyColor, roughSkyColor, saturate(surface.roughness)) * surface.F;
+
+#else
+
+	float MIP = surface.roughness * g_xFrame_EnvProbeMipCount;
+	envColor = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(surface.R, g_xFrame_GlobalEnvProbeIndex), MIP).rgb * surface.F;
+
+#ifdef BRDF_SHEEN
+	envColor *= surface.sheen.albedoScaling;
+	MIP = surface.sheen.roughness * g_xFrame_EnvProbeMipCount;
+	envColor += texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(surface.R, g_xFrame_GlobalEnvProbeIndex), MIP).rgb * surface.sheen.color * surface.sheen.DFG;
+#endif // BRDF_SHEEN
+
+#ifdef BRDF_CLEARCOAT
+	envColor *= 1 - surface.clearcoat.F;
+	MIP = surface.clearcoat.roughness * g_xFrame_EnvProbeMipCount;
+	envColor += texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(surface.clearcoat.R, g_xFrame_GlobalEnvProbeIndex), MIP).rgb * surface.clearcoat.F;
+#endif // BRDF_CLEARCOAT
+
 #endif // ENVMAPRENDERING
-	{
-		// There are no envmaps, approximate sky color:
-		// Also set realistic_sky_stationary to true so we capture environment at float3(0.0, 0.0, 0.0), similar to the standard sky to avoid flickering and weird behavior
-		float3 realSkyColor = GetDynamicSkyColor(surface.R, false, false, false, true); // false: disable sun disk and clouds
-		float3 roughSkyColor = lerp(
-			GetDynamicSkyColor(float3(0, -1, 0), false, false, false, true),
-			GetDynamicSkyColor(float3(0, 1, 0), false, false, false, true),
-			saturate(surface.R.y * 0.5f + 0.5f));
-		
-		envColor = lerp(realSkyColor, roughSkyColor, saturate(surface.roughness));
-	}
 
 	return envColor;
 }
@@ -857,7 +1003,7 @@ inline float3 EnvironmentReflection_Global(in Surface surface, in float MIP)
 // clipSpacePos:		world space pixel position transformed into OBB space by probeProjection matrix
 // MIP:					mip level to sample
 // return:				color of the environment map (rgb), blend factor of the environment map (a)
-inline float4 EnvironmentReflection_Local(in Surface surface, in ShaderEntity probe, in float4x4 probeProjection, in float3 clipSpacePos, in float MIP)
+inline float4 EnvironmentReflection_Local(in Surface surface, in ShaderEntity probe, in float4x4 probeProjection, in float3 clipSpacePos)
 {
 	// Perform parallax correction of reflection ray (R) into OBB:
 	float3 RayLS = mul(surface.R, (float3x3)probeProjection);
@@ -866,14 +1012,36 @@ inline float4 EnvironmentReflection_Local(in Surface surface, in ShaderEntity pr
 	float3 FurthestPlane = max(FirstPlaneIntersect, SecondPlaneIntersect);
 	float Distance = min(FurthestPlane.x, min(FurthestPlane.y, FurthestPlane.z));
 	float3 IntersectPositionWS = surface.P + surface.R * Distance;
-	float3 R_parallaxCorrected = IntersectPositionWS - probe.positionWS;
+	float3 R_parallaxCorrected = IntersectPositionWS - probe.position;
 
 	// Sample cubemap texture:
-	float3 envmapColor = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(R_parallaxCorrected, probe.shadowBias), MIP).rgb; // shadowBias stores textureIndex here...
+	float MIP = surface.roughness * g_xFrame_EnvProbeMipCount;
+	float3 envColor = texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(R_parallaxCorrected, probe.GetTextureIndex()), MIP).rgb * surface.F;
+
+#ifdef BRDF_SHEEN
+	envColor *= surface.sheen.albedoScaling;
+	MIP = surface.sheen.roughness * g_xFrame_EnvProbeMipCount;
+	envColor += texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(R_parallaxCorrected, probe.GetTextureIndex()), MIP).rgb * surface.sheen.color * surface.sheen.DFG;
+#endif // BRDF_SHEEN
+
+#ifdef BRDF_CLEARCOAT
+	RayLS = mul(surface.clearcoat.R, (float3x3)probeProjection);
+	FirstPlaneIntersect = (float3(1, 1, 1) - clipSpacePos) / RayLS;
+	SecondPlaneIntersect = (-float3(1, 1, 1) - clipSpacePos) / RayLS;
+	FurthestPlane = max(FirstPlaneIntersect, SecondPlaneIntersect);
+	Distance = min(FurthestPlane.x, min(FurthestPlane.y, FurthestPlane.z));
+	IntersectPositionWS = surface.P + surface.clearcoat.R * Distance;
+	R_parallaxCorrected = IntersectPositionWS - probe.position;
+
+	envColor *= 1 - surface.clearcoat.F;
+	MIP = surface.clearcoat.roughness * g_xFrame_EnvProbeMipCount;
+	envColor += texture_envmaparray.SampleLevel(sampler_linear_clamp, float4(R_parallaxCorrected, probe.GetTextureIndex()), MIP).rgb * surface.clearcoat.F;
+#endif // BRDF_CLEARCOAT
+
 	// blend out if close to any cube edge:
 	float edgeBlend = 1 - pow(saturate(max(abs(clipSpacePos.x), max(abs(clipSpacePos.y), abs(clipSpacePos.z)))), 8);
 
-	return float4(envmapColor, edgeBlend);
+	return float4(envColor, edgeBlend);
 }
 
 #endif // WI_LIGHTING_HF

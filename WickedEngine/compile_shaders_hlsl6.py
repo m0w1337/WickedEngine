@@ -12,7 +12,6 @@ root = tree.getroot()
 
 from pathlib import Path
 Path("shaders/hlsl6").mkdir(parents=True, exist_ok=True)
-Path("shaders/hlsl6/inlinert").mkdir(parents=True, exist_ok=True)
 
 threads = []
 
@@ -36,6 +35,9 @@ for item in root.iter():
         for shaderprofile in item.iter(namespace + "Filter"):
             profile = shaderprofile.text
 
+            #if name != "rtshadow_denoise_temporalCS.hlsl":
+            #    continue
+
             cmd = "dxc " + name + " -T "
             
             if profile == "VS":
@@ -58,6 +60,11 @@ for item in root.iter():
                 cmd += "as"
 
             cmd += "_6_5 "
+
+            cmd += " -all-resources-bound "
+            #cmd += " -pack-optimized "
+            cmd += " -res-may-alias "
+            cmd += " -no-legacy-cbuf-layout "
             
             cmd += " -flegacy-macro-expansion "
             
@@ -65,20 +72,8 @@ for item in root.iter():
 
             output_name = os.path.splitext(name)[0] + ".cso "
 
-            #inline raytracing disabled:
-            cmd1 = cmd
-            cmd1 += " -Fo " + "shaders/hlsl6/" + output_name
-            t = threading.Thread(target=compile, args=(cmd1,))
-            threads.append(t)
-            t.start()
-
-                
-            #inline raytracing enabled:
-            cmd2 = cmd
-            cmd2 += " -D RAYTRACING_INLINE "
-            cmd2 += " -D RAYTRACING_GEOMETRYINDEX "
-            cmd2 += " -Fo " + "shaders/hlsl6/inlinert/" + output_name
-            t = threading.Thread(target=compile, args=(cmd2,))
+            cmd += " -Fo " + "shaders/hlsl6/" + output_name
+            t = threading.Thread(target=compile, args=(cmd,))
             threads.append(t)
             t.start()
             

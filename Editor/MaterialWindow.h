@@ -23,10 +23,12 @@ public:
 	wiSlider roughnessSlider;
 	wiSlider reflectanceSlider;
 	wiSlider metalnessSlider;
-	wiSlider refractionIndexSlider;
 	wiSlider emissiveSlider;
+	wiSlider transmissionSlider;
+	wiSlider refractionSlider;
 	wiSlider pomSlider;
 	wiSlider displacementMappingSlider;
+	wiSlider subsurfaceScatteringSlider;
 	wiSlider texAnimFrameRateSlider;
 	wiSlider texAnimDirectionSliderU;
 	wiSlider texAnimDirectionSliderV;
@@ -35,29 +37,26 @@ public:
 	wiSlider alphaRefSlider;
 	wiComboBox shaderTypeComboBox;
 	wiComboBox blendModeComboBox;
-	wiComboBox sssComboBox;
 	wiComboBox shadingRateComboBox;
+	wiSlider sheenRoughnessSlider;
+	wiSlider clearcoatSlider;
+	wiSlider clearcoatRoughnessSlider;
 
-	wiLabel texture_baseColor_Label;
-	wiLabel texture_normal_Label;
-	wiLabel texture_surface_Label;
-	wiLabel texture_displacement_Label;
-	wiLabel texture_emissive_Label;
-	wiLabel texture_occlusion_Label;
+	struct TextureSlotControls
+	{
+		std::string name;
+		wiLabel label;
+		wiButton button;
+		wiTextInputField uvsetField;
 
-	wiButton texture_baseColor_Button;
-	wiButton texture_normal_Button;
-	wiButton texture_surface_Button;
-	wiButton texture_displacement_Button;
-	wiButton texture_emissive_Button;
-	wiButton texture_occlusion_Button;
-
-	wiTextInputField texture_baseColor_uvset_Field;
-	wiTextInputField texture_normal_uvset_Field;
-	wiTextInputField texture_surface_uvset_Field;
-	wiTextInputField texture_displacement_uvset_Field;
-	wiTextInputField texture_emissive_uvset_Field;
-	wiTextInputField texture_occlusion_uvset_Field;
+		void SetEnabled(bool value)
+		{
+			label.SetEnabled(value);
+			button.SetEnabled(value);
+			uvsetField.SetEnabled(value);
+		}
+	};
+	TextureSlotControls slots[wiScene::MaterialComponent::TEXTURESLOT_COUNT];
 
 	wiComboBox colorComboBox;
 	wiColorPicker colorPicker;

@@ -21,6 +21,11 @@ int CreateEntity_BindLua(lua_State* L)
 	return 1;
 }
 
+int GetCamera(lua_State* L)
+{
+	Luna<CameraComponent_BindLua>::push(L, new CameraComponent_BindLua(&wiScene::GetCamera()));
+	return 1;
+}
 int GetScene(lua_State* L)
 {
 	Luna<Scene_BindLua>::push(L, new Scene_BindLua(&wiScene::GetScene()));
@@ -266,6 +271,7 @@ void Bind()
 		wiLua::RunText("STENCILREF_SKIN = 3");
 		wiLua::RunText("STENCILREF_SNOW = 4");
 
+		wiLua::RegisterFunc("GetCamera", GetCamera);
 		wiLua::RegisterFunc("GetScene", GetScene);
 		wiLua::RegisterFunc("LoadModel", LoadModel);
 		wiLua::RegisterFunc("Pick", Pick);
@@ -350,19 +356,6 @@ Luna<Scene_BindLua>::FunctionType Scene_BindLua::methods[] = {
 Luna<Scene_BindLua>::PropertyType Scene_BindLua::properties[] = {
 	{ NULL, NULL }
 };
-
-Scene_BindLua::Scene_BindLua(lua_State *L)
-{
-	owning = true;
-	scene = new Scene;
-}
-Scene_BindLua::~Scene_BindLua()
-{
-	if (owning)
-	{
-		delete scene;
-	}
-}
 
 
 int Scene_BindLua::Update(lua_State* L)

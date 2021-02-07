@@ -51,19 +51,19 @@ void MainComponent::Initialize()
 
 #ifndef WICKEDENGINE_BUILD_DX11
         if (use_dx11) {
-            wiHelper::messageBox("DirectX 11 not found during build! DirectX 11 API disabled!", "Error");
+            wiHelper::messageBox("The engine was built without DX11 support!", "Error");
             use_dx11 = false;
         }
 #endif
 #ifndef WICKEDENGINE_BUILD_DX12
         if (use_dx12) {
-            wiHelper::messageBox("DirectX 12 not found during build! DirectX 12 API disabled!", "Error");
+            wiHelper::messageBox("The engine was built without DX12 support!", "Error");
             use_dx12 = false;
         }
 #endif
 #ifndef WICKEDENGINE_BUILD_VULKAN
         if (use_vulkan) {
-            wiHelper::messageBox("Vulkan SDK not found during build! Vulkan API disabled!", "Error");
+            wiHelper::messageBox("The engine was built without Vulkan support!", "Error");
             use_vulkan = false;
         }
 #endif
@@ -102,11 +102,6 @@ void MainComponent::Initialize()
 #ifdef WICKEDENGINE_BUILD_DX11
 			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_DX11>(window, fullscreen, debugdevice));
 #endif
-		}
-
-		if (wiRenderer::GetDevice()->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING_INLINE))
-		{
-		    wiRenderer::SetShaderPath(wiRenderer::GetShaderPath() + "inlinert/");
 		}
 
 	}
@@ -161,8 +156,6 @@ void MainComponent::Run()
 		wiLua::RegisterObject(MainComponent_BindLua::className, "main", new MainComponent_BindLua(this));
 		wiLua::RunFile("startup.lua");
 	}
-
-	wiPlatform::PopMessages();
 
 	wiProfiler::BeginFrame();
 
@@ -227,8 +220,6 @@ void MainComponent::Run()
 		wiProfiler::EndFrame(cmd); // End before Present() so that GPU queries are properly recorded
 	}
 	wiRenderer::GetDevice()->PresentEnd(cmd);
-
-	wiRenderer::EndFrame();
 }
 
 void MainComponent::Update(float dt)
@@ -381,6 +372,11 @@ void MainComponent::Compose(CommandList cmd)
 
 		ss.precision(2);
 		wiFont::Draw(ss.str(), wiFontParams(4, 4, infoDisplay.size, WIFALIGN_LEFT, WIFALIGN_TOP, wiColor(255,255,255,255), wiColor(0,0,0,255)), cmd);
+
+		if (infoDisplay.colorgrading_helper)
+		{
+			wiImage::Draw(wiTextureHelper::getColorGradeDefault(), wiImageParams(0, 0, 256.0f / wiPlatform::GetDPIScaling(), 16.0f / wiPlatform::GetDPIScaling()), cmd);
+		}
 	}
 
 	wiProfiler::DrawData(4, 120, cmd);

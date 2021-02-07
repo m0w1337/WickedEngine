@@ -192,6 +192,12 @@
     <None Include="$(MSBuildThisFileDirectory)models\blend_instancing_test.wiscene">
       <Filter>models</Filter>
     </None>
+    <None Include="$(MSBuildThisFileDirectory)models\shadowspriority_point_test.wiscene">
+      <Filter>models</Filter>
+    </None>
+    <None Include="$(MSBuildThisFileDirectory)models\shadowspriority_spot_test.wiscene">
+      <Filter>models</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Image Include="$(MSBuildThisFileDirectory)models\Sponza\textures\background.png">
@@ -484,6 +490,15 @@
     </Image>
     <Image Include="$(MSBuildThisFileDirectory)scripts\hp_bar.png">
       <Filter>scripts</Filter>
+    </Image>
+    <Image Include="$(MSBuildThisFileDirectory)models\colorgradinglut_default.png">
+      <Filter>models</Filter>
+    </Image>
+    <Image Include="$(MSBuildThisFileDirectory)models\colorgradinglut_filter.png">
+      <Filter>models</Filter>
+    </Image>
+    <Image Include="$(MSBuildThisFileDirectory)models\colorgradinglut_sepia.png">
+      <Filter>models</Filter>
     </Image>
   </ItemGroup>
   <ItemGroup>

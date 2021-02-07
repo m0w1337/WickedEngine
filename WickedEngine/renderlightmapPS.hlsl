@@ -29,7 +29,9 @@ float4 main(Input input) : SV_TARGET
 		for (uint iterator = 0; iterator < g_xFrame_LightArrayCount; iterator++)
 		{
 			ShaderEntity light = EntityArray[g_xFrame_LightArrayOffset + iterator];
-			Lighting lighting = CreateLighting(0, 0, 0, 0);
+
+			Lighting lighting;
+			lighting.create(0, 0, 0, 0);
 
 			if (!(light.GetFlags() & ENTITY_FLAG_LIGHT_STATIC))
 			{
@@ -44,9 +46,9 @@ float4 main(Input input) : SV_TARGET
 			{
 			case ENTITY_TYPE_DIRECTIONALLIGHT:
 			{
-				dist = INFINITE_RAYHIT;
+				dist = FLT_MAX;
 
-				L = light.directionWS.xyz; 
+				L = light.GetDirection().xyz; 
 				NdotL = saturate(dot(L, N));
 
 				[branch]
@@ -59,7 +61,7 @@ float4 main(Input input) : SV_TARGET
 						atmosphereTransmittance = GetAtmosphericLightTransmittance(Atmosphere, P, L, texture_transmittancelut);
 					}
 					
-					float3 lightColor = light.GetColor().rgb * light.energy * atmosphereTransmittance;
+					float3 lightColor = light.GetColor().rgb * light.GetEnergy() * atmosphereTransmittance;
 
 					lighting.direct.diffuse = lightColor;
 				}
@@ -67,9 +69,9 @@ float4 main(Input input) : SV_TARGET
 			break;
 			case ENTITY_TYPE_POINTLIGHT:
 			{
-				L = light.positionWS - P;
+				L = light.position - P;
 				const float dist2 = dot(L, L);
-				const float range2 = light.range * light.range;
+				const float range2 = light.GetRange() * light.GetRange();
 
 				[branch]
 				if (dist2 < range2)
@@ -81,11 +83,11 @@ float4 main(Input input) : SV_TARGET
 					[branch]
 					if (NdotL > 0)
 					{
-						const float3 lightColor = light.GetColor().rgb * light.energy;
+						const float3 lightColor = light.GetColor().rgb * light.GetEnergy();
 
 						lighting.direct.diffuse = lightColor;
 
-						const float range2 = light.range * light.range;
+						const float range2 = light.GetRange() * light.GetRange();
 						const float att = saturate(1.0 - (dist2 / range2));
 						const float attenuation = att * att;
 
@@ -96,9 +98,9 @@ float4 main(Input input) : SV_TARGET
 			break;
 			case ENTITY_TYPE_SPOTLIGHT:
 			{
-				L = light.positionWS - P;
+				L = light.position - P;
 				const float dist2 = dot(L, L);
-				const float range2 = light.range * light.range;
+				const float range2 = light.GetRange() * light.GetRange();
 
 				[branch]
 				if (dist2 < range2)
@@ -110,17 +112,17 @@ float4 main(Input input) : SV_TARGET
 					[branch]
 					if (NdotL > 0)
 					{
-						const float SpotFactor = dot(L, light.directionWS);
-						const float spotCutOff = light.coneAngleCos;
+						const float SpotFactor = dot(L, light.GetDirection());
+						const float spotCutOff = light.GetConeAngleCos();
 
 						[branch]
 						if (SpotFactor > spotCutOff)
 						{
-							const float3 lightColor = light.GetColor().rgb * light.energy;
+							const float3 lightColor = light.GetColor().rgb * light.GetEnergy();
 
 							lighting.direct.diffuse = lightColor;
 
-							const float range2 = light.range * light.range;
+							const float range2 = light.GetRange() * light.GetRange();
 							const float att = saturate(1.0 - (dist2 / range2));
 							float attenuation = att * att;
 							attenuation *= saturate((1.0 - (1.0 - SpotFactor) * 1.0 / (1.0 - spotCutOff)));
@@ -129,22 +131,6 @@ float4 main(Input input) : SV_TARGET
 						}
 					}
 				}
-			}
-			break;
-			case ENTITY_TYPE_SPHERELIGHT:
-			{
-			}
-			break;
-			case ENTITY_TYPE_DISCLIGHT:
-			{
-			}
-			break;
-			case ENTITY_TYPE_RECTANGLELIGHT:
-			{
-			}
-			break;
-			case ENTITY_TYPE_TUBELIGHT:
-			{
 			}
 			break;
 			}
@@ -169,7 +155,7 @@ float4 main(Input input) : SV_TARGET
 		// Sample primary ray (scene materials, sky, etc):
 		RayHit hit = TraceRay_Closest(ray);
 
-		if (hit.distance >= INFINITE_RAYHIT - 1)
+		if (hit.distance >= FLT_MAX - 1)
 		{
 			float3 envColor;
 			[branch]
@@ -210,7 +196,7 @@ float4 main(Input input) : SV_TARGET
 
 		float4 baseColor;
 		[branch]
-		if (material.uvset_baseColorMap >= 0)
+		if (material.uvset_baseColorMap >= 0 && (g_xFrame_Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 		{
 			const float2 UV_baseColorMap = material.uvset_baseColorMap == 0 ? uvsets.xy : uvsets.zw;
 			baseColor = materialTextureAtlas.SampleLevel(sampler_linear_clamp, UV_baseColorMap * material.baseColorAtlasMulAdd.xy + material.baseColorAtlasMulAdd.zw, 0);
@@ -222,37 +208,28 @@ float4 main(Input input) : SV_TARGET
 		}
 		baseColor *= color;
 
-		float4 surface_occlusion_roughness_metallic_reflectance;
+		float4 surfaceMap = 1;
 		[branch]
 		if (material.uvset_surfaceMap >= 0)
 		{
 			const float2 UV_surfaceMap = material.uvset_surfaceMap == 0 ? uvsets.xy : uvsets.zw;
-			surface_occlusion_roughness_metallic_reflectance = materialTextureAtlas.SampleLevel(sampler_linear_clamp, UV_surfaceMap * material.surfaceMapAtlasMulAdd.xy + material.surfaceMapAtlasMulAdd.zw, 0);
-			if (material.IsUsingSpecularGlossinessWorkflow())
-			{
-				ConvertToSpecularGlossiness(surface_occlusion_roughness_metallic_reflectance);
-			}
-		}
-		else
-		{
-			surface_occlusion_roughness_metallic_reflectance = 1;
+			surfaceMap = materialTextureAtlas.SampleLevel(sampler_linear_clamp, UV_surfaceMap * material.surfaceMapAtlasMulAdd.xy + material.surfaceMapAtlasMulAdd.zw, 0);
 		}
 
-		float roughness = material.roughness * surface_occlusion_roughness_metallic_reflectance.g;
-		float metalness = material.metalness * surface_occlusion_roughness_metallic_reflectance.b;
-		float reflectance = material.reflectance * surface_occlusion_roughness_metallic_reflectance.a;
-		roughness = sqr(roughness); // convert linear roughness to cone aperture
-		float4 emissiveColor = material.emissiveColor;
+		Surface surface;
+		surface.create(material, baseColor, surfaceMap);
+
+		surface.emissiveColor = material.emissiveColor;
 		[branch]
 		if (material.emissiveColor.a > 0 && material.uvset_emissiveMap >= 0)
 		{
 			const float2 UV_emissiveMap = material.uvset_emissiveMap == 0 ? uvsets.xy : uvsets.zw;
 			float4 emissiveMap = materialTextureAtlas.SampleLevel(sampler_linear_clamp, UV_emissiveMap * material.emissiveMapAtlasMulAdd.xy + material.emissiveMapAtlasMulAdd.zw, 0);
 			emissiveMap.rgb = DEGAMMA(emissiveMap.rgb);
-			emissiveColor *= emissiveMap;
+			surface.emissiveColor *= emissiveMap;
 		}
 
-		ray.color += max(0, ray.energy * emissiveColor.rgb * emissiveColor.a);
+		ray.color += max(0, ray.energy * surface.emissiveColor.rgb * surface.emissiveColor.a);
 
 		[branch]
 		if (material.uvset_normalMap >= 0)
@@ -267,13 +244,16 @@ float4 main(Input input) : SV_TARGET
 		// Calculate chances of reflection types:
 		const float refractChance = 1 - baseColor.a;
 
+		// Roughness to cone aperture:
+		float alphaRoughness = surface.roughness * surface.roughness;
+
 		// Roulette-select the ray's path
 		float roulette = rand(seed, uv);
 		if (roulette < refractChance)
 		{
 			// Refraction
-			const float3 R = refract(ray.direction, N, 1 - material.refractionIndex);
-			ray.direction = lerp(R, SampleHemisphere_cos(R, seed, uv), roughness);
+			const float3 R = refract(ray.direction, N, 1 - material.refraction);
+			ray.direction = lerp(R, SampleHemisphere_cos(R, seed, uv), alphaRoughness);
 			ray.energy *= lerp(baseColor.rgb, 1, refractChance);
 
 			// The ray penetrates the surface, so push DOWN along normal to avoid self-intersection:
@@ -282,9 +262,7 @@ float4 main(Input input) : SV_TARGET
 		else
 		{
 			// Calculate chances of reflection types:
-			const float3 albedo = ComputeAlbedo(baseColor, reflectance, metalness);
-			const float3 f0 = ComputeF0(baseColor, reflectance, metalness);
-			const float3 F = F_Fresnel(f0, saturate(dot(-ray.direction, N)));
+			const float3 F = F_Schlick(surface.f0, saturate(dot(-ray.direction, N)));
 			const float specChance = dot(F, 0.333f);
 
 			roulette = rand(seed, uv);
@@ -292,14 +270,14 @@ float4 main(Input input) : SV_TARGET
 			{
 				// Specular reflection
 				const float3 R = reflect(ray.direction, N);
-				ray.direction = lerp(R, SampleHemisphere_cos(R, seed, uv), roughness);
+				ray.direction = lerp(R, SampleHemisphere_cos(R, seed, uv), alphaRoughness);
 				ray.energy *= F / specChance;
 			}
 			else
 			{
 				// Diffuse reflection
 				ray.direction = SampleHemisphere_cos(N, seed, uv);
-				ray.energy *= albedo / (1 - specChance);
+				ray.energy *= surface.albedo / (1 - specChance);
 			}
 
 			// Ray reflects from surface, so push UP along normal to avoid self-intersection:

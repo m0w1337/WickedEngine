@@ -4,9 +4,7 @@
 
 #define entityCount (g_xFrame_LightArrayCount + g_xFrame_DecalArrayCount + g_xFrame_EnvProbeArrayCount)
 
-TEXTURE2D(texture_ao, float, TEXSLOT_RENDERPATH_AO);
-TEXTURE2D(texture_ssr, float4, TEXSLOT_RENDERPATH_SSR);
-STRUCTUREDBUFFER(in_Frustums, Frustum, SBSLOT_TILEFRUSTUMS);
+STRUCTUREDBUFFER(in_Frustums, Frustum, TEXSLOT_ONDEMAND0);
 
 RWSTRUCTUREDBUFFER(EntityTiles_Transparent, uint, 0);
 RWSTRUCTUREDBUFFER(EntityTiles_Opaque, uint, 1);
@@ -85,6 +83,10 @@ inline uint ConstructEntityMask(in float depthRangeMin, in float depthRangeRecip
 [numthreads(TILED_CULLING_THREADSIZE, TILED_CULLING_THREADSIZE, 1)]
 void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint groupIndex : SV_GroupIndex)
 {
+	uint2 dim;
+	texture_depth.GetDimensions(dim.x, dim.y);
+	float2 dim_rcp = rcp(dim);
+
 	// This controls the unrolling granularity if the blocksize and threadsize are different:
 	uint granularity = 0;
 
@@ -125,7 +127,7 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 	for (granularity = 0; granularity < TILED_CULLING_GRANULARITY * TILED_CULLING_GRANULARITY; ++granularity)
 	{
 		uint2 pixel = DTid.xy * uint2(TILED_CULLING_GRANULARITY, TILED_CULLING_GRANULARITY) + unflatten2D(granularity, TILED_CULLING_GRANULARITY);
-		pixel = min(pixel, GetInternalResolution() - 1); // avoid loading from outside the texture, it messes up the min-max depth!
+		pixel = min(pixel, dim - 1); // avoid loading from outside the texture, it messes up the min-max depth!
 		depth[granularity] = texture_depth[pixel];
 		depthMinUnrolled = min(depthMinUnrolled, depth[granularity]);
 		depthMaxUnrolled = max(depthMaxUnrolled, depth[granularity]);
@@ -150,22 +152,22 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		float3 viewSpace[8];
 
 		// Top left point, near
-		viewSpace[0] = ScreenToView(float4(Gid.xy * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f)).xyz;
+		viewSpace[0] = ScreenToView(float4(Gid.xy * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f), dim_rcp).xyz;
 		// Top right point, near
-		viewSpace[1] = ScreenToView(float4(float2(Gid.x + 1, Gid.y) * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f)).xyz;
+		viewSpace[1] = ScreenToView(float4(float2(Gid.x + 1, Gid.y) * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f), dim_rcp).xyz;
 		// Bottom left point, near
-		viewSpace[2] = ScreenToView(float4(float2(Gid.x, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f)).xyz;
+		viewSpace[2] = ScreenToView(float4(float2(Gid.x, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f), dim_rcp).xyz;
 		// Bottom right point, near
-		viewSpace[3] = ScreenToView(float4(float2(Gid.x + 1, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f)).xyz;
+		viewSpace[3] = ScreenToView(float4(float2(Gid.x + 1, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMinDepth, 1.0f), dim_rcp).xyz;
 
 		// Top left point, far
-		viewSpace[4] = ScreenToView(float4(Gid.xy * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f)).xyz;
+		viewSpace[4] = ScreenToView(float4(Gid.xy * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f), dim_rcp).xyz;
 		// Top right point, far
-		viewSpace[5] = ScreenToView(float4(float2(Gid.x + 1, Gid.y) * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f)).xyz;
+		viewSpace[5] = ScreenToView(float4(float2(Gid.x + 1, Gid.y) * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f), dim_rcp).xyz;
 		// Bottom left point, far
-		viewSpace[6] = ScreenToView(float4(float2(Gid.x, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f)).xyz;
+		viewSpace[6] = ScreenToView(float4(float2(Gid.x, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f), dim_rcp).xyz;
 		// Bottom right point, far
-		viewSpace[7] = ScreenToView(float4(float2(Gid.x + 1, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f)).xyz;
+		viewSpace[7] = ScreenToView(float4(float2(Gid.x + 1, Gid.y + 1) * TILED_CULLING_BLOCKSIZE, fMaxDepth, 1.0f), dim_rcp).xyz;
 
 		float3 minAABB = 10000000;
 		float3 maxAABB = -10000000;
@@ -184,9 +186,9 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 	}
 
 	// Convert depth values to view space.
-	float minDepthVS = ScreenToView(float4(0, 0, fMinDepth, 1)).z;
-	float maxDepthVS = ScreenToView(float4(0, 0, fMaxDepth, 1)).z;
-	float nearClipVS = ScreenToView(float4(0, 0, 1, 1)).z;
+	float minDepthVS = ScreenToView(float4(0, 0, fMinDepth, 1), dim_rcp).z;
+	float maxDepthVS = ScreenToView(float4(0, 0, fMaxDepth, 1), dim_rcp).z;
+	float nearClipVS = ScreenToView(float4(0, 0, 1, 1), dim_rcp).z;
 
 #ifdef ADVANCED_CULLING
 	// We divide the minmax depth bounds to 32 equal slices
@@ -198,7 +200,7 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 	[unroll]
 	for (granularity = 0; granularity < TILED_CULLING_GRANULARITY * TILED_CULLING_GRANULARITY; ++granularity)
 	{
-		float realDepthVS = ScreenToView(float4(0, 0, depth[granularity], 1)).z;
+		float realDepthVS = ScreenToView(float4(0, 0, depth[granularity], 1), dim_rcp).z;
 		const uint __depthmaskcellindex = max(0, min(31, floor((realDepthVS - minDepthVS) * __depthRangeRecip)));
 		__depthmaskUnrolled |= 1 << __depthmaskcellindex;
 	}
@@ -221,7 +223,8 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		{
 		case ENTITY_TYPE_POINTLIGHT:
 		{
-			Sphere sphere = { entity.positionVS.xyz, entity.range };
+			float3 positionVS = mul(g_xCamera_View, float4(entity.position, 1)).xyz;
+			Sphere sphere = { positionVS.xyz, entity.GetRange() };
 			if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 			{
 				AppendEntity_Transparent(i);
@@ -240,9 +243,11 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		break;
 		case ENTITY_TYPE_SPOTLIGHT:
 		{
+			float3 positionVS = mul(g_xCamera_View, float4(entity.position, 1)).xyz;
+			float3 directionVS = mul((float3x3)g_xCamera_View, entity.GetDirection());
 			// Construct a tight fitting sphere around the spotlight cone:
-			const float r = entity.range * 0.5f / (entity.coneAngleCos * entity.coneAngleCos);
-			Sphere sphere = { entity.positionVS.xyz - entity.directionVS * r, r };
+			const float r = entity.GetRange() * 0.5f / (entity.GetConeAngleCos() * entity.GetConeAngleCos());
+			Sphere sphere = { positionVS - directionVS * r, r };
 			if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 			{
 				AppendEntity_Transparent(i);
@@ -261,10 +266,6 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		}
 		break;
 		case ENTITY_TYPE_DIRECTIONALLIGHT:
-		case ENTITY_TYPE_SPHERELIGHT:
-		case ENTITY_TYPE_DISCLIGHT:
-		case ENTITY_TYPE_RECTANGLELIGHT:
-		case ENTITY_TYPE_TUBELIGHT:
 		{
 			AppendEntity_Transparent(i);
 			AppendEntity_Opaque(i);
@@ -273,7 +274,8 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		case ENTITY_TYPE_DECAL:
 		case ENTITY_TYPE_ENVMAP:
 		{
-			Sphere sphere = { entity.positionVS.xyz, entity.range };
+			float3 positionVS = mul(g_xCamera_View, float4(entity.position, 1)).xyz;
+			Sphere sphere = { positionVS.xyz, entity.GetRange() };
 			if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 			{
 				AppendEntity_Transparent(i);
@@ -285,7 +287,7 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 
 				// frustum AABB in world space transformed into the space of the probe/decal OBB:
 				AABB b = GroupAABB_WS;
-				AABBtransform(b, MatrixArray[entity.userdata]);
+				AABBtransform(b, MatrixArray[entity.GetMatrixIndex()]);
 
 				if (IntersectAABB(a, b))
 				{

@@ -14,12 +14,12 @@ void RenderPath2D::ResizeBuffers()
 	FORMAT defaultTextureFormat = device->GetBackBufferFormat();
 
 	const Texture* dsv = GetDepthStencil();
-	if(dsv != nullptr && (wiRenderer::GetResolutionScale() != 1.0f ||  dsv->GetDesc().SampleCount > 1))
+	if(dsv != nullptr && (resolutionScale != 1.0f ||  dsv->GetDesc().SampleCount > 1))
 	{
 		TextureDesc desc = GetDepthStencil()->GetDesc();
+		desc.layout = IMAGE_LAYOUT_SHADER_RESOURCE;
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
 		desc.Format = defaultTextureFormat;
-		desc.layout = IMAGE_LAYOUT_GENERAL;
 		device->CreateTexture(&desc, nullptr, &rtStenciled);
 		device->SetName(&rtStenciled, "rtStenciled");
 
@@ -30,6 +30,11 @@ void RenderPath2D::ResizeBuffers()
 			device->SetName(&rtStenciled_resolved, "rtStenciled_resolved");
 		}
 	}
+	else
+	{
+		rtStenciled = Texture(); // this will be deleted here
+	}
+
 	{
 		TextureDesc desc;
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
@@ -98,12 +103,6 @@ void RenderPath2D::Load()
 			ResizeLayout();
 			});
 	}
-	if (!resolutionScaleChange_handle.IsValid())
-	{
-		resolutionScaleChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_RESOLUTION_SCALE, [this](uint64_t userdata) {
-			ResizeBuffers();
-			});
-	}
 	if (!dpiChange_handle.IsValid())
 	{
 		ResizeLayout();
@@ -127,12 +126,6 @@ void RenderPath2D::Update(float dt)
 		resolutionChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_RESOLUTION, [this](uint64_t userdata) {
 			ResizeBuffers();
 			ResizeLayout();
-			});
-	}
-	if (!resolutionScaleChange_handle.IsValid())
-	{
-		resolutionScaleChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_RESOLUTION_SCALE, [this](uint64_t userdata) {
-			ResizeBuffers();
 			});
 	}
 	if (!dpiChange_handle.IsValid())
@@ -548,3 +541,12 @@ void RenderPath2D::CleanLayers()
 	}
 }
 
+
+XMUINT2 RenderPath2D::GetInternalResolution() const
+{
+	GraphicsDevice* device = wiRenderer::GetDevice();
+	return XMUINT2(
+		(uint32_t)ceilf(device->GetResolutionWidth() * resolutionScale),
+		(uint32_t)ceilf(device->GetResolutionHeight() * resolutionScale)
+	);
+}
