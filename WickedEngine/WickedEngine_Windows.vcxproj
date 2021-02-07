@@ -112,7 +112,7 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
     <FxCompile>
-      <ObjectFileOutput>shaders/%(Filename).cso</ObjectFileOutput>
+      <ObjectFileOutput>../../CyubE3dit_V2/WickedEngine/shaders/%(Filename).cso</ObjectFileOutput>
       <ShaderModel>5.0</ShaderModel>
     </FxCompile>
     <Lib>

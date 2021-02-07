@@ -589,7 +589,7 @@ namespace wiScene
 			LIGHTMAP_RENDER_REQUEST = 1 << 5,
 		};
 		uint32_t _flags = RENDERABLE | CAST_SHADOW;
-
+		wiECS::Entity parentObject = wiECS::INVALID_ENTITY;
 		wiECS::Entity meshID = wiECS::INVALID_ENTITY;
 		uint32_t cascadeMask = 0; // which shadow cascades to skip (0: skip none, 1: skip first, etc...)
 		uint32_t rendertypeMask = 0;
@@ -807,6 +807,7 @@ namespace wiScene
 			LIGHTMAPONLY_STATIC = 1 << 3,
 		};
 		uint32_t _flags = EMPTY;
+		wiECS::Entity parentObject = wiECS::INVALID_ENTITY;
 		XMFLOAT3 color = XMFLOAT3(1, 1, 1);
 
 		enum LightType 
@@ -1352,6 +1353,7 @@ namespace wiScene
 		void Component_Detach(wiECS::Entity entity);
 		// Detaches all children from an entity (if there are any):
 		void Component_DetachChildren(wiECS::Entity parent);
+		void Component_RemoveChildren(wiECS::Entity parent);
 
 		void Serialize(wiArchive& archive);
 

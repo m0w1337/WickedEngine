@@ -20,6 +20,8 @@ public:
 		AO_RTAO,		// ray traced ambient occlusion
 		// Don't alter order! (bound to lua manually)
 	};
+
+
 private:
 	float exposure = 1.0f;
 	float bloomThreshold = 1.0f;

@@ -1469,7 +1469,7 @@ namespace wiScene
 	void Scene::Entity_Remove(Entity entity)
 	{
 		Component_Detach(entity); // special case, this will also remove entity from hierarchy but also do more!
-
+		//hierarchy.Remove_KeepSorted(entity);	<--possible speedup??
 		names.Remove(entity);
 		layers.Remove(entity);
 		transforms.Remove(entity);
@@ -1878,7 +1878,30 @@ namespace wiScene
 			}
 		}
 	}
-
+	void Scene::Component_RemoveChildren(Entity parent) {
+		for (size_t i = 0; i < lights.GetCount();)
+		{
+			if (lights[i].parentObject == parent)
+			{
+				Entity entity = lights.GetEntity(i);
+				Entity_Remove(entity);
+			} else
+			{
+				++i;
+			}
+		}
+		for (size_t i = 0; i < objects.GetCount();)
+		{
+			if (objects[i].parentObject == parent)
+			{
+				Entity entity = objects.GetEntity(i);
+				Entity_Remove(entity);
+			} else
+			{
+				++i;
+			}
+		}
+	}
 
 	const uint32_t small_subtask_groupsize = 64;
 
@@ -2650,7 +2673,11 @@ namespace wiScene
 			if (material.texAnimElapsedTime >= 1.0f)
 			{
 				material.texMulAdd.z = fmodf(material.texMulAdd.z + material.texAnimDirection.x, 1);
-				material.texMulAdd.w = fmodf(material.texMulAdd.w + material.texAnimDirection.y, 1);
+
+				if (material.texMulAdd.z  == 0.0f){
+					material.texMulAdd.w = fmodf(material.texMulAdd.w + material.texAnimDirection.y, 1);
+				}
+					
 				material.texAnimElapsedTime = 0.0f;
 
 				material.SetDirty(); // will trigger constant buffer update later on

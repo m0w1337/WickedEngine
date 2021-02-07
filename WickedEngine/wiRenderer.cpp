@@ -4712,7 +4712,7 @@ void SetShadowProps2D(int resolution, int count)
 		desc.MiscFlags = 0;
 
 		desc.BindFlags = BIND_DEPTH_STENCIL | BIND_SHADER_RESOURCE;
-		desc.Format = FORMAT_R16_TYPELESS;
+		desc.Format = FORMAT_R32_TYPELESS;
 		desc.layout = IMAGE_LAYOUT_SHADER_RESOURCE;
 		device->CreateTexture(&desc, nullptr, &shadowMapArray_2D);
 

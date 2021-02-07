@@ -51,8 +51,8 @@ inline LightingPart CombineLighting(in Surface surface, in Lighting lighting)
 inline float3 shadowCascade(in ShaderEntity light, in float3 shadowPos, in float2 shadowUV, in uint cascade)
 {
 	const float slice = light.GetTextureIndex() + cascade;
-	const float realDistance = shadowPos.z; // bias was already applied when shadow map was rendered
-	float3 shadow = 0;
+	const float realDistance = shadowPos.z * 0.99998; // bias was already applied when shadow map was rendered
+	float3 shadow = 0.5f;
 #ifndef DISABLE_SOFT_SHADOWMAP
 	// sample along a rectangle pattern around center:
 	shadow.x += texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV + float2(-1, -1) * g_xFrame_ShadowKernel2D, slice), realDistance);
@@ -67,6 +67,7 @@ inline float3 shadowCascade(in ShaderEntity light, in float3 shadowPos, in float
 	shadow = shadow.xxx / 9.0;
 #else
 	shadow = texture_shadowarray_2d.SampleCmpLevelZero(sampler_cmp_depth, float3(shadowUV, slice), realDistance);
+
 #endif // DISABLE_SOFT_SHADOWMAP
 
 #ifndef DISABLE_TRANSPARENT_SHADOWMAP
@@ -181,7 +182,7 @@ inline void DirectionalLight(in ShaderEntity light, in Surface surface, inout Li
 	[branch]
 	if (any(surfaceToLight.NdotL_sss))
 	{
-		float3 shadow = 1;
+		float3 shadow = 1.f;
 
 		[branch]
 		if (light.IsCastingShadow())
@@ -934,6 +935,7 @@ inline float3 GetAmbient(in float3 N)
 {
 	float3 ambient;
 
+
 #ifdef ENVMAPRENDERING
 
 	// Set realistic_sky_stationary to true so we capture ambient at float3(0.0, 0.0, 0.0), similar to the standard sky to avoid flickering and weird behavior
@@ -952,6 +954,7 @@ inline float3 GetAmbient(in float3 N)
 	//	However, it is not correct if we leave it out from probes, because if we render a scene
 	//	with dark sky but ambient, we still want some visible result.
 	ambient += GetAmbientColor();
+
 
 	return ambient;
 }

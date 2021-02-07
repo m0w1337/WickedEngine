@@ -14,10 +14,10 @@ namespace wiECS
 {
 	using Entity = uint32_t;
 	static const Entity INVALID_ENTITY = 0;
+	static std::atomic<Entity> next{INVALID_ENTITY + 1};
 	// Runtime can create a new entity with this
 	inline Entity CreateEntity()
 	{
-		static std::atomic<Entity> next{ INVALID_ENTITY + 1 };
 		return next.fetch_add(1);
 	}
 
