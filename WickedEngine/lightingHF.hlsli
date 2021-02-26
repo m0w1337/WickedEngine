@@ -185,7 +185,7 @@ inline void DirectionalLight(in ShaderEntity light, in Surface surface, inout Li
 		float3 shadow = 1.f;
 
 		[branch]
-		if (light.IsCastingShadow())
+		if (light.IsCastingShadow() && surface.IsReceiveShadow())
 		{
 			[branch]
 			if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
@@ -301,7 +301,7 @@ inline void PointLight(in ShaderEntity light, in Surface surface, inout Lighting
 			float3 shadow = 1;
 
 			[branch]
-			if (light.IsCastingShadow())
+			if (light.IsCastingShadow() && surface.IsReceiveShadow())
 			{
 				[branch]
 				if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
@@ -386,7 +386,7 @@ inline void SpotLight(in ShaderEntity light, in Surface surface, inout Lighting 
 				float3 shadow = 1;
 
 				[branch]
-				if (light.IsCastingShadow())
+				if (light.IsCastingShadow() && surface.IsReceiveShadow())
 				{
 					[branch]
 					if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)

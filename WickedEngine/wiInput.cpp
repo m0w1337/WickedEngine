@@ -15,7 +15,13 @@
 
 #ifdef SDL2
 #include <SDL2/SDL.h>
-#endif
+#endif // SDL2
+
+#ifdef PLATFORM_UWP
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.UI.Input.h>
+#include <winrt/Windows.Devices.Input.h>
+#endif // PLATFORM_UWP
 
 using namespace std;
 
@@ -27,8 +33,8 @@ namespace wiInput
 #define KEY_DOWN(vk_code) (GetAsyncKeyState(vk_code) < 0)
 #define KEY_TOGGLE(vk_code) ((GetAsyncKeyState(vk_code) & 1) != 0)
 #else
-#define KEY_DOWN(vk_code) ((int)wiPlatform::GetWindow()->GetAsyncKeyState((Windows::System::VirtualKey)vk_code) < 0)
-#define KEY_TOGGLE(vk_code) (((int)wiPlatform::GetWindow()->GetAsyncKeyState((Windows::System::VirtualKey)vk_code) & 1) != 0)
+#define KEY_DOWN(vk_code) ((int)winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread().GetAsyncKeyState((winrt::Windows::System::VirtualKey)vk_code) < 0)
+#define KEY_TOGGLE(vk_code) (((int)winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread().GetAsyncKeyState((winrt::Windows::System::VirtualKey)vk_code) & 1) != 0)
 #endif //PLATFORM_UWP
 #else
 #define KEY_DOWN(vk_code) 0
@@ -73,88 +79,6 @@ namespace wiInput
 	std::vector<Controller> controllers;
 	std::atomic_bool initialized{ false };
 
-#ifdef PLATFORM_UWP
-	using namespace Windows::ApplicationModel;
-	using namespace Windows::ApplicationModel::Core;
-	using namespace Windows::ApplicationModel::Activation;
-	using namespace Windows::UI::Core;
-	using namespace Windows::UI::Input;
-	using namespace Windows::System;
-	using namespace Windows::Foundation;
-
-	void OnPointerPressed(CoreWindow^ window, PointerEventArgs^ pointer)
-	{
-		auto p = pointer->CurrentPoint;
-
-		if (p->Properties->IsPrimary)
-		{
-			mouse.position = XMFLOAT2(p->Position.X, p->Position.Y);
-			mouse.left_button_press = p->Properties->IsLeftButtonPressed;
-			mouse.middle_button_press = p->Properties->IsMiddleButtonPressed;
-			mouse.right_button_press = p->Properties->IsRightButtonPressed;
-			mouse.pressure = p->Properties->Pressure;
-		}
-
-		Touch touch;
-		touch.state = Touch::TOUCHSTATE_PRESSED;
-		touch.pos = XMFLOAT2(p->Position.X, p->Position.Y);
-		touches.push_back(touch);
-	}
-	void OnPointerReleased(CoreWindow^ window, PointerEventArgs^ pointer)
-	{
-		auto p = pointer->CurrentPoint;
-
-		if (p->Properties->IsPrimary)
-		{
-			mouse.left_button_press = p->Properties->IsLeftButtonPressed;
-			mouse.middle_button_press = p->Properties->IsMiddleButtonPressed;
-			mouse.right_button_press = p->Properties->IsRightButtonPressed;
-			mouse.pressure = p->Properties->Pressure;
-		}
-
-		Touch touch;
-		touch.state = Touch::TOUCHSTATE_RELEASED;
-		touch.pos = XMFLOAT2(p->Position.X, p->Position.Y);
-		touches.push_back(touch);
-	}
-	void OnPointerMoved(CoreWindow^ window, PointerEventArgs^ pointer)
-	{
-		auto p = pointer->CurrentPoint;
-
-		if (p->Properties->IsPrimary)
-		{
-			mouse.position = XMFLOAT2(p->Position.X, p->Position.Y);
-			mouse.pressure = p->Properties->Pressure;
-		}
-
-		Touch touch;
-		touch.state = Touch::TOUCHSTATE_MOVED;
-		touch.pos = XMFLOAT2(p->Position.X, p->Position.Y);
-		touches.push_back(touch);
-	}
-	void OnPointerWheelChanged(CoreWindow^ window, PointerEventArgs^ pointer)
-	{
-		auto p = pointer->CurrentPoint;
-
-		if (p->Properties->IsPrimary)
-		{
-			mouse.delta_wheel += (float)p->Properties->MouseWheelDelta / WHEEL_DELTA;
-		}
-
-		Touch touch;
-		touch.state = Touch::TOUCHSTATE_RELEASED;
-		touch.pos = XMFLOAT2(p->Position.X, p->Position.Y);
-		touches.push_back(touch);
-	}
-
-	using namespace Windows::Devices::Input;
-	void OnMouseMoved(MouseDevice^ mouseDevice, MouseEventArgs^ args)
-	{
-		mouse.delta_position.x += static_cast<float>(args->MouseDelta.X);
-		mouse.delta_position.y += static_cast<float>(args->MouseDelta.Y);
-	}
-#endif // PLATFORM_UWP
-
 	void Initialize()
 	{
 		wiRawInput::Initialize();
@@ -188,6 +112,18 @@ namespace wiInput
         mouse.left_button_press |= KEY_DOWN(VK_LBUTTON);
         mouse.middle_button_press |= KEY_DOWN(VK_MBUTTON);
         mouse.right_button_press |= KEY_DOWN(VK_RBUTTON);
+
+#ifndef PLATFORM_UWP
+		// Since raw input doesn't contain absolute mouse position, we get it with regular winapi:
+		HWND hWnd = GetActiveWindow();
+		POINT p;
+		GetCursorPos(&p);
+		ScreenToClient(hWnd, &p);
+		const float dpiscaling = (float)GetDpiForWindow(hWnd) / 96.0f;
+		mouse.position.x = (float)p.x / dpiscaling;
+		mouse.position.y = (float)p.y / dpiscaling;
+#endif // PLATFORM_UWP
+
 #elif SDL2
 		wiSDLInput::GetMouseState(&mouse);
 		wiSDLInput::GetKeyboardState(&keyboard);
@@ -196,18 +132,78 @@ namespace wiInput
 #endif
 
 #ifdef PLATFORM_UWP
-		static bool isRegisteredTouch = false;
-		if (!isRegisteredTouch)
+		static bool isRegisteredUWP = false;
+		if (!isRegisteredUWP)
 		{
-			auto& window = wiPlatform::GetWindow();
-			window->PointerPressed += ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(OnPointerPressed);
-			window->PointerReleased += ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(OnPointerReleased);
-			window->PointerMoved += ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(OnPointerMoved);
-			window->PointerWheelChanged += ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(OnPointerWheelChanged);
+			isRegisteredUWP = true;
+			using namespace winrt::Windows::UI::Core;
+			using namespace winrt::Windows::Devices::Input;
 
-			MouseDevice::GetForCurrentView()->MouseMoved += ref new TypedEventHandler<MouseDevice^, MouseEventArgs^>(OnMouseMoved);
-			
-			isRegisteredTouch = true;
+			auto window = CoreWindow::GetForCurrentThread();
+			window.PointerPressed([](CoreWindow, PointerEventArgs args) {
+				auto p = args.CurrentPoint();
+
+				if (p.Properties().IsPrimary())
+				{
+					mouse.position = XMFLOAT2(p.Position().X, p.Position().Y);
+					mouse.left_button_press = p.Properties().IsLeftButtonPressed();
+					mouse.middle_button_press = p.Properties().IsMiddleButtonPressed();
+					mouse.right_button_press = p.Properties().IsRightButtonPressed();
+					mouse.pressure = p.Properties().Pressure();
+				}
+
+				Touch touch;
+				touch.state = Touch::TOUCHSTATE_PRESSED;
+				touch.pos = XMFLOAT2(p.Position().X, p.Position().Y);
+				touches.push_back(touch);
+			});
+			window.PointerReleased([](CoreWindow, PointerEventArgs args) {
+				auto p = args.CurrentPoint();
+
+				if (p.Properties().IsPrimary())
+				{
+					mouse.left_button_press = p.Properties().IsLeftButtonPressed();
+					mouse.middle_button_press = p.Properties().IsMiddleButtonPressed();
+					mouse.right_button_press = p.Properties().IsRightButtonPressed();
+					mouse.pressure = p.Properties().Pressure();
+				}
+
+				Touch touch;
+				touch.state = Touch::TOUCHSTATE_RELEASED;
+				touch.pos = XMFLOAT2(p.Position().X, p.Position().Y);
+				touches.push_back(touch);
+			});
+			window.PointerMoved([](CoreWindow, PointerEventArgs args) {
+				auto p = args.CurrentPoint();
+
+				if (p.Properties().IsPrimary())
+				{
+					mouse.position = XMFLOAT2(p.Position().X, p.Position().Y);
+					mouse.pressure = p.Properties().Pressure();
+				}
+
+				Touch touch;
+				touch.state = Touch::TOUCHSTATE_MOVED;
+				touch.pos = XMFLOAT2(p.Position().X, p.Position().Y);
+				touches.push_back(touch);
+			});
+			window.PointerWheelChanged([](CoreWindow, PointerEventArgs args) {
+				auto p = args.CurrentPoint();
+
+				if (p.Properties().IsPrimary())
+				{
+					mouse.delta_wheel += (float)p.Properties().MouseWheelDelta() / WHEEL_DELTA;
+				}
+
+				Touch touch;
+				touch.state = Touch::TOUCHSTATE_RELEASED;
+				touch.pos = XMFLOAT2(p.Position().X, p.Position().Y);
+				touches.push_back(touch);
+			});
+			MouseDevice::GetForCurrentView().MouseMoved([](MouseDevice, MouseEventArgs args) {
+				mouse.delta_position.x += float(args.MouseDelta().X);
+				mouse.delta_position.y += float(args.MouseDelta().Y);
+			});
 		}
 #endif
 
@@ -400,7 +396,7 @@ namespace wiInput
 			case wiInput::KEYBOARD_BUTTON_LSHIFT:
 				keycode = VK_LSHIFT;
 				break;
-			case wiInput::KEYBOARD_BUTTON_F1:
+			case wiInput::KEYBOARD_BUTTON_F1: 
 				keycode = VK_F1;
 				break;
 			case wiInput::KEYBOARD_BUTTON_F2:
@@ -548,6 +544,120 @@ namespace wiInput
                 case wiInput::KEYBOARD_BUTTON_PAGEUP:
                     keycode = SDL_SCANCODE_PAGEUP;
                     break;
+				//Translating engine's keycode mapping (which comes from Win32 i presume) to the matching SDL2 keycode
+				//Win32 Link: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+				//SDL2 Link: https://wiki.libsdl.org/SDL_Keycode
+				//Numbers start from enum 48 to 57, 58 to 64 are undefined, 65 to 90 are alphabets.
+				//Usage: the same as win32 platform, which is (for example) wiInput::Down((wiInput::BUTTON)'A' (referenced from Editor.cpp for the engine's editor program)
+				case 48:
+					keycode = SDL_SCANCODE_0;
+					break;
+				case 49:
+					keycode = SDL_SCANCODE_1;
+					break;
+				case 50:
+					keycode = SDL_SCANCODE_2;
+					break;
+				case 51:
+					keycode = SDL_SCANCODE_3;
+					break;
+				case 52:
+					keycode = SDL_SCANCODE_4;
+					break;
+				case 53:
+					keycode = SDL_SCANCODE_5;
+					break;
+				case 54:
+					keycode = SDL_SCANCODE_6;
+					break;
+				case 55:
+					keycode = SDL_SCANCODE_7;
+					break;
+				case 56:
+					keycode = SDL_SCANCODE_8;
+					break;
+				case 57:
+					keycode = SDL_SCANCODE_9;
+					break;
+				case 65:
+					keycode = SDL_SCANCODE_A;
+					break;
+				case 66:
+					keycode = SDL_SCANCODE_B;
+					break;
+				case 67:
+					keycode = SDL_SCANCODE_C;
+					break;
+				case 68:
+					keycode = SDL_SCANCODE_D;
+					break;
+				case 69:
+					keycode = SDL_SCANCODE_E;
+					break;
+				case 70:
+					keycode = SDL_SCANCODE_F;
+					break;
+				case 71:
+					keycode = SDL_SCANCODE_G;
+					break;
+				case 72:
+					keycode = SDL_SCANCODE_H;
+					break;
+				case 73:
+					keycode = SDL_SCANCODE_I;
+					break;
+				case 74:
+					keycode = SDL_SCANCODE_J;
+					break;
+				case 75:
+					keycode = SDL_SCANCODE_K;
+					break;
+				case 76:
+					keycode = SDL_SCANCODE_L;
+					break;
+				case 77:
+					keycode = SDL_SCANCODE_M;
+					break;
+				case 78:
+					keycode = SDL_SCANCODE_N;
+					break;
+				case 79:
+					keycode = SDL_SCANCODE_O;
+					break;
+				case 80:
+					keycode = SDL_SCANCODE_P;
+					break;
+				case 81:
+					keycode = SDL_SCANCODE_Q;
+					break;
+				case 82:
+					keycode = SDL_SCANCODE_R;
+					break;
+				case 83:
+					keycode = SDL_SCANCODE_S;
+					break;
+				case 84:
+					keycode = SDL_SCANCODE_T;
+					break;
+				case 85:
+					keycode = SDL_SCANCODE_U;
+					break;
+				case 86:
+					keycode = SDL_SCANCODE_V;
+					break;
+				case 87:
+					keycode = SDL_SCANCODE_W;
+					break;
+				case 88:
+					keycode = SDL_SCANCODE_X;
+					break;
+				case 89:
+					keycode = SDL_SCANCODE_Y;
+					break;
+				case 90:
+					keycode = SDL_SCANCODE_Z;
+					break;
+				
 #endif // _WIN32
 			}
 
@@ -606,30 +716,23 @@ namespace wiInput
 	}
 	XMFLOAT4 GetPointer()
 	{
-#if defined(_WIN32) && !defined(PLATFORM_UWP)
-		POINT p;
-		GetCursorPos(&p);
-		ScreenToClient(wiPlatform::GetWindow(), &p);
-		const float dpiscaling = wiPlatform::GetDPIScaling();
-		return XMFLOAT4((float)p.x / dpiscaling, (float)p.y / dpiscaling, mouse.delta_wheel, mouse.pressure);
-#else
 		return XMFLOAT4(mouse.position.x, mouse.position.y, mouse.delta_wheel, mouse.pressure);
-#endif
 	}
 	void SetPointer(const XMFLOAT4& props)
 	{
 #ifdef _WIN32
 #ifndef PLATFORM_UWP
-		const float dpiscaling = wiPlatform::GetDPIScaling();
+		HWND hWnd = GetActiveWindow();
+		const float dpiscaling = (float)GetDpiForWindow(hWnd) / 96.0f;
 		POINT p;
 		p.x = (LONG)(props.x * dpiscaling);
 		p.y = (LONG)(props.y * dpiscaling);
-		ClientToScreen(wiPlatform::GetWindow(), &p);
+		ClientToScreen(hWnd, &p);
 		SetCursorPos(p.x, p.y);
 #else
-		auto& window = wiPlatform::GetWindow();
-		auto& bounds = window->Bounds;
-		window->PointerPosition = Point(props.x + bounds.X, props.y + bounds.Y);
+		auto window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread();
+		auto& bounds = window.Bounds();
+		window.PointerPosition(winrt::Windows::Foundation::Point(props.x + bounds.X, props.y + bounds.Y));
 #endif
 #endif // _WIN32
 	}
@@ -646,18 +749,19 @@ namespace wiInput
 			while (ShowCursor(true) < 0) {};
 		}
 #else
-		static auto cursor = wiPlatform::GetWindow()->PointerCursor;
+		auto window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread();
+		static auto cursor = window.PointerCursor();
 		if (value)
 		{
-			wiPlatform::GetWindow()->PointerCursor = nullptr;
+			window.PointerCursor(nullptr);
 		}
 		else
 		{
-			wiPlatform::GetWindow()->PointerCursor = cursor;
+			window.PointerCursor(cursor);
 		}
 #endif
 #elif SDL2
-		SDL_ShowCursor(value ? SDL_ENABLE : SDL_DISABLE);
+		SDL_ShowCursor(value ? SDL_DISABLE : SDL_ENABLE);
 #endif // _WIN32
 	}
 

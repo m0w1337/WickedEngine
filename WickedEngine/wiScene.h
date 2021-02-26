@@ -129,6 +129,7 @@ namespace wiScene
 			OCCLUSION_PRIMARY = 1 << 7,
 			OCCLUSION_SECONDARY = 1 << 8,
 			USE_WIND = 1 << 9,
+			DISABLE_RECEIVE_SHADOW = 1 << 10,
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -238,6 +239,7 @@ namespace wiScene
 		inline bool IsDirty() const { return _flags & DIRTY; }
 
 		inline void SetCastShadow(bool value) { if (value) { _flags |= CAST_SHADOW; } else { _flags &= ~CAST_SHADOW; } }
+		inline void SetReceiveShadow(bool value) { SetDirty(); if (value) { _flags &= ~DISABLE_RECEIVE_SHADOW; } else { _flags |= DISABLE_RECEIVE_SHADOW; } }
 		inline void SetOcclusionEnabled_Primary(bool value) { SetDirty(); if (value) { _flags |= OCCLUSION_PRIMARY; } else { _flags &= ~OCCLUSION_PRIMARY; } }
 		inline void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); if (value) { _flags |= OCCLUSION_SECONDARY; } else { _flags &= ~OCCLUSION_SECONDARY; } }
 
@@ -246,6 +248,7 @@ namespace wiScene
 		inline bool IsAlphaTestEnabled() const { return alphaRef <= 1.0f - 1.0f / 256.0f; }
 		inline bool IsUsingVertexColors() const { return _flags & USE_VERTEXCOLORS; }
 		inline bool IsUsingWind() const { return _flags & USE_WIND; }
+		inline bool IsReceiveShadow() const { return (_flags & DISABLE_RECEIVE_SHADOW) == 0; }
 		inline bool IsUsingSpecularGlossinessWorkflow() const { return _flags & SPECULAR_GLOSSINESS_WORKFLOW; }
 		inline bool IsOcclusionEnabled_Primary() const { return _flags & OCCLUSION_PRIMARY; }
 		inline bool IsOcclusionEnabled_Secondary() const { return _flags & OCCLUSION_SECONDARY; }
@@ -620,8 +623,7 @@ namespace wiScene
 
 		// occlusion result history bitfield (32 bit->32 frame history)
 		uint32_t occlusionHistory = ~0;
-		wiGraphics::GPUQuery occlusionQueries[wiGraphics::GraphicsDevice::GetBackBufferCount()];
-		int queryIndex = 0;
+		int occlusionQueries[wiGraphics::GraphicsDevice::GetBackBufferCount()] = {};
 
 		inline bool IsOccluded() const
 		{
@@ -629,7 +631,7 @@ namespace wiScene
 			// If it is visible in any frames in the history, it is determined visible in this frame
 			// But if all queries failed in the history, it is occluded.
 			// If it pops up for a frame after occluded, it is visible again for some frames
-			return (occlusionQueries[queryIndex].IsValid() && occlusionHistory == 0);
+			return occlusionHistory == 0;
 		}
 
 		inline void SetRenderable(bool value) { if (value) { _flags |= RENDERABLE; } else { _flags &= ~RENDERABLE; } }
@@ -1137,10 +1139,12 @@ namespace wiScene
 		OceanParameters oceanParameters;
 
 		std::string skyMapName;
-		std::shared_ptr<wiResource> skyMap;
+		std::string colorGradingMapName;
 
 		// Non-serialized attributes:
 		uint32_t most_important_light_index = ~0;
+		std::shared_ptr<wiResource> skyMap;
+		std::shared_ptr<wiResource> colorGradingMap;
 
 		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
@@ -1278,6 +1282,13 @@ namespace wiScene
 		wiGraphics::DescriptorTable descriptorTables[DESCRIPTORTABLE_COUNT];
 		std::atomic<uint32_t> geometryOffset;
 		uint32_t MAX_SUBSET_DESCRIPTOR_INDEXING = 10000;
+
+		wiGraphics::GPUQueryHeap queryHeap[arraysize(ObjectComponent::occlusionQueries)];
+		std::vector<uint64_t> queryResults;
+		uint32_t nextQuery = 0;
+		uint32_t writtenQueries[arraysize(queryHeap)] = {};
+		int query_write = 0;
+		int query_read = 0;
 
 		// Update all components by a given timestep (in seconds):
 		//	This is an expensive function, prefer to call it only once per frame!

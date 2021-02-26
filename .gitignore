@@ -212,3 +212,12 @@ ModelManifest.xml
 # Visual studio code project files
 .vscode/
 *.cso
+
+# CMake build cache files
+.cache/
+
+# WINRT Generated files
+/Editor/Generated Files/winrt
+/Template_UWP/Generated Files/winrt
+/WickedEngine/Generated Files/winrt
+>>>>>>> e37ddf2d824ef0a97a2c1dd549025d84ff86fafb

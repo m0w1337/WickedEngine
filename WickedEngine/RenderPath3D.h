@@ -48,7 +48,7 @@ private:
 	bool shadowsEnabled = true;
 	bool bloomEnabled = true;
 	bool volumetricCloudsEnabled = false;
-	bool colorGradingEnabled = false;
+	bool colorGradingEnabled = true;
 	bool volumeLightsEnabled = true;
 	bool lightShaftsEnabled = false;
 	bool lensFlareEnabled = true;
@@ -59,8 +59,6 @@ private:
 	bool outlineEnabled = false;
 	bool chromaticAberrationEnabled = false;
 	bool ditherEnabled = true;
-
-	std::shared_ptr<wiResource> colorGradingTex;
 
 	uint32_t msaaSampleCount = 1;
 
@@ -105,10 +103,19 @@ public:
 	wiGraphics::RenderPass renderpass_particledistortion;
 	wiGraphics::RenderPass renderpass_waterripples;
 
-	wiGraphics::GPUBuffer tileFrustums; // entity culling frustums
-	wiGraphics::GPUBuffer entityTiles_Opaque; // culled entity indices (for opaque pass)
-	wiGraphics::GPUBuffer entityTiles_Transparent; // culled entity indices (for transparent pass)
 	wiGraphics::Texture debugUAV; // debug UAV can be used by some shaders...
+	wiRenderer::TiledLightResources tiledLightResources;
+	wiRenderer::LuminanceResources luminanceResources;
+	wiRenderer::SSAOResources ssaoResources;
+	wiRenderer::MSAOResources msaoResources;
+	wiRenderer::RTAOResources rtaoResources;
+	wiRenderer::RTReflectionResources rtreflectionResources;
+	wiRenderer::SSRResources ssrResources;
+	wiRenderer::RTShadowResources rtshadowResources;
+	wiRenderer::ScreenSpaceShadowResources screenspaceshadowResources;
+	wiRenderer::DepthOfFieldResources depthoffieldResources;
+	wiRenderer::MotionBlurResources motionblurResources;
+	wiRenderer::VolumetricCloudResources volumetriccloudResources;
 
 	const constexpr wiGraphics::Texture* GetGbuffer_Read() const
 	{
@@ -195,7 +202,7 @@ public:
 	constexpr bool getFXAAEnabled() const { return fxaaEnabled; }
 	constexpr bool getBloomEnabled() const { return bloomEnabled; }
 	constexpr bool getVolumetricCloudsEnabled() const { return volumetricCloudsEnabled; }
-	constexpr bool getColorGradingEnabled() const { return colorGradingEnabled && colorGradingTex != nullptr; }
+	constexpr bool getColorGradingEnabled() const { return colorGradingEnabled; }
 	constexpr bool getVolumeLightsEnabled() const { return volumeLightsEnabled; }
 	constexpr bool getLightShaftsEnabled() const { return lightShaftsEnabled; }
 	constexpr bool getLensFlareEnabled() const { return lensFlareEnabled; }
@@ -206,8 +213,6 @@ public:
 	constexpr bool getOutlineEnabled() const { return outlineEnabled; }
 	constexpr bool getChromaticAberrationEnabled() const { return chromaticAberrationEnabled; }
 	constexpr bool getDitherEnabled() const { return ditherEnabled; }
-
-	constexpr const std::shared_ptr<wiResource>& getColorGradingTexture() const { return colorGradingTex; }
 
 	constexpr uint32_t getMSAASampleCount() const { return msaaSampleCount; }
 
@@ -247,8 +252,6 @@ public:
 	constexpr void setOutlineEnabled(bool value) { outlineEnabled = value; }
 	constexpr void setChromaticAberrationEnabled(bool value) { chromaticAberrationEnabled = value; }
 	constexpr void setDitherEnabled(bool value) { ditherEnabled = value; }
-
-	void setColorGradingTexture(std::shared_ptr<wiResource> resource) { colorGradingTex = resource; }
 
 	virtual void setMSAASampleCount(uint32_t value) { if (msaaSampleCount != value) { msaaSampleCount = value; ResizeBuffers(); } }
 

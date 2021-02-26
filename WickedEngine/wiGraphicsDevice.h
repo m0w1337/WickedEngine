@@ -1,6 +1,7 @@
 #pragma once
 #include "CommonInclude.h"
 #include "wiGraphics.h"
+#include "wiEvent.h"
 
 #include <memory>
 
@@ -24,13 +25,17 @@ namespace wiGraphics
 		size_t SHADER_IDENTIFIER_SIZE = 0;
 		size_t TOPLEVEL_ACCELERATION_STRUCTURE_INSTANCE_SIZE = 0;
 		uint32_t VARIABLE_RATE_SHADING_TILE_SIZE = 0;
+		uint64_t TIMESTAMP_FREQUENCY = 0;
+
+		int dpi = 96;
+		wiEvent::Handle dpi_change_event = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_DPI, [this](uint64_t userdata) { dpi = int(userdata & 0xFFFF); });
 
 	public:
 		virtual bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) = 0;
 		virtual bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) = 0;
 		virtual bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) = 0;
 		virtual bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) = 0;
-		virtual bool CreateQuery(const GPUQueryDesc *pDesc, GPUQuery *pQuery) = 0;
+		virtual bool CreateQueryHeap(const GPUQueryHeapDesc *pDesc, GPUQueryHeap *pQueryHeap) = 0;
 		virtual bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) = 0;
 		virtual bool CreateRenderPass(const RenderPassDesc* pDesc, RenderPass* renderpass) = 0;
 		virtual bool CreateRaytracingAccelerationStructure(const RaytracingAccelerationStructureDesc* pDesc, RaytracingAccelerationStructure* bvh) { return false; }
@@ -49,7 +54,7 @@ namespace wiGraphics
 
 		virtual void Map(const GPUResource* resource, Mapping* mapping) = 0;
 		virtual void Unmap(const GPUResource* resource) = 0;
-		virtual bool QueryRead(const GPUQuery* query, GPUQueryResult* result) = 0;
+		virtual void QueryRead(const GPUQueryHeap* heap, uint32_t index, uint32_t count, uint64_t* results) = 0;
 
 		virtual void SetCommonSampler(const StaticSampler* sam) = 0;
 
@@ -73,6 +78,9 @@ namespace wiGraphics
 		inline int GetResolutionWidth() const { return RESOLUTIONWIDTH; }
 		// Returns native resolution height of back buffer in pixels:
 		inline int GetResolutionHeight() const { return RESOLUTIONHEIGHT; }
+
+		constexpr int GetDPI() const { return dpi; }
+		constexpr float GetDPIScaling() const { return (float)GetDPI() / 96.f; }
 
 		// Returns the width of the screen with DPI scaling applied (subpixel size):
 		float GetScreenWidth() const;
@@ -103,6 +111,7 @@ namespace wiGraphics
 		inline size_t GetShaderIdentifierSize() const { return SHADER_IDENTIFIER_SIZE; }
 		inline size_t GetTopLevelAccelerationStructureInstanceSize() const { return TOPLEVEL_ACCELERATION_STRUCTURE_INSTANCE_SIZE; }
 		inline uint32_t GetVariableRateShadingTileSize() const { return VARIABLE_RATE_SHADING_TILE_SIZE; }
+		inline uint64_t GetTimestampFrequency() const { return TIMESTAMP_FREQUENCY; }
 
 		///////////////Thread-sensitive////////////////////////
 
@@ -137,8 +146,9 @@ namespace wiGraphics
 		virtual void DispatchMeshIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd) {}
 		virtual void CopyResource(const GPUResource* pDst, const GPUResource* pSrc, CommandList cmd) = 0;
 		virtual void UpdateBuffer(const GPUBuffer* buffer, const void* data, CommandList cmd, int dataSize = -1) = 0;
-		virtual void QueryBegin(const GPUQuery *query, CommandList cmd) = 0;
-		virtual void QueryEnd(const GPUQuery *query, CommandList cmd) = 0;
+		virtual void QueryBegin(const GPUQueryHeap *heap, uint32_t index, CommandList cmd) = 0;
+		virtual void QueryEnd(const GPUQueryHeap *heap, uint32_t index, CommandList cmd) = 0;
+		virtual void QueryResolve(const GPUQueryHeap* heap, uint32_t index, uint32_t count, CommandList cmd) {}
 		virtual void Barrier(const GPUBarrier* barriers, uint32_t numBarriers, CommandList cmd) = 0;
 		virtual void BuildRaytracingAccelerationStructure(const RaytracingAccelerationStructure* dst, CommandList cmd, const RaytracingAccelerationStructure* src = nullptr) {}
 		virtual void BindRaytracingPipelineState(const RaytracingPipelineState* rtpso, CommandList cmd) {}
