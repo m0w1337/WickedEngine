@@ -221,6 +221,23 @@ struct VertexSurface
 	float4 positionPrev;
 	uint emissiveColor;
 
+	float2 hash(float2 p) {
+		p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
+		return -1.0 + 2.0 * frac(sin(p) * 43758.5453123);
+	}
+	float noise(in float2 p) {
+		const float K1 = 0.366025404;  // (sqrt(3)-1)/2;
+		const float K2 = 0.211324865;  // (3-sqrt(3))/6;
+		float2 i	   = floor(p + (p.x + p.y) * K1);
+		float2 a	   = p - i + (i.x + i.y) * K2;
+		float2 o	   = (a.x > a.y) ? float2(1.0, 0.0) : float2(0.0, 1.0);	 //float2 of = 0.5 + 0.5*float2(sign(a.x-a.y), sign(a.y-a.x));
+		float2 b	   = a - o + K2;
+		float2 c	   = a - 1.0 + 2.0 * K2;
+		float3 h	   = max(0.5 - float3(dot(a, a), dot(b, b), dot(c, c)), 0.0);
+		float3 n	   = h * h * h * h * float3(dot(a, hash(i + 0.0)), dot(b, hash(i + o)), dot(c, hash(i + 1.0)));
+		return dot(n, float3(70.0, 70.0, 70.0));
+	}
+
 	inline void create(in ShaderMaterial material, in VertexInput input)
 	{
 		float4x4 WORLD = input.GetInstanceMatrix();
@@ -254,18 +271,60 @@ struct VertexSurface
 #endif // OBJECTSHADER_INPUT_TAN
 
 #ifdef OBJECTSHADER_USE_WIND
-		if (material.IsUsingWind())
+
+		if (material.IsUsingWind() && (normal_wind & 0x00FF000000))
 		{
-			const float windweight = ((normal_wind >> 24) & 0xFF) / 255.0;
-			const float waveoffset = dot(position.xyz, g_xFrame_WindDirection) * g_xFrame_WindWaveSize + (position.x + position.y + position.z) * g_xFrame_WindRandomness;
-			const float waveoffsetPrev = dot(positionPrev.xyz, g_xFrame_WindDirection) * g_xFrame_WindWaveSize + (positionPrev.x + positionPrev.y + positionPrev.z) * g_xFrame_WindRandomness;
-			const float3 wavedir = g_xFrame_WindDirection * windweight;
-			const float3 wind = sin(g_xFrame_Time * g_xFrame_WindSpeed + waveoffset) * wavedir;
-			const float3 windPrev = sin(g_xFrame_TimePrev * g_xFrame_WindSpeed + waveoffsetPrev) * wavedir;
-			position.xyz += wind;
-			positionPrev.xyz += windPrev;
+			float4 wposition		   = mul(WORLD, position);
+			float4 wpositionPrev			   = mul(WORLD, positionPrev);
+			const float posOffset	   = noise(float2(wposition.x * g_xFrame_WindWaveSize * 0.003, wposition.z * g_xFrame_WindWaveSize * 0.003));
+			const float windweight	   = ((normal_wind >> 24) & 0xFF) / 255.0;
+			const float waveoffset	   = position.xyz * g_xFrame_WindWaveSize + posOffset;
+			const float waveoffsetPrev = positionPrev.xyz * g_xFrame_WindWaveSize + posOffset;
+			const float3 wavedir	   = g_xFrame_WindDirection * windweight * g_xFrame_WindRandomness / 2;
+			const float3 wavedir_norm  = normal * windweight * g_xFrame_WindRandomness / 4;
+			const float3 noise1		   = noise(g_xFrame_Time * g_xFrame_WindSpeed / 5 + waveoffset);
+			const float3 noise1Prev	   = noise(g_xFrame_TimePrev * g_xFrame_WindSpeed / 5 + waveoffsetPrev);
+			if (windweight > 0.5) {
+				const float3 wind	  = noise1 * wavedir / 3 + wavedir * g_xFrame_WindSpeed * 0.3 - wavedir_norm * g_xFrame_WindSpeed * 0.1 - noise1 * wavedir_norm / 3;
+				const float3 windPrev = noise1Prev * wavedir / 3 + wavedir * g_xFrame_WindSpeed * 0.3 - wavedir_norm * g_xFrame_WindSpeed * 0.1 - noise1Prev * wavedir_norm / 3;
+				position			  = mul(WORLD, position);
+#ifdef OBJECTSHADER_INPUT_PRE
+				positionPrev = mul(input.GetInstanceMatrixPrev(), positionPrev);
+#else
+				positionPrev = position;
+#endif	// OBJECTSHADER_INPUT_PRE
+				position.xyz += wind;
+				positionPrev.xyz += windPrev;
+			} else if (windweight > 0.005) {
+				const float3 wind	  = g_xFrame_WindDirection * g_xFrame_WindSpeed * position.y / 8 + noise(posOffset + g_xFrame_Time * g_xFrame_WindSpeed / 30) * g_xFrame_WindDirection * g_xFrame_WindSpeed * position.y / 40 + noise1 * wavedir * g_xFrame_WindSpeed * position.y / 80 - noise1 * wavedir_norm * g_xFrame_WindSpeed * position.y / 80;
+				const float3 windPrev = g_xFrame_WindDirection * g_xFrame_WindSpeed * positionPrev.y / 8 + noise(posOffset + g_xFrame_TimePrev * g_xFrame_WindSpeed / 30) * g_xFrame_WindDirection * g_xFrame_WindSpeed * positionPrev.y / 40 + noise1Prev * wavedir * g_xFrame_WindSpeed * positionPrev.y / 80 - noise1Prev * wavedir_norm * g_xFrame_WindSpeed * positionPrev.y / 80;
+				position.xyz += sin(g_xFrame_Time * g_xFrame_WindSpeed / 3 + waveoffset) * wavedir * g_xFrame_WindSpeed / 4;  //
+				positionPrev.xyz += sin(g_xFrame_TimePrev * g_xFrame_WindSpeed / 3 + waveoffsetPrev) * wavedir * g_xFrame_WindSpeed / 4;  //
+				position = mul(WORLD, position);
+#ifdef OBJECTSHADER_INPUT_PRE
+				positionPrev = mul(input.GetInstanceMatrixPrev(), positionPrev);
+#else
+				positionPrev = position;
+#endif	// OBJECTSHADER_INPUT_PRE
+				position.xyz += wind;
+				positionPrev.xyz += windPrev;
+			}
+		} else {
+			position = mul(WORLD, position);
+#ifdef OBJECTSHADER_INPUT_PRE
+			positionPrev = mul(input.GetInstanceMatrixPrev(), positionPrev);
+#else
+			positionPrev = position;
+#endif	// OBJECTSHADER_INPUT_PRE
 		}
-#endif // OBJECTSHADER_USE_WIND
+#else
+		position	 = mul(WORLD, position);
+#ifdef OBJECTSHADER_INPUT_PRE
+		positionPrev = mul(input.GetInstanceMatrixPrev(), positionPrev);
+#else
+		positionPrev = position;
+#endif	// OBJECTSHADER_INPUT_PRE
+#endif	// OBJECTSHADER_USE_WIND
 
 #ifdef OBJECTSHADER_INPUT_TEX
 		uvsets = float4(input.uv0 * material.texMulAdd.xy + material.texMulAdd.zw, input.uv1);
@@ -275,13 +334,7 @@ struct VertexSurface
 		atlas = input.atl * input.atlasMulAdd.xy + input.atlasMulAdd.zw;
 #endif // OBJECTSHADER_INPUT_ATL
 
-		position = mul(WORLD, position);
 
-#ifdef OBJECTSHADER_INPUT_PRE
-		positionPrev = mul(input.GetInstanceMatrixPrev(), positionPrev);
-#else
-		positionPrev = position;
-#endif // OBJECTSHADER_INPUT_PRE
 	}
 };
 

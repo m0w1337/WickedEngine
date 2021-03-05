@@ -127,11 +127,10 @@ void MainComponent::Run()
 			}
 		}
 		wiProfiler::EndRange(range); // Fixed Update
-
+		wiInput::Update();
 		// Variable-timed update:
 		Update(dt);
 
-		wiInput::Update();
 
 		Render();
 	}
