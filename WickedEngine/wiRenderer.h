@@ -153,11 +153,8 @@ namespace wiRenderer
 		const FrameCB& frameCB,
 		wiGraphics::CommandList cmd
 	);
-	// Updates all acceleration structures for raytracing API
-	void UpdateRaytracingAccelerationStructures(
-		const wiScene::Scene& scene,
-		wiGraphics::CommandList cmd
-	);
+
+	void UpdateRaytracingAccelerationStructures(const wiScene::Scene& scene, wiGraphics::CommandList cmd);
 
 	// Binds all common constant buffers and samplers that may be used in all shaders
 	void BindCommonResources(wiGraphics::CommandList cmd);
@@ -514,10 +511,15 @@ namespace wiRenderer
 		wiGraphics::CommandList cmd,
 		float strength = 100.0f
 	);
+	struct BloomResources
+	{
+		wiGraphics::Texture texture_bloom;
+		wiGraphics::Texture texture_temp;
+	};
+	void CreateBloomResources(BloomResources& res, XMUINT2 resolution);
 	void Postprocess_Bloom(
+		const BloomResources& res,
 		const wiGraphics::Texture& input,
-		const wiGraphics::Texture& bloom,
-		const wiGraphics::Texture& bloom_tmp,
 		const wiGraphics::Texture& output,
 		wiGraphics::CommandList cmd,
 		float threshold = 1.0f
@@ -823,8 +825,6 @@ namespace wiRenderer
 
 	// Add a texture that should be mipmapped whenever it is feasible to do so
 	void AddDeferredMIPGen(std::shared_ptr<wiResource> res, bool preserve_coverage = false);
-	void AddDeferredMaterialUpdate(wiECS::Entity entity);
-	void AddDeferredMorphUpdate(wiECS::Entity entity);
 
 	struct CustomShader
 	{

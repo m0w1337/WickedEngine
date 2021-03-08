@@ -22,6 +22,10 @@ void RenderPath3D::ResizeBuffers()
 	{
 		TextureDesc desc;
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
+		if (getMSAASampleCount() == 1)
+		{
+			desc.BindFlags |= BIND_UNORDERED_ACCESS;
+		}
 		desc.Width = internalResolution.x;
 		desc.Height = internalResolution.y;
 		desc.SampleCount = getMSAASampleCount();
@@ -30,6 +34,7 @@ void RenderPath3D::ResizeBuffers()
 		device->CreateTexture(&desc, nullptr, &rtGbuffer[GBUFFER_COLOR]);
 		device->SetName(&rtGbuffer[GBUFFER_COLOR], "rtGbuffer[GBUFFER_COLOR]");
 
+		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
 		desc.Format = FORMAT_R8G8B8A8_UNORM;
 		device->CreateTexture(&desc, nullptr, &rtGbuffer[GBUFFER_NORMAL_ROUGHNESS]);
 		device->SetName(&rtGbuffer[GBUFFER_NORMAL_ROUGHNESS], "rtGbuffer[GBUFFER_NORMAL_ROUGHNESS]");
@@ -179,31 +184,6 @@ void RenderPath3D::ResizeBuffers()
 			desc.SampleCount = 1;
 			device->CreateTexture(&desc, nullptr, &rtSun_resolved);
 			device->SetName(&rtSun_resolved, "rtSun_resolved");
-		}
-	}
-	{
-		TextureDesc desc;
-		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-		desc.Format = FORMAT_R11G11B10_FLOAT;
-		desc.Width = internalResolution.x / 4;
-		desc.Height = internalResolution.y / 4;
-		desc.MipLevels = std::min(5u, (uint32_t)std::log2(std::max(desc.Width, desc.Height)));
-		device->CreateTexture(&desc, nullptr, &rtBloom);
-		device->SetName(&rtBloom, "rtBloom");
-		device->CreateTexture(&desc, nullptr, &rtBloom_tmp);
-		device->SetName(&rtBloom_tmp, "rtBloom_tmp");
-
-		for (uint32_t i = 0; i < rtBloom.GetDesc().MipLevels; ++i)
-		{
-			int subresource_index;
-			subresource_index = device->CreateSubresource(&rtBloom, SRV, 0, 1, i, 1);
-			assert(subresource_index == i);
-			subresource_index = device->CreateSubresource(&rtBloom_tmp, SRV, 0, 1, i, 1);
-			assert(subresource_index == i);
-			subresource_index = device->CreateSubresource(&rtBloom, UAV, 0, 1, i, 1);
-			assert(subresource_index == i);
-			subresource_index = device->CreateSubresource(&rtBloom_tmp, UAV, 0, 1, i, 1);
-			assert(subresource_index == i);
 		}
 	}
 	{
@@ -533,6 +513,7 @@ void RenderPath3D::ResizeBuffers()
 	wiRenderer::CreateDepthOfFieldResources(depthoffieldResources, internalResolution);
 	wiRenderer::CreateMotionBlurResources(motionblurResources, internalResolution);
 	wiRenderer::CreateVolumetricCloudResources(volumetriccloudResources, internalResolution);
+	wiRenderer::CreateBloomResources(bloomResources, internalResolution);
 
 	if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
 	{
@@ -553,7 +534,18 @@ void RenderPath3D::Update(float dt)
 {
 	RenderPath2D::Update(dt);
 
-	scene->Update(dt * wiRenderer::GetGameSpeed());
+	if (getSceneUpdateEnabled())
+	{
+		if (getAO() == AO_RTAO || wiRenderer::GetRaytracedShadowsEnabled() || getRaytracedReflectionEnabled())
+		{
+			scene->flags |= wiScene::Scene::UPDATE_ACCELERATION_STRUCTURES;
+		}
+		else
+		{
+			scene->flags &= ~wiScene::Scene::UPDATE_ACCELERATION_STRUCTURES;
+		}
+		scene->Update(dt * wiRenderer::GetGameSpeed());
+	}
 
 	// Frustum culling for main camera:
 	visibility_main.layerMask = getLayerMask();
@@ -575,7 +567,10 @@ void RenderPath3D::Update(float dt)
 		wiRenderer::UpdateVisibility(visibility_reflection);
 	}
 
-	wiRenderer::OcclusionCulling_Read(*scene, visibility_main);
+	if (getOcclusionCullingEnabled())
+	{
+		wiRenderer::OcclusionCulling_Read(*scene, visibility_main);
+	}
 	wiRenderer::UpdatePerFrameData(*scene, visibility_main, frameCB, GetInternalResolution(), dt);
 
 	if (wiRenderer::GetTemporalAAEnabled())
@@ -604,6 +599,14 @@ void RenderPath3D::Render() const
 	wiJobSystem::Execute(ctx, [this, cmd](wiJobArgs args) {
 		RenderFrameSetUp(cmd);
 		});
+
+	if (getAO() == AO_RTAO || wiRenderer::GetRaytracedShadowsEnabled() || getRaytracedReflectionEnabled())
+	{
+		cmd = device->BeginCommandList();
+		wiJobSystem::Execute(ctx, [this, cmd](wiJobArgs args) {
+			wiRenderer::UpdateRaytracingAccelerationStructures(*scene, cmd);
+			});
+	}
 
 	static const uint32_t drawscene_flags =
 		wiRenderer::DRAWSCENE_OPAQUE |
@@ -643,7 +646,10 @@ void RenderPath3D::Render() const
 		wiProfiler::EndRange(range);
 		device->EventEnd(cmd);
 
-		wiRenderer::OcclusionCulling_Render(*camera, visibility_main, cmd);
+		if (getOcclusionCullingEnabled())
+		{
+			wiRenderer::OcclusionCulling_Render(*camera, visibility_main, cmd);
+		}
 
 		device->RenderPassEnd(cmd);
 
@@ -965,11 +971,6 @@ void RenderPath3D::RenderFrameSetUp(CommandList cmd) const
 
 	device->BindResource(CS, &depthBuffer_Copy1, TEXSLOT_DEPTH, cmd);
 	wiRenderer::UpdateRenderData(visibility_main, frameCB, cmd);
-
-	if (getAO() == AO_RTAO || wiRenderer::GetRaytracedShadowsEnabled() || getRaytracedReflectionEnabled())
-	{
-		wiRenderer::UpdateRaytracingAccelerationStructures(*scene, cmd);
-	}
 }
 
 void RenderPath3D::RenderAO(CommandList cmd) const
@@ -1322,7 +1323,13 @@ void RenderPath3D::RenderPostprocessChain(CommandList cmd) const
 
 		if (getBloomEnabled())
 		{
-			wiRenderer::Postprocess_Bloom(rt_first == nullptr ? *rt_read : *rt_first, rtBloom, rtBloom_tmp, *rt_write, cmd, getBloomThreshold());
+			wiRenderer::Postprocess_Bloom(
+				bloomResources,
+				rt_first == nullptr ? *rt_read : *rt_first,
+				*rt_write,
+				cmd,
+				getBloomThreshold()
+			);
 			rt_first = nullptr;
 
 			std::swap(rt_read, rt_write);
@@ -1342,7 +1349,7 @@ void RenderPath3D::RenderPostprocessChain(CommandList cmd) const
 			cmd,
 			getExposure(),
 			getDitherEnabled(),
-			getColorGradingEnabled() ? (scene->weather.colorGradingMap == nullptr ? nullptr : scene->weather.colorGradingMap->texture) : nullptr
+			getColorGradingEnabled() ? (scene->weather.colorGradingMap == nullptr ? nullptr : &scene->weather.colorGradingMap->texture) : nullptr
 		);
 
 		rt_first = nullptr;
