@@ -97,7 +97,7 @@ namespace wiInput
 
 		auto range = wiProfiler::BeginRangeCPU("Input");
 
-		wiXInput::Update();
+		//wiXInput::Update();
 		wiRawInput::Update();
 		wiSDLInput::Update();
 

@@ -533,13 +533,12 @@ struct VertexSurface
 #endif // OBJECTSHADER_INPUT_TAN
 
 #ifdef OBJECTSHADER_USE_WIND
-
-		if (material.IsUsingWind() && (normal_wind & 0x00FF000000))
+		if (material.IsUsingWind() && (input.GetWindWeight()))
 		{
 			float4 wposition		   = mul(WORLD, position);
 			float4 wpositionPrev			   = mul(WORLD, positionPrev);
 			const float posOffset	   = noise(float2(wposition.x * g_xFrame_WindWaveSize * 0.003, wposition.z * g_xFrame_WindWaveSize * 0.003));
-			const float windweight	   = ((normal_wind >> 24) & 0xFF) / 255.0;
+			const float windweight			   = input.GetWindWeight();
 			const float waveoffset	   = position.xyz * g_xFrame_WindWaveSize + posOffset;
 			const float waveoffsetPrev = positionPrev.xyz * g_xFrame_WindWaveSize + posOffset;
 			const float3 wavedir	   = g_xFrame_WindDirection * windweight * g_xFrame_WindRandomness / 2;
@@ -547,8 +546,8 @@ struct VertexSurface
 			const float3 noise1		   = noise(g_xFrame_Time * g_xFrame_WindSpeed / 5 + waveoffset);
 			const float3 noise1Prev	   = noise(g_xFrame_TimePrev * g_xFrame_WindSpeed / 5 + waveoffsetPrev);
 			if (windweight > 0.5) {
-				const float3 wind	  = noise1 * wavedir / 3 + wavedir * g_xFrame_WindSpeed * 0.3 - wavedir_norm * g_xFrame_WindSpeed * 0.1 - noise1 * wavedir_norm / 3;
-				const float3 windPrev = noise1Prev * wavedir / 3 + wavedir * g_xFrame_WindSpeed * 0.3 - wavedir_norm * g_xFrame_WindSpeed * 0.1 - noise1Prev * wavedir_norm / 3;
+				const float3 wind	  = noise1 * wavedir / 3 + wavedir * g_xFrame_WindSpeed * 0.5 - wavedir_norm * g_xFrame_WindSpeed * 0.1 - noise1 * wavedir_norm / 3;
+				const float3 windPrev = noise1Prev * wavedir / 3 + wavedir * g_xFrame_WindSpeed * 0.5 - wavedir_norm * g_xFrame_WindSpeed * 0.1 - noise1Prev * wavedir_norm / 3;
 				position			  = mul(WORLD, position);
 #ifdef OBJECTSHADER_INPUT_PRE
 				positionPrev = mul(input.GetInstanceMatrixPrev(), positionPrev);
