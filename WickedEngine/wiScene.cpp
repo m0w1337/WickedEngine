@@ -2019,6 +2019,17 @@ namespace wiScene
 				++i;
 			}
 		}
+		for (size_t i = 0; i < emitters.GetCount();)
+		{
+			if (emitters[i].parentObject == parent)
+			{
+				Entity entity = emitters.GetEntity(i);
+				Entity_Remove(entity);
+			} else
+			{
+				++i;
+			}
+		}
 		for (size_t i = 0; i < objects.GetCount();)
 		{
 			if (objects[i].parentObject == parent)

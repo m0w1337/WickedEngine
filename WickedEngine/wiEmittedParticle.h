@@ -17,7 +17,7 @@ namespace wiScene
 class wiEmittedParticle
 {
 public:
-
+	wiECS::Entity parentObject = wiECS::INVALID_ENTITY;
 	// This is serialized, order of enums shouldn't change!
 	enum PARTICLESHADERTYPE
 	{
@@ -31,6 +31,7 @@ public:
 
 private:
 	ParticleCounters statistics = {};
+	
 	wiGraphics::GPUBuffer statisticsReadbackBuffer[wiGraphics::GraphicsDevice::GetBackBufferCount() + 2];
 
 	wiGraphics::GPUBuffer particleBuffer;
