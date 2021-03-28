@@ -2,7 +2,7 @@
 #include "CommonInclude.h"
 #include "wiGraphicsDevice.h"
 #include "wiIntersect.h"
-#include "ShaderInterop_EmittedParticle.h"
+#include "shaders/ShaderInterop_EmittedParticle.h"
 #include "wiEnums.h"
 #include "wiScene_Decl.h"
 #include "wiECS.h"
@@ -31,8 +31,7 @@ public:
 
 private:
 	ParticleCounters statistics = {};
-	
-	wiGraphics::GPUBuffer statisticsReadbackBuffer[wiGraphics::GraphicsDevice::GetBackBufferCount() + 2];
+	wiGraphics::GPUBuffer statisticsReadbackBuffer[wiGraphics::GraphicsDevice::GetBackBufferCount() + 1];
 
 	wiGraphics::GPUBuffer particleBuffer;
 	wiGraphics::GPUBuffer aliveList[2];
@@ -118,6 +117,7 @@ public:
 	// Non-serialized attributes:
 	XMFLOAT3 center;
 	uint32_t statisticsReadBackIndex = 0;
+	uint32_t layerMask = ~0u;
 
 	inline bool IsDebug() const { return _flags & FLAG_DEBUG; }
 	inline bool IsPaused() const { return _flags & FLAG_PAUSED; }

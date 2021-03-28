@@ -4,7 +4,7 @@
 #include "wiIntersect.h"
 #include "wiEmittedParticle.h"
 #include "wiHairParticle.h"
-#include "ShaderInterop_Renderer.h"
+#include "shaders/ShaderInterop_Renderer.h"
 #include "wiJobSystem.h"
 #include "wiAudio.h"
 #include "wiResourceManager.h"
@@ -632,7 +632,7 @@ namespace wiScene
 
 		// occlusion result history bitfield (32 bit->32 frame history)
 		uint32_t occlusionHistory = ~0;
-		int occlusionQueries[wiGraphics::GraphicsDevice::GetBackBufferCount() + 1] = {-1,-1,-1};
+		int occlusionQueries[wiGraphics::GraphicsDevice::GetBackBufferCount() + 1];
 
 		inline bool IsOccluded() const
 		{
@@ -1283,6 +1283,9 @@ namespace wiScene
 		};
 		uint32_t flags = EMPTY;
 
+		constexpr void SetUpdateAccelerationStructuresEnabled(bool value){ if (value) { flags |= UPDATE_ACCELERATION_STRUCTURES; } else { flags &= ~UPDATE_ACCELERATION_STRUCTURES; } }
+		constexpr bool IsUpdateAccelerationStructuresEnabled() const { return flags & UPDATE_ACCELERATION_STRUCTURES; }
+
 		wiSpinLock locker;
 		AABB bounds;
 		std::vector<AABB> parallel_bounds;
@@ -1297,8 +1300,7 @@ namespace wiScene
 		wiGraphics::GPUQueryHeap queryHeap[arraysize(ObjectComponent::occlusionQueries)];
 		std::vector<uint64_t> queryResults;
 		uint32_t writtenQueries[arraysize(queryHeap)] = {};
-		int query_write = 0;
-		int query_read = 0;
+		int queryheap_idx = 0;
 		std::atomic<uint32_t> queryAllocator{ 0 };
 
 		// Update all components by a given timestep (in seconds):

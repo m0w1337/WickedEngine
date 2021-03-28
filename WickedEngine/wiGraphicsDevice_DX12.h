@@ -35,7 +35,6 @@ namespace wiGraphics
 		Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> directQueue;
 		Microsoft::WRL::ComPtr<ID3D12Fence> frameFence;
-		HANDLE frameFenceEvent;
 
 		uint32_t backbuffer_index = 0;
 		Microsoft::WRL::ComPtr<ID3D12Resource> backBuffers[BACKBUFFER_COUNT];
@@ -89,7 +88,7 @@ namespace wiGraphics
 			struct CopyCMD
 			{
 				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
-				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> commandList;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
 				uint64_t target = 0;
 				GPUBuffer uploadbuffer;
 			};
@@ -184,10 +183,9 @@ namespace wiGraphics
 				locker.unlock();
 			}
 		};
-		CopyAllocator copyAllocator;
+		mutable CopyAllocator copyAllocator;
 
 		Microsoft::WRL::ComPtr<ID3D12Fence> directFence;
-		HANDLE directFenceEvent;
 		UINT64 directFenceValue = 0;
 
 		RenderPass dummyRenderpass;
@@ -195,7 +193,7 @@ namespace wiGraphics
 		struct FrameResources
 		{
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[COMMANDLIST_COUNT];
-			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> commandLists[COMMANDLIST_COUNT];
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> commandLists[COMMANDLIST_COUNT];
 
 			struct ResourceFrameAllocator
 			{
@@ -215,7 +213,7 @@ namespace wiGraphics
 		};
 		FrameResources frames[BACKBUFFER_COUNT];
 		FrameResources& GetFrameResources() { return frames[GetFrameCount() % BACKBUFFER_COUNT]; }
-		inline ID3D12GraphicsCommandList6* GetDirectCommandList(CommandList cmd) { return GetFrameResources().commandLists[cmd].Get(); }
+		inline ID3D12GraphicsCommandList6* GetDirectCommandList(CommandList cmd) { return (ID3D12GraphicsCommandList6*)GetFrameResources().commandLists[cmd].Get(); }
 
 		struct DescriptorBinder
 		{
@@ -254,8 +252,8 @@ namespace wiGraphics
 
 		PRIMITIVETOPOLOGY prev_pt[COMMANDLIST_COUNT] = {};
 
-		std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D12RootSignature>> rootsignature_cache;
-		std::mutex rootsignature_cache_mutex;
+		mutable std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D12RootSignature>> rootsignature_cache;
+		mutable std::mutex rootsignature_cache_mutex;
 
 		std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> pipelines_global;
 		std::vector<std::pair<size_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>>> pipelines_worker[COMMANDLIST_COUNT];
@@ -298,29 +296,29 @@ namespace wiGraphics
 		GraphicsDevice_DX12(wiPlatform::window_type window, bool fullscreen = false, bool debuglayer = false);
 		virtual ~GraphicsDevice_DX12();
 
-		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) override;
-		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) override;
-		bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) override;
-		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) override;
-		bool CreateQueryHeap(const GPUQueryHeapDesc* pDesc, GPUQueryHeap* pQueryHeap) override;
-		bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) override;
-		bool CreateRenderPass(const RenderPassDesc* pDesc, RenderPass* renderpass) override;
-		bool CreateRaytracingAccelerationStructure(const RaytracingAccelerationStructureDesc* pDesc, RaytracingAccelerationStructure* bvh) override;
-		bool CreateRaytracingPipelineState(const RaytracingPipelineStateDesc* pDesc, RaytracingPipelineState* rtpso) override;
+		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) const override;
+		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) const override;
+		bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) const override;
+		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) const override;
+		bool CreateQueryHeap(const GPUQueryHeapDesc* pDesc, GPUQueryHeap* pQueryHeap) const override;
+		bool CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) const override;
+		bool CreateRenderPass(const RenderPassDesc* pDesc, RenderPass* renderpass) const override;
+		bool CreateRaytracingAccelerationStructure(const RaytracingAccelerationStructureDesc* pDesc, RaytracingAccelerationStructure* bvh) const override;
+		bool CreateRaytracingPipelineState(const RaytracingPipelineStateDesc* pDesc, RaytracingPipelineState* rtpso) const override;
 		
-		int CreateSubresource(Texture* texture, SUBRESOURCE_TYPE type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount) override;
-		int CreateSubresource(GPUBuffer* buffer, SUBRESOURCE_TYPE type, uint64_t offset, uint64_t size = ~0) override;
+		int CreateSubresource(Texture* texture, SUBRESOURCE_TYPE type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount) const override;
+		int CreateSubresource(GPUBuffer* buffer, SUBRESOURCE_TYPE type, uint64_t offset, uint64_t size = ~0) const override;
 
-		int GetDescriptorIndex(const GPUResource* resource, SUBRESOURCE_TYPE type, int subresource = -1) override;
-		int GetDescriptorIndex(const Sampler* sampler) override;
+		int GetDescriptorIndex(const GPUResource* resource, SUBRESOURCE_TYPE type, int subresource = -1) const override;
+		int GetDescriptorIndex(const Sampler* sampler) const override;
 
-		void WriteShadingRateValue(SHADING_RATE rate, void* dest) override;
-		void WriteTopLevelAccelerationStructureInstance(const RaytracingAccelerationStructureDesc::TopLevel::Instance* instance, void* dest) override;
-		void WriteShaderIdentifier(const RaytracingPipelineState* rtpso, uint32_t group_index, void* dest) override;
+		void WriteShadingRateValue(SHADING_RATE rate, void* dest) const override;
+		void WriteTopLevelAccelerationStructureInstance(const RaytracingAccelerationStructureDesc::TopLevel::Instance* instance, void* dest) const override;
+		void WriteShaderIdentifier(const RaytracingPipelineState* rtpso, uint32_t group_index, void* dest) const override;
 		
-		void Map(const GPUResource* resource, Mapping* mapping) override;
-		void Unmap(const GPUResource* resource) override;
-		void QueryRead(const GPUQueryHeap* heap, uint32_t index, uint32_t count, uint64_t* results) override;
+		void Map(const GPUResource* resource, Mapping* mapping) const override;
+		void Unmap(const GPUResource* resource) const override;
+		void QueryRead(const GPUQueryHeap* heap, uint32_t index, uint32_t count, uint64_t* results) const override;
 
 		void SetCommonSampler(const StaticSampler* sam) override;
 
@@ -339,6 +337,8 @@ namespace wiGraphics
 		void SetResolution(int width, int height) override;
 
 		Texture GetBackBuffer() override;
+
+		SHADERFORMAT GetShaderFormat() const override { return SHADERFORMAT_HLSL6; }
 
 		///////////////Thread-sensitive////////////////////////
 

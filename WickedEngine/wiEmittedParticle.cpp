@@ -5,7 +5,7 @@
 #include "wiResourceManager.h"
 #include "wiIntersect.h"
 #include "wiRandom.h"
-#include "ResourceMapping.h"
+#include "shaders/ResourceMapping.h"
 #include "wiArchive.h"
 #include "wiTextureHelper.h"
 #include "wiGPUSortLib.h"
@@ -274,8 +274,9 @@ void wiEmittedParticle::UpdateGPU(const TransformComponent& transform, const Mat
 		cb.xEmitterFrameRate = frameRate;
 		cb.xParticleGravity = gravity;
 		cb.xParticleDrag = drag;
-		cb.xParticleVelocity = velocity;
+		XMStoreFloat3(&cb.xParticleVelocity, XMVector3TransformNormal(XMLoadFloat3(&velocity), XMLoadFloat4x4(&transform.world)));
 		cb.xParticleRandomColorFactor = random_color;
+		cb.xEmitterLayerMask = layerMask;
 
 		cb.xEmitterOptions = 0;
 		if (IsSPHEnabled())

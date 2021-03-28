@@ -3,7 +3,7 @@
 #include "wiImage.h"
 #include "wiHelper.h"
 #include "wiTextureHelper.h"
-#include "ResourceMapping.h"
+#include "shaders/ResourceMapping.h"
 #include "wiProfiler.h"
 
 using namespace wiGraphics;
@@ -538,11 +538,11 @@ void RenderPath3D::Update(float dt)
 	{
 		if (getAO() == AO_RTAO || wiRenderer::GetRaytracedShadowsEnabled() || getRaytracedReflectionEnabled())
 		{
-			scene->flags |= wiScene::Scene::UPDATE_ACCELERATION_STRUCTURES;
+			scene->SetUpdateAccelerationStructuresEnabled(true);
 		}
 		else
 		{
-			scene->flags &= ~wiScene::Scene::UPDATE_ACCELERATION_STRUCTURES;
+			scene->SetUpdateAccelerationStructuresEnabled(false);
 		}
 		scene->Update(dt * wiRenderer::GetGameSpeed());
 	}
@@ -596,7 +596,7 @@ void RenderPath3D::Render() const
 		RenderFrameSetUp(cmd);
 		});
 
-	if (getAO() == AO_RTAO || wiRenderer::GetRaytracedShadowsEnabled() || getRaytracedReflectionEnabled())
+	if (scene->IsUpdateAccelerationStructuresEnabled())
 	{
 		cmd = device->BeginCommandList();
 		wiJobSystem::Execute(ctx, [this, cmd](wiJobArgs args) {
@@ -1339,13 +1339,14 @@ void RenderPath3D::RenderPostprocessChain(CommandList cmd) const
 
 		wiRenderer::Postprocess_Tonemap(
 			rt_first == nullptr ? *rt_read : *rt_first,
-			getEyeAdaptionEnabled() ? *wiRenderer::ComputeLuminance(luminanceResources, *GetGbuffer_Read(GBUFFER_COLOR), cmd) : *wiTextureHelper::getColor(wiColor::Gray()),
-			getMSAASampleCount() > 1 ? rtParticleDistortion_Resolved : rtParticleDistortion,
 			*rt_write,
 			cmd,
 			getExposure(),
 			getDitherEnabled(),
-			getColorGradingEnabled() ? (scene->weather.colorGradingMap == nullptr ? nullptr : &scene->weather.colorGradingMap->texture) : nullptr
+			getColorGradingEnabled() ? (scene->weather.colorGradingMap == nullptr ? nullptr : &scene->weather.colorGradingMap->texture) : nullptr,
+			getMSAASampleCount() > 1 ? &rtParticleDistortion_Resolved : &rtParticleDistortion,
+			getEyeAdaptionEnabled() ? wiRenderer::ComputeLuminance(luminanceResources, *GetGbuffer_Read(GBUFFER_COLOR), cmd, getEyeAdaptionRate()) : nullptr,
+			getEyeAdaptionKey()
 		);
 
 		rt_first = nullptr;
