@@ -9,6 +9,7 @@
 
 std::mutex locker;
 std::vector<std::string> shaders[wiGraphics::SHADERSTAGE_COUNT];
+std::unordered_map<std::string, wiGraphics::SHADERMODEL> minshadermodels;
 struct Target
 {
 	wiGraphics::SHADERFORMAT format;
@@ -112,12 +113,9 @@ int main(int argc, char* argv[])
 		"skinningCS.hlsl"											,
 		"skinningCS_LDS.hlsl"										,
 		"resolveMSAADepthStencilCS.hlsl"							,
-		"raytrace_shadeCS.hlsl"										,
-		"raytrace_tilesortCS.hlsl"									,
-		"raytrace_kickjobsCS.hlsl"									,
-		"raytrace_launchCS.hlsl"									,
+		"raytraceCS.hlsl"											,
+		"raytraceCS_rtapi.hlsl"										,
 		"paint_textureCS.hlsl"										,
-		"raytrace_closesthitCS.hlsl"								,
 		"oceanUpdateDisplacementMapCS.hlsl"							,
 		"oceanUpdateGradientFoldingCS.hlsl"							,
 		"oceanSimulatorCS.hlsl"										,
@@ -248,6 +246,7 @@ int main(int argc, char* argv[])
 		"shadowPS_water.hlsl"							,
 		"shadowPS_alphatest.hlsl"						,
 		"renderlightmapPS.hlsl"							,
+		"renderlightmapPS_rtapi.hlsl"					,
 		"raytrace_debugbvhPS.hlsl"						,
 		"outlinePS.hlsl"								,
 		"oceanSurfaceSimplePS.hlsl"						,
@@ -386,6 +385,9 @@ int main(int argc, char* argv[])
 		"rtshadowLIB.hlsl",
 	};
 
+	minshadermodels["renderlightmapPS_rtapi.hlsl"] = wiGraphics::SHADERMODEL_6_5;
+	minshadermodels["raytraceCS_rtapi.hlsl"] = wiGraphics::SHADERMODEL_6_5;
+
 	wiShaderCompiler::Initialize();
 	wiJobSystem::Initialize();
 	wiJobSystem::context ctx;
@@ -430,7 +432,19 @@ int main(int argc, char* argv[])
 					input.stage = (wiGraphics::SHADERSTAGE)i;
 					input.shadersourcefilename = SHADERSOURCEPATH + shader;
 					input.include_directories.push_back(SHADERSOURCEPATH);
-					
+
+					auto it = minshadermodels.find(shader);
+					if (it != minshadermodels.end())
+					{
+						// increase min shader model only for specific shaders
+						input.minshadermodel = it->second;
+					}
+					if (input.minshadermodel > wiGraphics::SHADERMODEL_5_0 && target.format == wiGraphics::SHADERFORMAT_HLSL5)
+					{
+						// if shader format cannot support shader model, then we cancel the task without returning error
+						return;
+					}
+
 					wiShaderCompiler::CompilerOutput output;
 					wiShaderCompiler::Compile(input, output);
 
@@ -458,7 +472,7 @@ int main(int argc, char* argv[])
 						std::exit(1);
 					}
 
-				});
+					});
 			}
 		}
 	}

@@ -34,9 +34,7 @@ namespace wiGraphics
 		Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter;
 		Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> directQueue;
-		Microsoft::WRL::ComPtr<ID3D12Fence> frameFence;
 
-		uint32_t backbuffer_index = 0;
 		Microsoft::WRL::ComPtr<ID3D12Resource> backBuffers[BACKBUFFER_COUNT];
 
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> dispatchIndirectCommandSignature;
@@ -185,13 +183,11 @@ namespace wiGraphics
 		};
 		mutable CopyAllocator copyAllocator;
 
-		Microsoft::WRL::ComPtr<ID3D12Fence> directFence;
-		UINT64 directFenceValue = 0;
-
 		RenderPass dummyRenderpass;
 
 		struct FrameResources
 		{
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[COMMANDLIST_COUNT];
 			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> commandLists[COMMANDLIST_COUNT];
 
@@ -290,7 +286,6 @@ namespace wiGraphics
 		std::vector<QueryResolver> query_resolves[COMMANDLIST_COUNT];
 
 		std::atomic<CommandList> cmd_count{ 0 };
-		bool stashed[COMMANDLIST_COUNT] = {};
 
 	public:
 		GraphicsDevice_DX12(wiPlatform::window_type window, bool fullscreen = false, bool debuglayer = false);
@@ -329,7 +324,6 @@ namespace wiGraphics
 
 		CommandList BeginCommandList() override;
 		void SubmitCommandLists() override;
-		void StashCommandLists() override;
 
 		void WaitForGPU() override;
 		void ClearPipelineStateCache() override;

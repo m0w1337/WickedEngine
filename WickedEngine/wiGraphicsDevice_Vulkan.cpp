@@ -1663,29 +1663,19 @@ using namespace Vulkan_Internal;
 				if (pso->desc.il != nullptr)
 				{
 					uint32_t lastBinding = 0xFFFFFFFF;
-					uint32_t i = 0;
 					for (auto& x : pso->desc.il->elements)
 					{
-						VkVertexInputBindingDescription bind = {};
+						if (x.InputSlot == lastBinding)
+							continue;
+						lastBinding = x.InputSlot;
+						VkVertexInputBindingDescription& bind = bindings.emplace_back();
 						bind.binding = x.InputSlot;
 						bind.inputRate = x.InputSlotClass == INPUT_PER_VERTEX_DATA ? VK_VERTEX_INPUT_RATE_VERTEX : VK_VERTEX_INPUT_RATE_INSTANCE;
-						bind.stride = vb_strides[cmd][i];
-
-						if (lastBinding != bind.binding)
-						{
-							bindings.push_back(bind);
-							lastBinding = bind.binding;
-						}
-						else
-						{
-							bindings.back().stride += bind.stride;
-						}
-
-						i++;
+						bind.stride = vb_strides[cmd][x.InputSlot];
 					}
 
 					uint32_t offset = 0;
-					i = 0;
+					uint32_t i = 0;
 					lastBinding = 0xFFFFFFFF;
 					for (auto& x : pso->desc.il->elements)
 					{
@@ -5763,25 +5753,22 @@ using namespace Vulkan_Internal;
 			}
 		}
 
-		if (!stashed[cmd])
-		{
-			res = vkResetCommandPool(device, GetFrameResources().commandPools[cmd], 0);
-			assert(res == VK_SUCCESS);
+		res = vkResetCommandPool(device, GetFrameResources().commandPools[cmd], 0);
+		assert(res == VK_SUCCESS);
 
-			VkCommandBufferBeginInfo beginInfo = {};
-			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-			beginInfo.pInheritanceInfo = nullptr; // Optional
+		VkCommandBufferBeginInfo beginInfo = {};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		beginInfo.pInheritanceInfo = nullptr; // Optional
 
-			res = vkBeginCommandBuffer(GetFrameResources().commandBuffers[cmd], &beginInfo);
-			assert(res == VK_SUCCESS);
+		res = vkBeginCommandBuffer(GetFrameResources().commandBuffers[cmd], &beginInfo);
+		assert(res == VK_SUCCESS);
 
-			// reset descriptor allocators:
-			GetFrameResources().descriptors[cmd].reset();
+		// reset descriptor allocators:
+		GetFrameResources().descriptors[cmd].reset();
 
-			// reset immediate resource allocators:
-			GetFrameResources().resourceBuffer[cmd].clear();
-		}
+		// reset immediate resource allocators:
+		GetFrameResources().resourceBuffer[cmd].clear();
 
 		Viewport viewports[6];
 		for (uint32_t i = 0; i < arraysize(viewports); ++i)
@@ -5881,7 +5868,6 @@ using namespace Vulkan_Internal;
 			cmd_count.store(0);
 			for (CommandList cmd = 0; cmd < cmd_last; ++cmd)
 			{
-				stashed[cmd] = false;
 				barrier_flush(cmd);
 
 				VkResult res = vkEndCommandBuffer(GetDirectCommandList(cmd));
@@ -5930,7 +5916,7 @@ using namespace Vulkan_Internal;
 			assert(res == VK_SUCCESS);
 		}
 
-		// This acts as a barrier, following this we will be using the next frame's resources when calling GetFrameResources()!
+		// From here, we begin a new frame, this affects GetFrameResources()!
 		FRAMECOUNT++;
 
 		// Initiate stalling CPU when GPU is behind by more frames than would fit in the backbuffers:
@@ -5963,15 +5949,6 @@ using namespace Vulkan_Internal;
 
 		copyQueueUse = false;
 		copyQueueLock.unlock();
-	}
-	void GraphicsDevice_Vulkan::StashCommandLists()
-	{
-		CommandList active_count = cmd_count.load();
-		cmd_count.store(0);
-		for (CommandList cmd = 0; cmd < active_count; ++cmd)
-		{
-			stashed[cmd] = true;
-		}
 	}
 
 	void GraphicsDevice_Vulkan::WaitForGPU()
@@ -6541,31 +6518,31 @@ using namespace Vulkan_Internal;
 		{
 			return;
 		}
-		auto internal_state = to_internal(buffer);
 
 		dataSize = std::min((int)buffer->desc.ByteWidth, dataSize);
 		dataSize = (dataSize >= 0 ? dataSize : buffer->desc.ByteWidth);
 
+		auto internal_state_dst = to_internal(buffer);
+
+		GPUAllocation allocation = AllocateGPU(dataSize, cmd);
+		memcpy(allocation.data, data, dataSize);
 
 		if (buffer->desc.Usage == USAGE_DYNAMIC && buffer->desc.BindFlags & BIND_CONSTANT_BUFFER)
 		{
 			// Dynamic buffer will be used from host memory directly:
-			GPUAllocation allocation = AllocateGPU(dataSize, cmd);
-			memcpy(allocation.data, data, dataSize);
-			internal_state->dynamic[cmd] = allocation;
+			internal_state_dst->dynamic[cmd] = allocation;
 			GetFrameResources().descriptors[cmd].dirty = true;
 		}
 		else
 		{
 			// Contents will be transferred to device memory:
-
-			// barrier to transfer:
-
 			assert(active_renderpass[cmd] == nullptr); // must not be inside render pass
+
+			auto internal_state_src = to_internal(&GetFrameResources().resourceBuffer[cmd].buffer);
 
 			VkBufferMemoryBarrier barrier = {};
 			barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-			barrier.buffer = internal_state->resource;
+			barrier.buffer = internal_state_dst->resource;
 			barrier.srcAccessMask = 0;
 			if (buffer->desc.BindFlags & BIND_CONSTANT_BUFFER)
 			{
@@ -6599,24 +6576,21 @@ using namespace Vulkan_Internal;
 			frame_bufferBarriers[cmd].push_back(barrier);
 			barrier_flush(cmd);
 
-			// issue data copy:
-			uint8_t* dest = GetFrameResources().resourceBuffer[cmd].allocate(dataSize, 1);
-			memcpy(dest, data, dataSize);
-
 			VkBufferCopy copyRegion = {};
 			copyRegion.size = dataSize;
-			copyRegion.srcOffset = GetFrameResources().resourceBuffer[cmd].calculateOffset(dest);
+			copyRegion.srcOffset = (VkDeviceSize)allocation.offset;
 			copyRegion.dstOffset = 0;
 
-			vkCmdCopyBuffer(GetDirectCommandList(cmd), 
-				std::static_pointer_cast<Buffer_Vulkan>(GetFrameResources().resourceBuffer[cmd].buffer.internal_state)->resource,
-				internal_state->resource, 1, &copyRegion);
-
-
+			vkCmdCopyBuffer(
+				GetDirectCommandList(cmd),
+				internal_state_src->resource,
+				internal_state_dst->resource,
+				1,
+				&copyRegion
+			);
 
 			// reverse barrier:
 			std::swap(barrier.srcAccessMask, barrier.dstAccessMask);
-
 			frame_bufferBarriers[cmd].push_back(barrier);
 
 		}

@@ -670,7 +670,8 @@ void EditorComponent::Load()
 		wiHelper::FileDialog(params, [this](std::string fileName) {
 			wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
 				std::string filename = fileName;
-				if (filename.substr(filename.length() - 8).compare(".wiscene") != 0)
+				std::string extension = wiHelper::GetExtensionFromFileName(filename);
+				if (extension.compare("wiscene"))
 				{
 					filename += ".wiscene";
 				}
@@ -1058,7 +1059,7 @@ void EditorComponent::Update(float dt)
 			wiInput::HidePointer(false);
 		}
 
-		const float buttonrotSpeed = 2.0f / 60.0f;
+		const float buttonrotSpeed = 2.0f * dt;
 		if (wiInput::Down(wiInput::KEYBOARD_BUTTON_LEFT))
 		{
 			xDif -= buttonrotSpeed;
@@ -1346,7 +1347,7 @@ void EditorComponent::Update(float dt)
 						if (wiInput::Down(wiInput::MOUSE_BUTTON_LEFT))
 						{
 							// if water, then put a water ripple onto it:
-							wiRenderer::PutWaterRipple("images/ripple.png", hovered.position);
+							scene.PutWaterRipple("images/ripple.png", hovered.position);
 						}
 					}
 					else if (decalWnd.placementCheckBox.GetCheck() && wiInput::Press(wiInput::MOUSE_BUTTON_LEFT))

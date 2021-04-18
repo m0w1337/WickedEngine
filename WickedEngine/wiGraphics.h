@@ -32,6 +32,16 @@ namespace wiGraphics
 		SHADERFORMAT_HLSL6,
 		SHADERFORMAT_SPIRV,
 	};
+	enum SHADERMODEL
+	{
+		SHADERMODEL_5_0,
+		SHADERMODEL_6_0,
+		SHADERMODEL_6_1,
+		SHADERMODEL_6_2,
+		SHADERMODEL_6_3,
+		SHADERMODEL_6_4,
+		SHADERMODEL_6_5,
+	};
 	enum PRIMITIVETOPOLOGY
 	{
 		UNDEFINED,
@@ -870,6 +880,14 @@ namespace wiGraphics
 		{
 			struct Instance
 			{
+				enum FLAGS
+				{
+					FLAG_EMPTY = 0,
+					FLAG_TRIANGLE_CULL_DISABLE = 1 << 0,
+					FLAG_TRIANGLE_FRONT_COUNTERCLOCKWISE = 1 << 1,
+					FLAG_FORCE_OPAQUE = 1 << 2,
+					FLAG_FORCE_NON_OPAQUE = 1 << 3,
+				};
 				XMFLOAT3X4 transform;
 				uint32_t InstanceID : 24;
 				uint32_t InstanceMask : 8;
