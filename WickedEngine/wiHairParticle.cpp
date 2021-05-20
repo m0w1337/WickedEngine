@@ -89,8 +89,8 @@ void wiHairParticle::UpdateCPU(const TransformComponent& transform, const MeshCo
 
 			if (vertex_lengths.size() != mesh.vertex_positions.size())
 			{
-				vertex_lengths.resize(mesh.vertex_positions.size());
-				std::fill(vertex_lengths.begin(), vertex_lengths.end(), 1.0f);
+				vertex_lengths.resize(mesh.vertex_positions.size(),0.f);
+				//std::fill(vertex_lengths.begin(), vertex_lengths.end(), 1.0f);
 			}
 
 			indices.clear();

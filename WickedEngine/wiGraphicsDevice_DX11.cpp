@@ -1848,7 +1848,7 @@ bool GraphicsDevice_DX11::CreatePipelineState(const PipelineStateDesc* pDesc, Pi
 		assert(pDesc->vs != nullptr);
 		auto vs_internal = static_cast<VertexShader_DX11*>(pDesc->vs->internal_state.get());
 		hr = device->CreateInputLayout(desc.data(), (UINT)desc.size(), vs_internal->shadercode.data(), vs_internal->shadercode.size(), &internal_state->il);
-		assert(SUCCEEDED(hr));
+		//assert(SUCCEEDED(hr));
 	}
 
 

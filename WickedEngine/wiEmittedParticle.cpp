@@ -205,6 +205,7 @@ void wiEmittedParticle::UpdateCPU(const TransformComponent& transform, float dt)
 	std::swap(aliveList[0], aliveList[1]);
 
 	// Read back statistics (with GPU delay):
+	/*
 	if (statisticsReadBackIndex > arraysize(statisticsReadbackBuffer))
 	{
 		const uint32_t oldest_stat_index = (statisticsReadBackIndex + 1) % arraysize(statisticsReadbackBuffer);
@@ -220,6 +221,7 @@ void wiEmittedParticle::UpdateCPU(const TransformComponent& transform, float dt)
 		}
 	}
 	statisticsReadBackIndex++;
+	*/
 }
 void wiEmittedParticle::Burst(int num)
 {
