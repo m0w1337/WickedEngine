@@ -1,6 +1,9 @@
 #include "wiAudio.h"
 #include "wiBackLog.h"
 #include "wiHelper.h"
+#define POCKETMOD_IMPLEMENTATION
+#define POCKETMOD_NO_INTERPOLATION
+#include "../../CyubE3dit_V2/CyubE3dit_V2/pocketmod.h"
 
 #include <vector>
 
@@ -201,6 +204,7 @@ namespace wiAudio
 		}
 	}
 
+
 	bool FindChunk(const uint8_t* data, DWORD fourcc, DWORD& dwChunkSize, DWORD& dwChunkDataPosition)
 	{
 		size_t pos = 0;
@@ -316,8 +320,37 @@ namespace wiAudio
 			int samples = stb_vorbis_decode_memory(data, (int)size, &channels, &sample_rate, &output);
 			if (samples < 0)
 			{
-				assert(0);
-				return false;
+				//mod file renderer:
+				size_t size_overall = 0, siz = 0;
+				pocketmod_context context;
+				if (!pocketmod_init(&context, data, size, 44100)) {
+					wiBackLog::post("error: '%s' is not a valid MOD file");
+					assert(0);
+					return false;
+				}
+				float buffer[512][2];
+				short output[512][2];
+				while (pocketmod_loop_count(&context) == 0) {
+					/* Render a chunk of samples */
+					int rendered_bytes	 = pocketmod_render(&context, buffer, sizeof(buffer));
+					int rendered_samples = rendered_bytes / sizeof(float[2]);
+					/* Convert the sample data to 16-bit and write it to the file */
+					for (int i = 0; i < rendered_samples; i++) {
+						output[i][0] = (short)((buffer[i][0]) * 0x7fff);	//pocketmod_clip
+						output[i][1] = (short)((buffer[i][1]) * 0x7fff);	//pocketmod_clip
+					}
+					siz = rendered_samples * sizeof(short[2]);
+					size_overall += siz;
+					soundinternal->audioData.resize(size_overall);
+					memcpy(soundinternal->audioData.data() + size_overall - siz, output, siz);
+				}
+				soundinternal->wfx.wFormatTag	   = WAVE_FORMAT_PCM;
+				soundinternal->wfx.nChannels	   = 2;
+				soundinternal->wfx.nSamplesPerSec  = 44100;
+				soundinternal->wfx.wBitsPerSample  = 16;
+				soundinternal->wfx.nBlockAlign	   = 2 * sizeof(short);  // is this right?
+				soundinternal->wfx.nAvgBytesPerSec = soundinternal->wfx.nSamplesPerSec * soundinternal->wfx.nBlockAlign;
+				return true;
 			}
 
 			// WAVEFORMATEX: https://docs.microsoft.com/en-us/previous-versions/dd757713(v=vs.85)?redirectedfrom=MSDN
@@ -327,6 +360,7 @@ namespace wiAudio
 			soundinternal->wfx.wBitsPerSample = sizeof(short) * 8;
 			soundinternal->wfx.nBlockAlign = (WORD)channels * sizeof(short); // is this right?
 			soundinternal->wfx.nAvgBytesPerSec = soundinternal->wfx.nSamplesPerSec * soundinternal->wfx.nBlockAlign;
+
 
 			size_t output_size = (size_t)samples * sizeof(short);
 			soundinternal->audioData.resize(output_size);
