@@ -3977,7 +3977,7 @@ void UpdateRenderData(
 		{
 			if (entityCounter == SHADER_ENTITY_COUNT)
 			{
-				assert(0); // too many entities!
+				//assert(0); // too many entities!
 				entityCounter--;
 				break;
 			}

@@ -31,7 +31,7 @@ public:
 
 private:
 	ParticleCounters statistics = {};
-	wiGraphics::GPUBuffer statisticsReadbackBuffer[wiGraphics::GraphicsDevice::GetBackBufferCount() + 3];
+	wiGraphics::GPUBuffer statisticsReadbackBuffer[wiGraphics::GraphicsDevice::GetBackBufferCount() + 1];
 
 	wiGraphics::GPUBuffer particleBuffer;
 	wiGraphics::GPUBuffer aliveList[2];
@@ -72,6 +72,7 @@ public:
 		FLAG_SPH_FLUIDSIMULATION = 1 << 4,
 		FLAG_HAS_VOLUME = 1 << 5,
 		FLAG_FRAME_BLENDING = 1 << 6,
+		FLAG_RAINBOW = 1 << 7
 	};
 	uint32_t _flags = FLAG_EMPTY;
 
