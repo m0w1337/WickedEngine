@@ -10,9 +10,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
-class wiGPUBVH
+struct wiGPUBVH
 {
-private:
 	// Scene BVH intersection resources:
 	wiGraphics::GPUBuffer bvhNodeBuffer;
 	wiGraphics::GPUBuffer bvhParentBuffer;
@@ -20,26 +19,14 @@ private:
 	wiGraphics::GPUBuffer primitiveCounterBuffer;
 	wiGraphics::GPUBuffer primitiveIDBuffer;
 	wiGraphics::GPUBuffer primitiveBuffer;
-	wiGraphics::GPUBuffer primitiveDataBuffer;
 	wiGraphics::GPUBuffer primitiveMortonBuffer;
 	uint32_t primitiveCapacity = 0;
+	bool IsValid() const { return primitiveCounterBuffer.IsValid(); }
 
-	// Scene material resources:
-	wiGraphics::GPUBuffer globalMaterialBuffer;
-	wiGraphics::Texture globalMaterialAtlas;
-	std::vector<ShaderMaterial> materialArray;
-	std::unordered_map<std::shared_ptr<wiResource>, wiRectPacker::rect_xywh> storedTextures;
-	std::unordered_set<std::shared_ptr<wiResource>> sceneTextures;
-	bool repackAtlas = false;
-	void UpdateGlobalMaterialResources(const wiScene::Scene& scene);
-
-public:
 	void Update(const wiScene::Scene& scene);
 	void Build(const wiScene::Scene& scene, wiGraphics::CommandList cmd) const;
-	void Bind(wiGraphics::SHADERSTAGE stage, wiGraphics::CommandList cmd) const;
 
 	void Clear();
 
 	static void Initialize();
-
 };

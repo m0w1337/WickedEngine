@@ -1,42 +1,41 @@
 #include "globals.hlsli"
-// Sample scene color, compute log luminance in 1024x1024 res and perform reduction into 32x32 tex
+#include "ShaderInterop_Postprocess.h"
+// histogram based luminance: http://www.alextardif.com/HistogramLuminance.html
 
-TEXTURE2D(input, float4, TEXSLOT_ONDEMAND0);
+PUSHCONSTANT(postprocess, PostProcess);
 
-RWTEXTURE2D(output, float, 0);
+TEXTURE2D(input, float3, TEXSLOT_ONDEMAND0);
 
-static const uint DIM = 32;
-static const uint THREADCOUNT = DIM * DIM;
+RWRAWBUFFER(output_histogram, 0);
 
-groupshared float shared_sam[THREADCOUNT];
+// groupshared memory is used to perform the high atomic contentions
+//	the atomic contention into global memory will be lower in the general case
+//	So even though this increases number of atomic ops, performance will be better
+groupshared uint shared_bins[LUMINANCE_NUM_HISTOGRAM_BINS];
 
-[numthreads(DIM, DIM, 1)]
-void main(
-	uint3 DTid : SV_DispatchThreadID,
-	uint3 Gid : SV_GroupID,
-	uint3 GTid : SV_GroupThreadID,
-	uint groupIndex : SV_GroupIndex
-)
+[numthreads(LUMINANCE_BLOCKSIZE, LUMINANCE_BLOCKSIZE, 1)]
+void main(uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 {
-	const float2 uv = (DTid.xy + 0.5f) / 1024.0;
-	float3 color = input.SampleLevel(sampler_linear_clamp, uv, 0).rgb;
-	float lum = dot(color, float3(0.2126, 0.7152, 0.0722));
-	lum = max(lum, 0.0001);
-	float loglum = log(lum);
-	shared_sam[groupIndex] = loglum;
+	shared_bins[groupIndex] = 0;
 	GroupMemoryBarrierWithGroupSync();
 
-	[unroll]
-	for (uint s = THREADCOUNT >> 1; s > 0; s >>= 1)
+	if (DTid.x < postprocess.resolution.x && DTid.y < postprocess.resolution.y)
 	{
-		if (groupIndex < s)
-			shared_sam[groupIndex] += shared_sam[groupIndex + s];
+		const float2 uv = (DTid.xy + 0.5) * postprocess.resolution_rcp;
+		float3 color = input.SampleLevel(sampler_linear_clamp, uv, 0);
+		float luminance = dot(color, float3(0.2127f, 0.7152f, 0.0722f));
 
-		GroupMemoryBarrierWithGroupSync();
+		uint binIndex = 0;
+		if (luminance > 0.001)
+		{
+			float logLuminance = saturate((log2(luminance) - luminance_log_min) * luminance_log_range_rcp);
+			binIndex = (uint)(logLuminance * (LUMINANCE_NUM_HISTOGRAM_BINS - 2) + 1);
+		}
+
+		InterlockedAdd(shared_bins[binIndex], 1);
 	}
 
-	if (groupIndex == 0)
-	{
-		output[Gid.xy] = shared_sam[0] / THREADCOUNT;
-	}
+	GroupMemoryBarrierWithGroupSync();
+	output_histogram.InterlockedAdd(LUMINANCE_BUFFER_OFFSET_HISTOGRAM + groupIndex * 4, shared_bins[groupIndex]);
+
 }

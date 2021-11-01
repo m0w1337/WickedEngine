@@ -9,17 +9,18 @@ using namespace wiGraphics;
 
 void RenderPath2D::ResizeBuffers()
 {
-	GraphicsDevice* device = wiRenderer::GetDevice();
+	current_buffersize = GetInternalResolution();
+	current_layoutscale = 0; // invalidate layout
 
-	FORMAT defaultTextureFormat = device->GetBackBufferFormat();
+	GraphicsDevice* device = wiRenderer::GetDevice();
 
 	const Texture* dsv = GetDepthStencil();
 	if(dsv != nullptr && (resolutionScale != 1.0f ||  dsv->GetDesc().SampleCount > 1))
 	{
 		TextureDesc desc = GetDepthStencil()->GetDesc();
-		desc.layout = IMAGE_LAYOUT_SHADER_RESOURCE;
+		desc.layout = RESOURCE_STATE_SHADER_RESOURCE;
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
-		desc.Format = defaultTextureFormat;
+		desc.Format = FORMAT_R8G8B8A8_UNORM;
 		device->CreateTexture(&desc, nullptr, &rtStenciled);
 		device->SetName(&rtStenciled, "rtStenciled");
 
@@ -38,9 +39,9 @@ void RenderPath2D::ResizeBuffers()
 	{
 		TextureDesc desc;
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
-		desc.Format = defaultTextureFormat;
-		desc.Width = device->GetResolutionWidth();
-		desc.Height = device->GetResolutionHeight();
+		desc.Format = FORMAT_R8G8B8A8_UNORM;
+		desc.Width = GetPhysicalWidth();
+		desc.Height = GetPhysicalHeight();
 		device->CreateTexture(&desc, nullptr, &rtFinal);
 		device->SetName(&rtFinal, "rtFinal");
 	}
@@ -54,9 +55,9 @@ void RenderPath2D::ResizeBuffers()
 				dsv,
 				RenderPassAttachment::LOADOP_LOAD,
 				RenderPassAttachment::STOREOP_STORE,
-				IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,
-				IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,
-				IMAGE_LAYOUT_DEPTHSTENCIL_READONLY
+				RESOURCE_STATE_DEPTHSTENCIL_READONLY,
+				RESOURCE_STATE_DEPTHSTENCIL_READONLY,
+				RESOURCE_STATE_DEPTHSTENCIL_READONLY
 			)
 		);
 
@@ -80,9 +81,9 @@ void RenderPath2D::ResizeBuffers()
 					dsv,
 					RenderPassAttachment::LOADOP_LOAD,
 					RenderPassAttachment::STOREOP_STORE,
-					IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,
-					IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,
-					IMAGE_LAYOUT_DEPTHSTENCIL_READONLY
+					RESOURCE_STATE_DEPTHSTENCIL_READONLY,
+					RESOURCE_STATE_DEPTHSTENCIL_READONLY,
+					RESOURCE_STATE_DEPTHSTENCIL_READONLY
 				)
 			);
 		}
@@ -91,52 +92,25 @@ void RenderPath2D::ResizeBuffers()
 	}
 
 }
-
-void RenderPath2D::Load()
+void RenderPath2D::ResizeLayout()
 {
-	// ideally, this would happen here, under loading screen
-	if (!resolutionChange_handle.IsValid())
-	{
-		ResizeBuffers();
-		resolutionChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_RESOLUTION, [this](uint64_t userdata) {
-			ResizeBuffers();
-			ResizeLayout();
-			});
-	}
-	if (!dpiChange_handle.IsValid())
-	{
-		ResizeLayout();
-		dpiChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_DPI, [this](uint64_t userdata) {
-			ResizeLayout();
-			});
-	}
+	current_layoutscale = GetDPIScaling();
+}
 
-	RenderPath::Load();
-}
-void RenderPath2D::Start()
-{
-	RenderPath::Start();
-}
 void RenderPath2D::Update(float dt)
 {
-	// this is last resort, if Load() wasn't called
-	if (!resolutionChange_handle.IsValid())
+	XMUINT2 internalResolution = GetInternalResolution();
+
+	if (current_buffersize.x != internalResolution.x || current_buffersize.y != internalResolution.y)
 	{
 		ResizeBuffers();
-		resolutionChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_RESOLUTION, [this](uint64_t userdata) {
-			ResizeBuffers();
-			ResizeLayout();
-			});
 	}
-	if (!dpiChange_handle.IsValid())
+	if (current_layoutscale != GetDPIScaling())
 	{
 		ResizeLayout();
-		dpiChange_handle = wiEvent::Subscribe(SYSTEM_EVENT_CHANGE_DPI, [this](uint64_t userdata) {
-			ResizeLayout();
-			});
 	}
 
-	GetGUI().Update(dt);
+	GetGUI().Update(*this, dt);
 
 	for (auto& x : layers)
 	{
@@ -194,12 +168,14 @@ void RenderPath2D::Render() const
 {
 	GraphicsDevice* device = wiRenderer::GetDevice();
 	CommandList cmd = device->BeginCommandList();
+	wiImage::SetCanvas(*this, cmd);
+	wiFont::SetCanvas(*this, cmd);
 
 	wiRenderer::ProcessDeferredMipGenRequests(cmd);
 
 	if (GetGUIBlurredBackground() != nullptr)
 	{
-		wiImage::SetBackgroundBlurTexture(*GetGUIBlurredBackground(), cmd);
+		wiImage::SetBackground(*GetGUIBlurredBackground(), cmd);
 	}
 
 	// Special care for internal resolution, because stencil buffer is of internal resolution, 
@@ -299,7 +275,7 @@ void RenderPath2D::Render() const
 	}
 	wiRenderer::GetDevice()->EventEnd(cmd);
 
-	GetGUI().Render(cmd);
+	GetGUI().Render(*this, cmd);
 
 	device->RenderPassEnd(cmd);
 
@@ -542,14 +518,4 @@ void RenderPath2D::CleanLayers()
 		x.items.clear();
 		x.items = itemsToRetain;
 	}
-}
-
-
-XMUINT2 RenderPath2D::GetInternalResolution() const
-{
-	GraphicsDevice* device = wiRenderer::GetDevice();
-	return XMUINT2(
-		(uint32_t)ceilf(device->GetResolutionWidth() * resolutionScale),
-		(uint32_t)ceilf(device->GetResolutionHeight() * resolutionScale)
-	);
 }

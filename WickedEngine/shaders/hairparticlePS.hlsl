@@ -5,47 +5,63 @@
 #include "objectHF.hlsli"
 #include "hairparticleHF.hlsli"
 
-TEXTURE2D(texture_color, float4, TEXSLOT_ONDEMAND0);
-
 [earlydepthstencil]
-GBuffer main(VertexToPixel input)
+float4 main(VertexToPixel input) : SV_Target
 {
-	float4 color = texture_color.Sample(sampler_linear_wrap, input.tex);
-	color.rgb = DEGAMMA(color.rgb);
-	color.rgb *= input.color;
+	ShaderMaterial material = HairGetMaterial();
+
+	float4 color = 1;
+
+	[branch]
+	if (material.texture_basecolormap_index >= 0 && (g_xFrame.Options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
+	{
+		color = bindless_textures[material.texture_basecolormap_index].Sample(sampler_linear_wrap, input.tex);
+		color.rgb = DEGAMMA(color.rgb);
+	}
+	color *= material.baseColor;
+
 	float opacity = 1;
-	float3 V = g_xCamera_CamPos - input.pos3D;
+	float3 V = GetCamera().CamPos - input.pos3D;
 	float dist = length(V);
 	V /= dist;
 	float emissive = 0;
 
+	const uint2 pixel = input.pos.xy;
+	const float2 ScreenCoord = pixel * GetCamera().InternalResolution_rcp;
+
 	Surface surface;
-	surface.create(g_xMaterial, color, 0);
+	surface.create(material, color, 0);
 	surface.P = input.pos3D;
 	surface.N = input.nor;
 	surface.V = V;
 	surface.pixel = input.pos.xy;
+
+#ifndef PREPASS
+#ifndef ENVMAPRENDERING
+#ifndef TRANSPARENT
+	[branch]
+	if (GetCamera().texture_ao_index >= 0)
+	{
+		surface.occlusion *= bindless_textures_float[GetCamera().texture_ao_index].SampleLevel(sampler_linear_clamp, ScreenCoord, 0).r;
+	}
+#endif // TRANSPARENT
+#endif // ENVMAPRENDERING
+#endif // PREPASS
+
 	surface.update();
 
 	Lighting lighting;
 	lighting.create(0, 0, GetAmbient(surface.N), 0);
-
-#ifdef SHADOW_MASK_ENABLED
-	[branch]
-	if (g_xFrame_Options & OPTION_BIT_RAYTRACED_SHADOWS)
-	{
-		lighting.shadow_mask = texture_rtshadow[surface.pixel];
-	}
-#endif // SHADOW_MASK_ENABLED
 
 	float depth = input.pos.z;
 	float3 reflection = 0;
 
 	TiledLighting(surface, lighting);
 
+
 	ApplyLighting(surface, lighting, color);
 
-	ApplyFog(dist, color);
+	ApplyFog(dist, GetCamera().CamPos, V, color);
 
-	return CreateGBuffer(color, surface);
+	return color;
 }

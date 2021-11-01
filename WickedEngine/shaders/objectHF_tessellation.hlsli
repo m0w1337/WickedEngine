@@ -25,26 +25,27 @@ ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
 	for (uint ie = 0; ie < 3; ++ie)
 	{
 #if 0
-		output.edges[ie] = xTessellationFactors.x;
+		output.edges[ie] = GetMesh().tessellation_factor;
 #else
 		float3 edge = patch[(ie + 1) % 3].pos.xyz - patch[ie].pos.xyz;
-		float3 vec = (patch[(ie + 1) % 3].pos.xyz + patch[ie].pos.xyz) / 2 - g_xCamera_CamPos.xyz;
+		float3 vec = (patch[(ie + 1) % 3].pos.xyz + patch[ie].pos.xyz) / 2 - GetCamera().CamPos.xyz;
 		float len = sqrt(dot(edge, edge) / dot(vec, vec));
-		output.edges[(ie + 1) % 3] = max(1, len * xTessellationFactors.x);
+		output.edges[(ie + 1) % 3] = max(1, len * GetMesh().tessellation_factor);
 #endif
 	}
 
 
 #if 1
 	// frustum culling:
+	float rad = GetMaterial().displacementMapping;
 	int culled[4];
 	[unroll]
 	for (int ip = 0; ip < 4; ++ip)
 	{
 		culled[ip] = 1;
-		culled[ip] &= dot(g_xCamera_FrustumPlanes[ip + 2], patch[0].pos) < 0;
-		culled[ip] &= dot(g_xCamera_FrustumPlanes[ip + 2], patch[1].pos) < 0;
-		culled[ip] &= dot(g_xCamera_FrustumPlanes[ip + 2], patch[2].pos) < 0;
+		culled[ip] &= dot(GetCamera().FrustumPlanes[ip + 2], patch[0].pos) < -rad;
+		culled[ip] &= dot(GetCamera().FrustumPlanes[ip + 2], patch[1].pos) < -rad;
+		culled[ip] &= dot(GetCamera().FrustumPlanes[ip + 2], patch[2].pos) < -rad;
 	}
 	if (culled[0] || culled[1] || culled[2] || culled[3]) output.edges[0] = 0;
 #endif
@@ -134,19 +135,32 @@ PixelInput main(ConstantOutput input, float3 uvw : SV_DomainLocation, const Outp
 #endif // OBJECTSHADER_USE_POSITION3D
 
 
+#ifdef OBJECTSHADER_USE_NORMAL
+#ifdef OBJECTSHADER_USE_UVSETS
+	// displacement mapping:
+	[branch]
+	if (GetMaterial().displacementMapping > 0 && GetMaterial().uvset_displacementMap >= 0)
+	{
+		float2 uv = GetMaterial().uvset_displacementMap == 0 ? output.uvsets.xy : output.uvsets.zw;
+		float displacement = texture_displacementmap.SampleLevel(sampler_objectshader, uv, 0).r;
+		displacement *= GetMaterial().displacementMapping;
+		output.pos.xyz += output.nor * displacement;
+	}
+#endif // OBJECTSHADER_USE_UVSETS
+#endif // OBJECTSHADER_USE_NORMAL
 
 
 #ifdef OBJECTSHADER_USE_CLIPPLANE
-	output.clip = dot(output.pos, g_xCamera_ClipPlane);
+	output.clip = dot(output.pos, GetCamera().ClipPlane);
 #endif // OBJECTSHADER_USE_CLIPPLANE
 
 #ifndef OBJECTSHADER_USE_NOCAMERA
-	output.pos = mul(g_xCamera_VP, output.pos);
+	output.pos = mul(GetCamera().VP, output.pos);
 #endif // OBJECTSHADER_USE_NOCAMERA
 
 #ifdef OBJECTSHADER_USE_POSITIONPREV
 #ifndef OBJECTSHADER_USE_NOCAMERA
-	output.pre = mul(g_xCamera_PrevVP, output.pre);
+	output.pre = mul(GetCamera().PrevVP, output.pre);
 #endif // OBJECTSHADER_USE_NOCAMERA
 #endif // OBJECTSHADER_USE_POSITIONPREV
 

@@ -8,12 +8,14 @@
 #include "stochasticSSRHF.hlsli"
 #include "lightingHF.hlsli"
 
+PUSHCONSTANT(postprocess, PostProcess);
+
 RWTEXTURE2D(output, float4, 0);
+RWTEXTURE2D(output_rayLengths, float, 1);
 
 struct RayPayload
 {
-	float3 color;
-	float roughness;
+	float4 data;
 };
 
 [shader("raygeneration")]
@@ -25,15 +27,23 @@ void RTReflection_Raygen()
 	if (depth == 0)
 		return;
 
-	const float2 velocity = texture_gbuffer2.SampleLevel(sampler_point_clamp, uv, 0).xy;
-	const float2 prevUV = uv + velocity;
-
-	const float4 g1 = texture_gbuffer1.SampleLevel(sampler_linear_clamp, prevUV, 0);
 	const float3 P = reconstructPosition(uv, depth);
-	const float3 N = normalize(g1.rgb * 2 - 1);
-	const float3 V = normalize(g_xCamera_CamPos - P);
-	const float roughness = g1.a;
+	const float3 V = normalize(GetCamera().CamPos - P);
 
+	PrimitiveID prim;
+	prim.unpack(texture_gbuffer0[DTid.xy * 2]);
+
+	Surface surface;
+	surface.load(prim, P);
+	if (surface.roughness > 0.6)
+	{
+		output[DTid.xy] = float4(max(0, EnvironmentReflection_Global(surface)), 1);
+		output_rayLengths[DTid.xy] = FLT_MAX;
+		return;
+	}
+
+	float3 N = surface.N;
+	float roughness = surface.roughness;
 
 	// The ray direction selection part is the same as in from ssr_raytraceCS.hlsl:
 	float4 H;
@@ -43,10 +53,9 @@ void RTReflection_Raygen()
 		float3x3 tangentBasis = GetTangentBasis(N);
 		float3 tangentV = mul(tangentBasis, V);
 
+		const float2 bluenoise = blue_noise(DTid.xy).xy;
 
-		float2 Xi;
-		Xi.x = BNDSequenceSample(DTid.xy, g_xFrame_FrameCount, 0);
-		Xi.y = BNDSequenceSample(DTid.xy, g_xFrame_FrameCount, 1);
+		float2 Xi = bluenoise.xy;
 
 		Xi.y = lerp(Xi.y, 0.0f, GGX_IMPORTANCE_SAMPLE_BIAS);
 
@@ -67,17 +76,16 @@ void RTReflection_Raygen()
 
 	const float3 R = L;
 
-	float seed = g_xFrame_Time;
+	float seed = g_xFrame.Time;
 
 	RayDesc ray;
-	ray.TMin = 0.05;
+	ray.TMin = 0.01;
 	ray.TMax = rtreflection_range;
 	ray.Origin = P;
 	ray.Direction = normalize(R);
 
 	RayPayload payload;
-	payload.color = 0;
-	payload.roughness = roughness;
+	payload.data = 0;
 
 	TraceRay(
 		scene_acceleration_structure,   // AccelerationStructure
@@ -90,97 +98,94 @@ void RTReflection_Raygen()
 		payload                         // Payload
 	);
 
-	output[DTid.xy] = float4(payload.color, 1);
+	output[DTid.xy] = float4(payload.data.xyz, 1);
+	output_rayLengths[DTid.xy] = payload.data.w;
 }
 
 [shader("closesthit")]
 void RTReflection_ClosestHit(inout RayPayload payload, in BuiltInTriangleIntersectionAttributes attr)
 {
-	ShaderMesh mesh = bindless_buffers[InstanceID()].Load<ShaderMesh>(0);
-	ShaderMeshSubset subset = bindless_subsets[mesh.subsetbuffer][GeometryIndex()];
-	ShaderMaterial material = bindless_buffers[subset.material].Load<ShaderMaterial>(0);
+	PrimitiveID prim;
+	prim.primitiveIndex = PrimitiveIndex();
+	prim.instanceIndex = InstanceID();
+	prim.subsetIndex = GeometryIndex();
 
 	Surface surface;
-
-	EvaluateObjectSurface(
-		mesh,
-		subset,
-		material,
-		PrimitiveIndex(),
-		attr.barycentrics,
-		ObjectToWorld3x4(),
-		surface
-	);
+	surface.is_frontface = (HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE);
+	surface.load(prim, attr.barycentrics);
 
 	surface.pixel = DispatchRaysIndex().xy;
 	surface.screenUV = surface.pixel / (float2)DispatchRaysDimensions().xy;
 
-	// Light sampling:
-	surface.P = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-	surface.V = -WorldRayDirection();
-	surface.update();
-
-	Lighting lighting;
-	lighting.create(0, 0, GetAmbient(surface.N), 0);
-
-	[loop]
-	for (uint iterator = 0; iterator < g_xFrame_LightArrayCount; iterator++)
+	if (surface.material.IsUnlit())
 	{
-		ShaderEntity light = EntityArray[g_xFrame_LightArrayOffset + iterator];
-
-		if (light.GetFlags() & ENTITY_FLAG_LIGHT_STATIC)
-		{
-			continue; // static lights will be skipped (they are used in lightmap baking)
-		}
-
-		switch (light.GetType())
-		{
-		case ENTITY_TYPE_DIRECTIONALLIGHT:
-		{
-			DirectionalLight(light, surface, lighting);
-		}
-		break;
-		case ENTITY_TYPE_POINTLIGHT:
-		{
-			PointLight(light, surface, lighting);
-		}
-		break;
-		case ENTITY_TYPE_SPOTLIGHT:
-		{
-			SpotLight(light, surface, lighting);
-		}
-		break;
-		}
+		payload.data.xyz += surface.albedo + surface.emissiveColor;
 	}
+	else
+	{
+		// Light sampling:
+		surface.P = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+		surface.V = -WorldRayDirection();
+		surface.update();
 
-	lighting.indirect.specular += max(0, EnvironmentReflection_Global(surface));
+		Lighting lighting;
+		lighting.create(0, 0, GetAmbient(surface.N), 0);
 
-	LightingPart combined_lighting = CombineLighting(surface, lighting);
-	payload.color = surface.albedo * combined_lighting.diffuse + combined_lighting.specular + surface.emissiveColor.rgb * surface.emissiveColor.a;
+		[loop]
+		for (uint iterator = 0; iterator < g_xFrame.LightArrayCount; iterator++)
+		{
+			ShaderEntity light = load_entity(g_xFrame.LightArrayOffset + iterator);
+			if ((light.layerMask & surface.material.layerMask) == 0)
+				continue;
 
+			if (light.GetFlags() & ENTITY_FLAG_LIGHT_STATIC)
+			{
+				continue; // static lights will be skipped (they are used in lightmap baking)
+			}
+
+			switch (light.GetType())
+			{
+			case ENTITY_TYPE_DIRECTIONALLIGHT:
+			{
+				DirectionalLight(light, surface, lighting);
+			}
+			break;
+			case ENTITY_TYPE_POINTLIGHT:
+			{
+				PointLight(light, surface, lighting);
+			}
+			break;
+			case ENTITY_TYPE_SPOTLIGHT:
+			{
+				SpotLight(light, surface, lighting);
+			}
+			break;
+			}
+		}
+
+		lighting.indirect.specular += max(0, EnvironmentReflection_Global(surface));
+
+		LightingPart combined_lighting = CombineLighting(surface, lighting);
+		payload.data.xyz += surface.albedo * combined_lighting.diffuse + combined_lighting.specular + surface.emissiveColor;
+	}
+	payload.data.w = RayTCurrent();
 }
 
 [shader("anyhit")]
 void RTReflection_AnyHit(inout RayPayload payload, in BuiltInTriangleIntersectionAttributes attr)
 {
-	ShaderMesh mesh = bindless_buffers[InstanceID()].Load<ShaderMesh>(0);
-	ShaderMeshSubset subset = bindless_subsets[mesh.subsetbuffer][GeometryIndex()];
-	ShaderMaterial material = bindless_buffers[subset.material].Load<ShaderMaterial>(0);
+	PrimitiveID prim;
+	prim.primitiveIndex = PrimitiveIndex();
+	prim.instanceIndex = InstanceID();
+	prim.subsetIndex = GeometryIndex();
 
 	Surface surface;
+	surface.load(prim, attr.barycentrics);
 
-	EvaluateObjectSurface(
-		mesh,
-		subset,
-		material,
-		PrimitiveIndex(),
-		attr.barycentrics,
-		ObjectToWorld3x4(),
-		surface
-	);
+	float alphatest = clamp(blue_noise(DispatchRaysIndex().xy, RayTCurrent()).r, 0, 0.99);
 
 	[branch]
-	if (surface.opacity < material.alphaTest)
+	if (surface.opacity - alphatest < 0)
 	{
 		IgnoreHit();
 	}
@@ -189,5 +194,6 @@ void RTReflection_AnyHit(inout RayPayload payload, in BuiltInTriangleIntersectio
 [shader("miss")]
 void RTReflection_Miss(inout RayPayload payload)
 {
-	payload.color = GetDynamicSkyColor(WorldRayDirection());
+	payload.data.xyz += GetDynamicSkyColor(WorldRayDirection());
+	payload.data.w = FLT_MAX;
 }

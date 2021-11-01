@@ -1,7 +1,36 @@
 #ifndef WI_SHADERINTEROP_RENDERER_H
 #define WI_SHADERINTEROP_RENDERER_H
 #include "ShaderInterop.h"
+#include "ShaderInterop_Weather.h"
 
+struct ShaderScene
+{
+	int instancebuffer;
+	int meshbuffer;
+	int materialbuffer;
+	int envmaparray;
+
+	int globalenvmap;
+	int padding0;
+	int padding1;
+	int padding2;
+
+	int TLAS;
+	int BVH_counter;
+	int BVH_nodes;
+	int BVH_primitives;
+
+	float3 aabb_min;
+	float padding3;
+	float3 aabb_max;
+	float padding4;
+	float3 aabb_extents;		// enclosing AABB abs(max - min)
+	float padding5;
+	float3 aabb_extents_rcp;	// enclosing AABB 1.0f / abs(max - min)
+	float padding6;
+
+	ShaderWeather weather;
+};
 
 static const uint SHADERMATERIAL_OPTION_BIT_USE_VERTEXCOLORS = 1 << 0;
 static const uint SHADERMATERIAL_OPTION_BIT_SPECULARGLOSSINESS_WORKFLOW = 1 << 1;
@@ -10,12 +39,14 @@ static const uint SHADERMATERIAL_OPTION_BIT_OCCLUSION_SECONDARY = 1 << 3;
 static const uint SHADERMATERIAL_OPTION_BIT_USE_WIND = 1 << 4;
 static const uint SHADERMATERIAL_OPTION_BIT_RECEIVE_SHADOW = 1 << 5;
 static const uint SHADERMATERIAL_OPTION_BIT_CAST_SHADOW = 1 << 6;
+static const uint SHADERMATERIAL_OPTION_BIT_DOUBLE_SIDED = 1 << 7;
+static const uint SHADERMATERIAL_OPTION_BIT_TRANSPARENT = 1 << 8;
+static const uint SHADERMATERIAL_OPTION_BIT_ADDITIVE = 1 << 9;
+static const uint SHADERMATERIAL_OPTION_BIT_UNLIT = 1 << 10;
 
 struct ShaderMaterial
 {
 	float4		baseColor;
-	float4		specularColor;
-	float4		emissiveColor;
 	float4		subsurfaceScattering;
 	float4		subsurfaceScattering_inv;
 	float4		texMulAdd;
@@ -30,6 +61,11 @@ struct ShaderMaterial
 	float		alphaTest;
 	float		displacementMapping;
 
+	float		transmission;
+	uint		options;
+	uint		emissive_r11g11b10;
+	uint		specular_r11g11b10;
+
 	uint		layerMask;
 	int			uvset_baseColorMap;
 	int			uvset_surfaceMap;
@@ -40,26 +76,20 @@ struct ShaderMaterial
 	int			uvset_occlusionMap;
 	int			uvset_transmissionMap;
 
-	float2		padding1;
-	float		transmission;
-	uint		options;
-
 	int			uvset_sheenColorMap;
 	int			uvset_sheenRoughnessMap;
 	int			uvset_clearcoatMap;
 	int			uvset_clearcoatRoughnessMap;
 
 	int			uvset_clearcoatNormalMap;
+	int			uvset_specularMap;
+	int			padding2;
+	int			padding3;
+
+	uint		sheenColor_r11g11b10;
 	float		sheenRoughness;
 	float		clearcoat;
 	float		clearcoatRoughness;
-
-	float4		sheenColor;
-
-	float4		baseColorAtlasMulAdd;
-	float4		surfaceMapAtlasMulAdd;
-	float4		emissiveMapAtlasMulAdd;
-	float4		normalMapAtlasMulAdd;
 
 	int			texture_basecolormap_index;
 	int			texture_surfacemap_index;
@@ -76,6 +106,17 @@ struct ShaderMaterial
 	int			texture_clearcoatroughnessmap_index;
 	int			texture_clearcoatnormalmap_index;
 
+	int			texture_specularmap_index;
+	int			padding5;
+	int			padding6;
+	int			padding7;
+
+#ifndef __cplusplus
+	float3 GetEmissive() { return Unpack_R11G11B10_FLOAT(emissive_r11g11b10); }
+	float3 GetSpecular() { return Unpack_R11G11B10_FLOAT(specular_r11g11b10); }
+	float3 GetSheenColor() { return Unpack_R11G11B10_FLOAT(sheenColor_r11g11b10); }
+#endif // __cplusplus
+
 	inline bool IsUsingVertexColors() { return options & SHADERMATERIAL_OPTION_BIT_USE_VERTEXCOLORS; }
 	inline bool IsUsingSpecularGlossinessWorkflow() { return options & SHADERMATERIAL_OPTION_BIT_SPECULARGLOSSINESS_WORKFLOW; }
 	inline bool IsOcclusionEnabled_Primary() { return options & SHADERMATERIAL_OPTION_BIT_OCCLUSION_PRIMARY; }
@@ -83,7 +124,12 @@ struct ShaderMaterial
 	inline bool IsUsingWind() { return options & SHADERMATERIAL_OPTION_BIT_USE_WIND; }
 	inline bool IsReceiveShadow() { return options & SHADERMATERIAL_OPTION_BIT_RECEIVE_SHADOW; }
 	inline bool IsCastingShadow() { return options & SHADERMATERIAL_OPTION_BIT_CAST_SHADOW; }
+	inline bool IsUnlit() { return options & SHADERMATERIAL_OPTION_BIT_UNLIT; }
 };
+
+static const uint SHADERMESH_FLAG_DOUBLE_SIDED = 1 << 0;
+static const uint SHADERMESH_FLAG_HAIRPARTICLE = 1 << 1;
+static const uint SHADERMESH_FLAG_EMITTEDPARTICLE = 1 << 2;
 
 struct ShaderMesh
 {
@@ -98,25 +144,193 @@ struct ShaderMesh
 	int vb_pre;
 
 	int subsetbuffer;
-	int blendmaterial1;
-	int blendmaterial2;
-	int blendmaterial3;
+	uint blendmaterial1;
+	uint blendmaterial2;
+	uint blendmaterial3;
+
+	float3 aabb_min;
+	uint flags;
+	float3 aabb_max;
+	float tessellation_factor;
+
+	void init()
+	{
+		ib = -1;
+		vb_pos_nor_wind = -1;
+		vb_tan = -1;
+		vb_col = -1;
+
+		vb_uv0 = -1;
+		vb_uv1 = -1;
+		vb_atl = -1;
+		vb_pre = -1;
+
+		subsetbuffer = -1;
+		blendmaterial1 = 0;
+		blendmaterial2 = 0;
+		blendmaterial3 = 0;
+
+		aabb_min = float3(0, 0, 0);
+		aabb_max = float3(0, 0, 0);
+
+		flags = 0;
+	}
 };
 
 struct ShaderMeshSubset
 {
 	uint indexOffset;
-	uint indexCount;
-	int mesh;
-	int material;
+	uint materialIndex;
+
+	void init()
+	{
+		indexOffset = 0;
+		materialIndex = 0;
+	}
+};
+
+struct ShaderTransform
+{
+	float4 mat0;
+	float4 mat1;
+	float4 mat2;
+
+	void init()
+	{
+		mat0 = float4(1, 0, 0, 0);
+		mat1 = float4(0, 1, 0, 0);
+		mat2 = float4(0, 0, 1, 0);
+	}
+	void Create(float4x4 mat)
+	{
+		mat0 = float4(mat._11, mat._21, mat._31, mat._41);
+		mat1 = float4(mat._12, mat._22, mat._32, mat._42);
+		mat2 = float4(mat._13, mat._23, mat._33, mat._43);
+	}
+	float4x4 GetMatrix()
+#ifdef __cplusplus
+		const
+#endif // __cplusplus
+	{
+		return float4x4(
+			mat0.x, mat0.y, mat0.z, mat0.w,
+			mat1.x, mat1.y, mat1.z, mat1.w,
+			mat2.x, mat2.y, mat2.z, mat2.w,
+			0, 0, 0, 1
+		);
+	}
+};
+
+struct ShaderMeshInstance
+{
+	uint uid;
+	uint flags;
+	uint meshIndex;
+	uint color;
+	uint emissive;
+	int lightmap;
+	int padding0;
+	int padding1;
+	ShaderTransform transform;
+	ShaderTransform transformInverseTranspose; // This correctly handles non uniform scaling for normals
+	ShaderTransform transformPrev;
+
+	void init()
+	{
+		uid = 0;
+		flags = 0;
+		meshIndex = ~0;
+		color = ~0u;
+		emissive = ~0u;
+		lightmap = -1;
+		transform.init();
+		transformInverseTranspose.init();
+		transformPrev.init();
+	}
+
+};
+struct ShaderMeshInstancePointer
+{
+	uint instanceID;
+	uint userdata;
+
+	void init()
+	{
+		instanceID = ~0;
+		userdata = 0;
+	}
+	void Create(uint _instanceID, uint frustum_index, float dither)
+	{
+		instanceID = _instanceID;
+		userdata = 0;
+		userdata |= frustum_index & 0xF;
+		userdata |= (uint(dither * 255.0f) & 0xFF) << 4u;
+	}
+	uint GetFrustumIndex()
+	{
+		return userdata & 0xF;
+	}
+	float GetDither()
+	{
+		return ((userdata >> 4u) & 0xFF) / 255.0f;
+	}
 };
 
 struct ObjectPushConstants
 {
-	int mesh;
-	int material;
+	uint meshIndex_subsetIndex; // 24-bit mesh, 8-bit subset
+	uint materialIndex;
 	int instances;
 	uint instance_offset;
+
+	void init(
+		uint _meshIndex,
+		uint _subsetIndex,
+		uint _materialIndex,
+		int _instances,
+		uint _instance_offset
+	)
+	{
+		meshIndex_subsetIndex = 0;
+		meshIndex_subsetIndex |= _meshIndex & 0xFFFFFF;
+		meshIndex_subsetIndex |= (_subsetIndex & 0xFF) << 24u;
+		materialIndex = _materialIndex;
+		instances = _instances;
+		instance_offset = _instance_offset;
+	}
+	uint GetMeshIndex()
+	{
+		return meshIndex_subsetIndex & 0xFFFFFF;
+	}
+	uint GetSubsetIndex()
+	{
+		return (meshIndex_subsetIndex >> 24u) & 0xFF;
+	}
+	uint GetMaterialIndex()
+	{
+		return materialIndex;
+	}
+};
+
+struct PrimitiveID
+{
+	uint primitiveIndex;
+	uint instanceIndex;
+	uint subsetIndex;
+
+	uint2 pack()
+	{
+		// 32 bit primitiveID
+		// 24 bit instanceID
+		// 8  bit subsetID
+		return uint2(primitiveIndex, (instanceIndex & 0xFFFFFF) | ((subsetIndex & 0xFF) << 24u));
+	}
+	void unpack(uint2 value)
+	{
+		primitiveIndex = value.x;
+		instanceIndex = value.y & 0xFFFFFF;
+		subsetIndex = (value.y >> 24u) & 0xFF;
+	}
 };
 
 // Warning: the size of this structure directly affects shader performance.
@@ -268,7 +482,7 @@ static const uint TILED_CULLING_GRANULARITY = TILED_CULLING_BLOCKSIZE / TILED_CU
 
 static const int impostorCaptureAngles = 36;
 
-// These option bits can be read from g_xFrame_Options constant buffer value:
+// These option bits can be read from Options constant buffer value:
 static const uint OPTION_BIT_TEMPORALAA_ENABLED = 1 << 0;
 static const uint OPTION_BIT_TRANSPARENTSHADOWS_ENABLED = 1 << 1;
 static const uint OPTION_BIT_VOXELGI_ENABLED = 1 << 2;
@@ -276,120 +490,108 @@ static const uint OPTION_BIT_VOXELGI_REFLECTIONS_ENABLED = 1 << 3;
 static const uint OPTION_BIT_VOXELGI_RETARGETTED = 1 << 4;
 static const uint OPTION_BIT_SIMPLE_SKY = 1 << 5;
 static const uint OPTION_BIT_REALISTIC_SKY = 1 << 6;
-static const uint OPTION_BIT_RAYTRACED_SHADOWS = 1 << 7;
-static const uint OPTION_BIT_DISABLE_ALBEDO_MAPS = 1 << 8;
+static const uint OPTION_BIT_HEIGHT_FOG = 1 << 7;
+static const uint OPTION_BIT_RAYTRACED_SHADOWS = 1 << 8;
 static const uint OPTION_BIT_SHADOW_MASK = 1 << 9;
+static const uint OPTION_BIT_SURFELGI_ENABLED = 1 << 10;
+static const uint OPTION_BIT_DISABLE_ALBEDO_MAPS = 1 << 11;
+static const uint OPTION_BIT_FORCE_DIFFUSE_LIGHTING = 1 << 12;
 
 // ---------- Common Constant buffers: -----------------
 
-CBUFFER(FrameCB, CBSLOT_RENDERER_FRAME)
+struct FrameCB
 {
-	float2		g_xFrame_ScreenWidthHeight;
-	float2		g_xFrame_ScreenWidthHeight_rcp;
+	float		Gamma;
+	uint		ShadowCascadeCount;
+	uint		ConstantOne;						// Just a constant 1 value as uint (can be used to force disable loop unrolling)
+	float		VoxelRadianceMaxDistance;			// maximum raymarch distance for voxel GI in world-space
 
-	float2		g_xFrame_InternalResolution;
-	float2		g_xFrame_InternalResolution_rcp;
+	float		VoxelRadianceDataSize;				// voxel half-extent in world space units
+	float		VoxelRadianceDataSize_rcp;			// 1.0 / voxel-half extent
+	uint		VoxelRadianceDataRes;				// voxel grid resolution
+	float		VoxelRadianceDataRes_rcp;			// 1.0 / voxel grid resolution
 
-	float3		g_xFrame_SunColor;
-	float		g_xFrame_Gamma;
+	uint		VoxelRadianceDataMIPs;				// voxel grid mipmap count
+	uint		VoxelRadianceNumCones;				// number of diffuse cones to trace
+	float		VoxelRadianceNumCones_rcp;			// 1.0 / number of diffuse cones to trace
+	float		VoxelRadianceRayStepSize;			// raymarch step size in voxel space units
 
-	float3		g_xFrame_SunDirection;
-	uint		g_xFrame_ShadowCascadeCount;
+	float3		VoxelRadianceDataCenter;			// center of the voxel grid in world space units
+	uint		Options;							// wiRenderer bool options packed into bitmask
 
-	float3		g_xFrame_Horizon;
-	uint		g_xFrame_ConstantOne;						// Just a constant 1 value as uint (can be used to force disable loop unrolling)
+	uint		EnvProbeMipCount;
+	float		EnvProbeMipCount_rcp;
+	float		Time;
+	float		TimePrev;
 
-	float3		g_xFrame_Zenith;
-	float		g_xFrame_CloudScale;
+	float		DeltaTime;
+	uint		FrameCount;
+	uint		LightArrayOffset;			// indexing into entity array
+	uint		LightArrayCount;			// indexing into entity array
 
-	float3		g_xFrame_Ambient;
-	float		g_xFrame_Cloudiness;
+	uint		DecalArrayOffset;			// indexing into entity array
+	uint		DecalArrayCount;			// indexing into entity array
+	uint		ForceFieldArrayOffset;		// indexing into entity array
+	uint		ForceFieldArrayCount;		// indexing into entity array
 
-	float3		g_xFrame_Fog;								// Fog Start,End,Height
-	float		g_xFrame_VoxelRadianceMaxDistance;			// maximum raymarch distance for voxel GI in world-space
+	uint		EnvProbeArrayOffset;		// indexing into entity array
+	uint		EnvProbeArrayCount;			// indexing into entity array
+	float		StaticSkyGamma;			// possible values (0: no static sky; 1: hdr static sky; other: actual gamma when ldr)
+	uint		TemporalAASampleRotation;
 
-	float		g_xFrame_VoxelRadianceDataSize;				// voxel half-extent in world space units
-	float		g_xFrame_VoxelRadianceDataSize_rcp;			// 1.0 / voxel-half extent
-	uint		g_xFrame_VoxelRadianceDataRes;				// voxel grid resolution
-	float		g_xFrame_VoxelRadianceDataRes_rcp;			// 1.0 / voxel grid resolution
+	float		ShadowKernel2D;
+	float		ShadowKernelCube;
+	float		BlueNoisePhase;
+	int			sampler_objectshader_index;
 
-	uint		g_xFrame_VoxelRadianceDataMIPs;				// voxel grid mipmap count
-	uint		g_xFrame_VoxelRadianceNumCones;				// number of diffuse cones to trace
-	float		g_xFrame_VoxelRadianceNumCones_rcp;			// 1.0 / number of diffuse cones to trace
-	float		g_xFrame_VoxelRadianceRayStepSize;			// raymarch step size in voxel space units
+	int			texture_random64x64_index;
+	int			texture_bluenoise_index;
+	int			texture_sheenlut_index;
+	int			texture_skyviewlut_index;
 
-	float3		g_xFrame_VoxelRadianceDataCenter;			// center of the voxel grid in world space units
-	uint		g_xFrame_Options;							// wiRenderer bool options packed into bitmask
+	int			texture_transmittancelut_index;
+	int			texture_multiscatteringlut_index;
+	int			texture_skyluminancelut_index;
+	int			texture_shadowarray_2d_index;
 
-	uint3		g_xFrame_EntityCullingTileCount;
-	int			g_xFrame_GlobalEnvProbeIndex;
+	int			texture_shadowarray_cube_index;
+	int			texture_shadowarray_transparent_2d_index;
+	int			texture_shadowarray_transparent_cube_index;
+	int			texture_voxelgi_index;
 
-	uint		g_xFrame_EnvProbeMipCount;
-	float		g_xFrame_EnvProbeMipCount_rcp;
-	float		g_xFrame_Time;
-	float		g_xFrame_TimePrev;
+	int			buffer_entityarray_index;
+	int			buffer_entitymatrixarray_index;
+	int	padding0;
+	int	padding1;
 
-	float		g_xFrame_SunEnergy;
-	float		g_xFrame_WindSpeed;
-	float		g_xFrame_DeltaTime;
-	uint		g_xFrame_FrameCount;
-
-	uint		g_xFrame_LightArrayOffset;			// indexing into entity array
-	uint		g_xFrame_LightArrayCount;			// indexing into entity array
-	uint		g_xFrame_DecalArrayOffset;			// indexing into entity array
-	uint		g_xFrame_DecalArrayCount;			// indexing into entity array
-
-	uint		g_xFrame_ForceFieldArrayOffset;		// indexing into entity array
-	uint		g_xFrame_ForceFieldArrayCount;		// indexing into entity array
-	uint		g_xFrame_EnvProbeArrayOffset;		// indexing into entity array
-	uint		g_xFrame_EnvProbeArrayCount;		// indexing into entity array
-
-	float3		g_xFrame_WindDirection;
-	float		g_xFrame_WindWaveSize;
-
-	float3		g_xFrame_WorldBoundsMin;			// world enclosing AABB min
-	float		g_xFrame_CloudSpeed;
-
-	float3		g_xFrame_WorldBoundsMax;			// world enclosing AABB max
-	float		g_xFrame_WindRandomness;
-
-	float3		g_xFrame_WorldBoundsExtents;		// world enclosing AABB abs(max - min)
-	float		g_xFrame_StaticSkyGamma;			// possible values (0: no static sky; 1: hdr static sky; other: actual gamma when ldr)
-
-	float3		g_xFrame_WorldBoundsExtents_rcp;	// world enclosing AABB 1.0f / abs(max - min)
-	uint		g_xFrame_TemporalAASampleRotation;
-
-	float		g_xFrame_ShadowKernel2D;
-	float		g_xFrame_ShadowKernelCube;
-	uint		g_xFrame_RaytracedShadowsSampleCount;
-	int			g_xFrame_ObjectShaderSamplerIndex;
+	ShaderScene scene;
 };
 
-CBUFFER(CameraCB, CBSLOT_RENDERER_CAMERA)
+struct CameraCB
 {
-	float4x4	g_xCamera_VP;			// View*Projection
+	float4x4	VP;			// View*Projection
 
-	float4		g_xCamera_ClipPlane;
+	float4		ClipPlane;
 
-	float3		g_xCamera_CamPos;
-	float		g_xCamera_DistanceFromOrigin;
+	float3		CamPos;
+	float		DistanceFromOrigin;
 
-	float3		g_xCamera_At;
-	float		g_xCamera_ZNearP;
+	float3		At;
+	float		ZNearP;
 
-	float3		g_xCamera_Up;
-	float		g_xCamera_ZFarP;
+	float3		Up;
+	float		ZFarP;
 
-	float		g_xCamera_ZNearP_rcp;
-	float		g_xCamera_ZFarP_rcp;
-	float		g_xCamera_ZRange;
-	float		g_xCamera_ZRange_rcp;
+	float		ZNearP_rcp;
+	float		ZFarP_rcp;
+	float		ZRange;
+	float		ZRange_rcp;
 
-	float4x4	g_xCamera_View;
-	float4x4	g_xCamera_Proj;
-	float4x4	g_xCamera_InvV;			// Inverse View
-	float4x4	g_xCamera_InvP;			// Inverse Projection
-	float4x4	g_xCamera_InvVP;		// Inverse View-Projection
+	float4x4	View;
+	float4x4	Proj;
+	float4x4	InvV;			// Inverse View
+	float4x4	InvP;			// Inverse Projection
+	float4x4	InvVP;		// Inverse View-Projection
 
 	// Frustum planes:
 	//	0 : near
@@ -398,43 +600,59 @@ CBUFFER(CameraCB, CBSLOT_RENDERER_CAMERA)
 	//	3 : right
 	//	4 : top
 	//	5 : bottom
-	float4		g_xCamera_FrustumPlanes[6];
+	float4		FrustumPlanes[6];
 
-	float2		g_xFrame_TemporalAAJitter;
-	float2		g_xFrame_TemporalAAJitterPrev;
+	float2		TemporalAAJitter;
+	float2		TemporalAAJitterPrev;
 
-	float4x4	g_xCamera_PrevV;
-	float4x4	g_xCamera_PrevP;
-	float4x4	g_xCamera_PrevVP;		// PrevView*PrevProjection
-	float4x4	g_xCamera_PrevInvVP;	// Inverse(PrevView*PrevProjection)
-	float4x4	g_xCamera_ReflVP;		// ReflectionView*ReflectionProjection
+	float4x4	PrevV;
+	float4x4	PrevP;
+	float4x4	PrevVP;		// PrevView*PrevProjection
+	float4x4	PrevInvVP;	// Inverse(PrevView*PrevProjection)
+	float4x4	ReflVP;		// ReflectionView*ReflectionProjection
+	float4x4	Reprojection; // view_projection_inverse_matrix * previous_view_projection_matrix
 
-	float2		g_xCamera_ApertureShape;
-	float		g_xCamera_ApertureSize;
-	float		g_xCamera_FocalLength;
+	float2		ApertureShape;
+	float		ApertureSize;
+	float		FocalLength;
+
+
+	float2 CanvasSize;
+	float2 CanvasSize_rcp;
+		   
+	uint2 InternalResolution;
+	float2 InternalResolution_rcp;
+
+	uint3 EntityCullingTileCount;
+	int padding0;
+
+	int texture_depth_index;
+	int texture_lineardepth_index;
+	int texture_gbuffer0_index;
+	int texture_gbuffer1_index;
+
+	int buffer_entitytiles_opaque_index;
+	int buffer_entitytiles_transparent_index;
+	int texture_reflection_index;
+	int texture_refraction_index;
+
+	int texture_waterriples_index;
+	int texture_ao_index;
+	int texture_ssr_index;
+	int texture_rtshadow_index;
+
+	int texture_surfelgi_index;
+	int texture_depth_index_prev;
+	int padding1;
+	int padding2;
 };
 
 
+CONSTANTBUFFER(g_xFrame, FrameCB, CBSLOT_RENDERER_FRAME);
+CONSTANTBUFFER(g_xCamera, CameraCB, CBSLOT_RENDERER_CAMERA);
 
 
 // ------- On demand Constant buffers: ----------
-
-CBUFFER(MaterialCB, CBSLOT_RENDERER_MATERIAL)
-{
-	ShaderMaterial g_xMaterial;
-};
-CBUFFER(MaterialCB_Blend1, CBSLOT_RENDERER_MATERIAL_BLEND1)
-{
-	ShaderMaterial g_xMaterial_blend1;
-};
-CBUFFER(MaterialCB_Blend2, CBSLOT_RENDERER_MATERIAL_BLEND2)
-{
-	ShaderMaterial g_xMaterial_blend2;
-};
-CBUFFER(MaterialCB_Blend3, CBSLOT_RENDERER_MATERIAL_BLEND3)
-{
-	ShaderMaterial g_xMaterial_blend3;
-};
 
 CBUFFER(MiscCB, CBSLOT_RENDERER_MISC)
 {
@@ -449,15 +667,6 @@ CBUFFER(ForwardEntityMaskCB, CBSLOT_RENDERER_FORWARD_LIGHTMASK)
 	uint xForwardEnvProbeMask;	// supports indexing 32 environment probes
 };
 
-CBUFFER(DecalCB, CBSLOT_RENDERER_DECAL)
-{
-	float4x4 xDecalVP;
-	float3 eye;
-	int hasTexNor;
-	float3 front;
-	float opacity;
-};
-
 CBUFFER(VolumeLightCB, CBSLOT_RENDERER_VOLUMELIGHT)
 {
 	float4x4 lightWorld;
@@ -465,10 +674,12 @@ CBUFFER(VolumeLightCB, CBSLOT_RENDERER_VOLUMELIGHT)
 	float4 lightEnerdis;
 };
 
-CBUFFER(LensFlareCB, CBSLOT_RENDERER_LENSFLARE)
+struct LensFlarePush
 {
-	float4		xSunPos; // light position
-	float4		xScreen; // screen dimensions
+	float3 xLensFlarePos;
+	float xLensFlareOffset;
+	float2 xLensFlareSize;
+	float2 xLensFlare_padding;
 };
 
 struct CubemapRenderCam
@@ -481,9 +692,77 @@ CBUFFER(CubemapRenderCB, CBSLOT_RENDERER_CUBEMAPRENDER)
 	CubemapRenderCam xCubemapRenderCams[6];
 };
 
-CBUFFER(TessellationCB, CBSLOT_RENDERER_TESSELLATION)
+// MIP Generator params:
+static const uint GENERATEMIPCHAIN_1D_BLOCK_SIZE = 64;
+static const uint GENERATEMIPCHAIN_2D_BLOCK_SIZE = 8;
+static const uint GENERATEMIPCHAIN_3D_BLOCK_SIZE = 4;
+
+struct MipgenPushConstants
 {
-	float4 xTessellationFactors;
+	uint3 outputResolution;
+	uint arrayIndex;
+	float3 outputResolution_rcp;
+	uint mipgen_options;
+	int texture_input;
+	int texture_output;
+	int sampler_index;
+};
+static const uint MIPGEN_OPTION_BIT_PRESERVE_COVERAGE = 1 << 0;
+
+struct FilterEnvmapPushConstants
+{
+	uint2 filterResolution;
+	float2 filterResolution_rcp;
+	uint filterArrayIndex;
+	float filterRoughness;
+	uint filterRayCount;
+	uint padding_filterCB;
+	int texture_input;
+	int texture_output;
+};
+
+// CopyTexture2D params:
+struct CopyTextureCB
+{
+	int2 xCopyDest;
+	int2 xCopySrcSize;
+	int2 padding0;
+	int  xCopySrcMIP;
+	int  xCopyBorderExpandStyle;
+};
+
+
+static const uint PAINT_TEXTURE_BLOCKSIZE = 8;
+
+struct PaintTextureCB
+{
+	uint2 xPaintBrushCenter;
+	uint xPaintBrushRadius;
+	float xPaintBrushAmount;
+
+	float xPaintBrushFalloff;
+	uint xPaintBrushColor;
+	uint2 padding0;
+};
+
+CBUFFER(PaintRadiusCB, CBSLOT_RENDERER_MISC)
+{
+	uint2 xPaintRadResolution;
+	uint2 xPaintRadCenter;
+	uint xPaintRadUVSET;
+	float xPaintRadRadius;
+	uint2 pad;
+};
+
+struct SkinningPushConstants
+{
+	int bonebuffer_index;
+	int vb_pos_nor_wind;
+	int vb_tan;
+	int vb_bon;
+
+	int so_pos_nor_wind;
+	int so_tan;
 };
 
 

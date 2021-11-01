@@ -7,10 +7,10 @@
 #include "shaders/ShaderInterop_Image.h"
 #include "wiBackLog.h"
 #include "wiEvent.h"
+#include "wiTimer.h"
 
 #include <atomic>
 
-using namespace std;
 using namespace wiGraphics;
 
 namespace wiImage
@@ -19,15 +19,10 @@ namespace wiImage
 	enum IMAGE_SHADER
 	{
 		IMAGE_SHADER_STANDARD,
-		IMAGE_SHADER_SEPARATENORMALMAP,
-		IMAGE_SHADER_MASKED,
-		IMAGE_SHADER_BACKGROUNDBLUR,
-		IMAGE_SHADER_BACKGROUNDBLUR_MASKED,
 		IMAGE_SHADER_FULLSCREEN,
 		IMAGE_SHADER_COUNT
 	};
 
-	GPUBuffer				constantBuffer;
 	Shader					vertexShader;
 	Shader					screenVS;
 	Shader					imagePS[IMAGE_SHADER_COUNT];
@@ -35,13 +30,19 @@ namespace wiImage
 	RasterizerState			rasterizerState;
 	DepthStencilState		depthStencilStates[STENCILMODE_COUNT][STENCILREFMODE_COUNT];
 	PipelineState			imagePSO[IMAGE_SHADER_COUNT][BLENDMODE_COUNT][STENCILMODE_COUNT][STENCILREFMODE_COUNT];
-	Texture					backgroundBlurTextures[COMMANDLIST_COUNT];
+	Texture					backgroundTextures[COMMANDLIST_COUNT];
+	wiCanvas				canvases[COMMANDLIST_COUNT];
 
 	std::atomic_bool initialized{ false };
 
-	void SetBackgroundBlurTexture(const Texture& texture, CommandList cmd)
+	void SetBackground(const Texture& texture, CommandList cmd)
 	{
-		backgroundBlurTextures[cmd] = texture;
+		backgroundTextures[cmd] = texture;
+	}
+
+	void SetCanvas(const wiCanvas& canvas, wiGraphics::CommandList cmd)
+	{
+		canvases[cmd] = canvas;
 	}
 
 	void Draw(const Texture* texture, const wiImageParams& params, CommandList cmd)
@@ -91,36 +92,46 @@ namespace wiImage
 				sampler = wiRenderer::GetSampler(SSLOT_ANISO_CLAMP);
 		}
 
-		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS))
+		PushConstantsImage push;
+		push.texture_base_index = device->GetDescriptorIndex(texture, SRV);
+		push.texture_mask_index = device->GetDescriptorIndex(params.maskMap, SRV);
+		if (params.isBackgroundEnabled())
 		{
-			PushConstantsImage push;
-			push.texture_base_index = device->GetDescriptorIndex(texture, SRV);
-			push.texture_mask_index = device->GetDescriptorIndex(params.maskMap, SRV);
-			push.texture_background_index = device->GetDescriptorIndex(&backgroundBlurTextures[cmd], SRV);
-			push.sampler_index = device->GetDescriptorIndex(sampler);
-			device->PushConstants(&push, sizeof(push), cmd);
+			push.texture_background_index = device->GetDescriptorIndex(&backgroundTextures[cmd], SRV);
 		}
 		else
 		{
-			device->BindResource(PS, texture, TEXSLOT_IMAGE_BASE, cmd);
-			device->BindResource(PS, params.maskMap, TEXSLOT_IMAGE_MASK, cmd);
-			device->BindResource(PS, &backgroundBlurTextures[cmd], TEXSLOT_IMAGE_BACKGROUND, cmd);
-			device->BindSampler(PS, sampler, SSLOT_ONDEMAND0, cmd);
+			push.texture_background_index = -1;
 		}
+		push.sampler_index = device->GetDescriptorIndex(sampler);
 
-		ImageCB cb;
-		cb.xColor = params.color;
+		XMFLOAT4 color = params.color;
 		const float darken = 1 - params.fade;
-		cb.xColor.x *= darken;
-		cb.xColor.y *= darken;
-		cb.xColor.z *= darken;
-		cb.xColor.w *= params.opacity;
+		color.x *= darken;
+		color.y *= darken;
+		color.z *= darken;
+		color.w *= params.opacity;
+
+		XMHALF4 packed_color;
+		packed_color.x = XMConvertFloatToHalf(color.x);
+		packed_color.y = XMConvertFloatToHalf(color.y);
+		packed_color.z = XMConvertFloatToHalf(color.z);
+		packed_color.w = XMConvertFloatToHalf(color.w);
+
+		push.packed_color.x = uint(packed_color.v);
+		push.packed_color.y = uint(packed_color.v >> 32ull);
+
+		push.flags = 0;
+		if (params.isExtractNormalMapEnabled())
+		{
+			push.flags |= IMAGE_FLAG_EXTRACT_NORMALMAP;
+		}
 
 		if (params.isFullScreenEnabled())
 		{
+			// Full screen image uses a fast path with full screen triangle and no effects
 			device->BindPipelineState(&imagePSO[IMAGE_SHADER_FULLSCREEN][params.blendFlag][params.stencilComp][params.stencilRefMode], cmd);
-			device->UpdateBuffer(&constantBuffer, &cb, cmd);
-			device->BindConstantBuffer(PS, &constantBuffer, CB_GETBINDSLOT(ImageCB), cmd);
+			device->PushConstants(&push, sizeof(push), cmd);
 			device->Draw(3, 0, cmd);
 			device->EventEnd(cmd);
 			return;
@@ -143,95 +154,88 @@ namespace wiImage
 		}
 		else
 		{
-			M = M * device->GetScreenProjection();
+			const wiCanvas& canvas = canvases[cmd];
+			// Asserts will check that a proper canvas was set for this cmd with wiImage::SetCanvas()
+			//	The canvas must be set to have dpi aware rendering
+			assert(canvas.width > 0);
+			assert(canvas.height > 0);
+			assert(canvas.dpi > 0);
+			M = M * canvas.GetProjection();
 		}
 
-		for (int i = 0; i < 4; ++i)
-		{
-			XMVECTOR V = XMVectorSet(params.corners[i].x - params.pivot.x, params.corners[i].y - params.pivot.y, 0, 1);
-			V = XMVector2Transform(V, M); // division by w will happen on GPU
-			XMStoreFloat4(&cb.xCorners[i], V);
-		}
+		XMVECTOR V = XMVectorSet(params.corners[0].x - params.pivot.x, params.corners[0].y - params.pivot.y, 0, 1);
+		V = XMVector2Transform(V, M); // division by w will happen on GPU
+		XMStoreFloat4(&push.corners0, V);
+
+		V = XMVectorSet(params.corners[1].x - params.pivot.x, params.corners[1].y - params.pivot.y, 0, 1);
+		V = XMVector2Transform(V, M); // division by w will happen on GPU
+		XMStoreFloat4(&push.corners1, V);
+
+		V = XMVectorSet(params.corners[2].x - params.pivot.x, params.corners[2].y - params.pivot.y, 0, 1);
+		V = XMVector2Transform(V, M); // division by w will happen on GPU
+		XMStoreFloat4(&push.corners2, V);
+
+		V = XMVectorSet(params.corners[3].x - params.pivot.x, params.corners[3].y - params.pivot.y, 0, 1);
+		V = XMVector2Transform(V, M); // division by w will happen on GPU
+		XMStoreFloat4(&push.corners3, V);
 
 		if (params.isMirrorEnabled())
 		{
-			std::swap(cb.xCorners[0], cb.xCorners[1]);
-			std::swap(cb.xCorners[2], cb.xCorners[3]);
+			std::swap(push.corners0, push.corners1);
+			std::swap(push.corners2, push.corners3);
 		}
 
 		const TextureDesc& desc = texture->GetDesc();
 		const float inv_width = 1.0f / float(desc.Width);
 		const float inv_height = 1.0f / float(desc.Height);
 
+		XMFLOAT4 texMulAdd;
 		if (params.isDrawRectEnabled())
 		{
-			cb.xTexMulAdd.x = params.drawRect.z * inv_width;	// drawRec.width: mul
-			cb.xTexMulAdd.y = params.drawRect.w * inv_height;	// drawRec.heigh: mul
-			cb.xTexMulAdd.z = params.drawRect.x * inv_width;	// drawRec.x: add
-			cb.xTexMulAdd.w = params.drawRect.y * inv_height;	// drawRec.y: add
+			texMulAdd.x = params.drawRect.z * inv_width;	// drawRec.width: mul
+			texMulAdd.y = params.drawRect.w * inv_height;	// drawRec.heigh: mul
+			texMulAdd.z = params.drawRect.x * inv_width;	// drawRec.x: add
+			texMulAdd.w = params.drawRect.y * inv_height;	// drawRec.y: add
 		}
 		else
 		{
-			cb.xTexMulAdd = XMFLOAT4(1, 1, 0, 0);	// disabled draw rect
+			texMulAdd = XMFLOAT4(1, 1, 0, 0);	// disabled draw rect
 		}
-		cb.xTexMulAdd.z += params.texOffset.x * inv_width;	// texOffset.x: add
-		cb.xTexMulAdd.w += params.texOffset.y * inv_height;	// texOffset.y: add
+		texMulAdd.z += params.texOffset.x * inv_width;	// texOffset.x: add
+		texMulAdd.w += params.texOffset.y * inv_height;	// texOffset.y: add
+		XMHALF4 half_texMulAdd;
+		half_texMulAdd.x = XMConvertFloatToHalf(texMulAdd.x);
+		half_texMulAdd.y = XMConvertFloatToHalf(texMulAdd.y);
+		half_texMulAdd.z = XMConvertFloatToHalf(texMulAdd.z);
+		half_texMulAdd.w = XMConvertFloatToHalf(texMulAdd.w);
+		push.texMulAdd.x = uint(half_texMulAdd.v);
+		push.texMulAdd.y = uint(half_texMulAdd.v >> 32ull);
 
+		XMFLOAT4 texMulAdd2;
 		if (params.isDrawRect2Enabled())
 		{
-			cb.xTexMulAdd2.x = params.drawRect2.z * inv_width;	// drawRec.width: mul
-			cb.xTexMulAdd2.y = params.drawRect2.w * inv_height;	// drawRec.heigh: mul
-			cb.xTexMulAdd2.z = params.drawRect2.x * inv_width;	// drawRec.x: add
-			cb.xTexMulAdd2.w = params.drawRect2.y * inv_height;	// drawRec.y: add
+			texMulAdd2.x = params.drawRect2.z * inv_width;	// drawRec.width: mul
+			texMulAdd2.y = params.drawRect2.w * inv_height;	// drawRec.heigh: mul
+			texMulAdd2.z = params.drawRect2.x * inv_width;	// drawRec.x: add
+			texMulAdd2.w = params.drawRect2.y * inv_height;	// drawRec.y: add
 		}
 		else
 		{
-			cb.xTexMulAdd2 = XMFLOAT4(1, 1, 0, 0);	// disabled draw rect
+			texMulAdd2 = XMFLOAT4(1, 1, 0, 0);	// disabled draw rect
 		}
-		cb.xTexMulAdd2.z += params.texOffset2.x * inv_width;	// texOffset.x: add
-		cb.xTexMulAdd2.w += params.texOffset2.y * inv_height;	// texOffset.y: add
+		texMulAdd2.z += params.texOffset2.x * inv_width;	// texOffset.x: add
+		texMulAdd2.w += params.texOffset2.y * inv_height;	// texOffset.y: add
+		XMHALF4 half_texMulAdd2;
+		half_texMulAdd2.x = XMConvertFloatToHalf(texMulAdd2.x);
+		half_texMulAdd2.y = XMConvertFloatToHalf(texMulAdd2.y);
+		half_texMulAdd2.z = XMConvertFloatToHalf(texMulAdd2.z);
+		half_texMulAdd2.w = XMConvertFloatToHalf(texMulAdd2.w);
+		push.texMulAdd2.x = uint(half_texMulAdd2.v);
+		push.texMulAdd2.y = uint(half_texMulAdd2.v >> 32ull);
 
-		device->UpdateBuffer(&constantBuffer, &cb, cmd);
+		device->BindPipelineState(&imagePSO[IMAGE_SHADER_STANDARD][params.blendFlag][params.stencilComp][params.stencilRefMode], cmd);
 
-		// Determine relevant image rendering pixel shader:
-		IMAGE_SHADER targetShader;
-		const bool NormalmapSeparate = params.isExtractNormalMapEnabled();
-		const bool Mask = params.maskMap != nullptr;
-		const bool background_blur = params.isBackgroundBlurEnabled();
-		if (NormalmapSeparate)
-		{
-			targetShader = IMAGE_SHADER_SEPARATENORMALMAP;
-		}
-		else
-		{
-			if (Mask)
-			{
-				if (background_blur)
-				{
-					targetShader = IMAGE_SHADER_BACKGROUNDBLUR_MASKED;
-				}
-				else
-				{
-					targetShader = IMAGE_SHADER_MASKED;
-				}
-			}
-			else
-			{
-				if (background_blur)
-				{
-					targetShader = IMAGE_SHADER_BACKGROUNDBLUR;
-				}
-				else
-				{
-					targetShader = IMAGE_SHADER_STANDARD;
-				}
-			}
-		}
-
-		device->BindPipelineState(&imagePSO[targetShader][params.blendFlag][params.stencilComp][params.stencilRefMode], cmd);
-
-		device->BindConstantBuffer(VS, &constantBuffer, CB_GETBINDSLOT(ImageCB), cmd);
-		device->BindConstantBuffer(PS, &constantBuffer, CB_GETBINDSLOT(ImageCB), cmd);
+		device->PushConstants(&push, sizeof(push), cmd);
 
 		device->Draw(4, 0, cmd);
 
@@ -247,10 +251,6 @@ namespace wiImage
 		wiRenderer::LoadShader(VS, screenVS, "screenVS.cso");
 
 		wiRenderer::LoadShader(PS, imagePS[IMAGE_SHADER_STANDARD], "imagePS.cso");
-		wiRenderer::LoadShader(PS, imagePS[IMAGE_SHADER_SEPARATENORMALMAP], "imagePS_separatenormalmap.cso");
-		wiRenderer::LoadShader(PS, imagePS[IMAGE_SHADER_MASKED], "imagePS_masked.cso");
-		wiRenderer::LoadShader(PS, imagePS[IMAGE_SHADER_BACKGROUNDBLUR], "imagePS_backgroundblur.cso");
-		wiRenderer::LoadShader(PS, imagePS[IMAGE_SHADER_BACKGROUNDBLUR_MASKED], "imagePS_backgroundblur_masked.cso");
 		wiRenderer::LoadShader(PS, imagePS[IMAGE_SHADER_FULLSCREEN], "screenPS.cso");
 
 
@@ -290,16 +290,9 @@ namespace wiImage
 
 	void Initialize()
 	{
-		GraphicsDevice* device = wiRenderer::GetDevice();
+		wiTimer timer;
 
-		{
-			GPUBufferDesc bd;
-			bd.Usage = USAGE_DYNAMIC;
-			bd.ByteWidth = sizeof(ImageCB);
-			bd.BindFlags = BIND_CONSTANT_BUFFER;
-			bd.CPUAccessFlags = CPU_ACCESS_WRITE;
-			device->CreateBuffer(&bd, nullptr, &constantBuffer);
-		}
+		GraphicsDevice* device = wiRenderer::GetDevice();
 
 		RasterizerState rs;
 		rs.FillMode = FILL_SOLID;
@@ -413,10 +406,21 @@ namespace wiImage
 		bd.IndependentBlendEnable = false;
 		blendStates[BLENDMODE_ADDITIVE] = bd;
 
+		bd.RenderTarget[0].BlendEnable = true;
+		bd.RenderTarget[0].SrcBlend = BLEND_ZERO;
+		bd.RenderTarget[0].DestBlend = BLEND_SRC_COLOR;
+		bd.RenderTarget[0].BlendOp = BLEND_OP_ADD;
+		bd.RenderTarget[0].SrcBlendAlpha = BLEND_ZERO;
+		bd.RenderTarget[0].DestBlendAlpha = BLEND_SRC_ALPHA;
+		bd.RenderTarget[0].BlendOpAlpha = BLEND_OP_ADD;
+		bd.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
+		bd.IndependentBlendEnable = false;
+		blendStates[BLENDMODE_MULTIPLY] = bd;
+
 		static wiEvent::Handle handle = wiEvent::Subscribe(SYSTEM_EVENT_RELOAD_SHADERS, [](uint64_t userdata) { LoadShaders(); });
 		LoadShaders();
 
-		wiBackLog::post("wiImage Initialized");
+		wiBackLog::post("wiImage Initialized (" + std::to_string((int)std::round(timer.elapsed())) + " ms)");
 		initialized.store(true);
 	}
 

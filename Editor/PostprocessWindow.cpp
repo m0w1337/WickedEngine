@@ -4,7 +4,6 @@
 
 #include <thread>
 
-using namespace std;
 using namespace wiGraphics;
 
 
@@ -51,16 +50,6 @@ void PostprocessWindow::Create(EditorComponent* editor)
 	});
 	AddWidget(&lightShaftsCheckBox);
 
-	volumetricCloudsCheckBox.Create("Volumetric clouds: ");
-	volumetricCloudsCheckBox.SetTooltip("Enable volumetric cloud rendering.");
-	volumetricCloudsCheckBox.SetSize(XMFLOAT2(hei, hei));
-	volumetricCloudsCheckBox.SetPos(XMFLOAT2(x, y += step));
-	volumetricCloudsCheckBox.SetCheck(editor->renderPath->getVolumetricCloudsEnabled());
-	volumetricCloudsCheckBox.OnClick([=](wiEventArgs args) {
-		editor->renderPath->setVolumetricCloudsEnabled(args.bValue);
-		});
-	AddWidget(&volumetricCloudsCheckBox);
-
 	aoComboBox.Create("AO: ");
 	aoComboBox.SetTooltip("Choose Ambient Occlusion type. RTAO is only available if hardware supports ray tracing");
 	aoComboBox.SetScriptTip("RenderPath3D::SetAO(int value)");
@@ -89,8 +78,7 @@ void PostprocessWindow::Create(EditorComponent* editor)
 		case RenderPath3D::AO_RTAO:
 			aoRangeSlider.SetEnabled(true); 
 			aoRangeSlider.SetValue(10.0f);
-			aoSampleCountSlider.SetEnabled(true); 
-			aoSampleCountSlider.SetValue(2.0f);
+			aoSampleCountSlider.SetEnabled(false);
 			break;
 		default:
 			aoRangeSlider.SetEnabled(false);
@@ -124,7 +112,7 @@ void PostprocessWindow::Create(EditorComponent* editor)
 	AddWidget(&aoRangeSlider);
 
 	aoSampleCountSlider.Create(1, 16, 9, 15, "Sample Count: ");
-	aoSampleCountSlider.SetTooltip("Set AO ray count. Only for SSAO and RTAO");
+	aoSampleCountSlider.SetTooltip("Set AO ray count. Only for SSAO");
 	aoSampleCountSlider.SetSize(XMFLOAT2(100, hei));
 	aoSampleCountSlider.SetPos(XMFLOAT2(x + 100, y += step));
 	aoSampleCountSlider.SetValue((float)editor->renderPath->getAOPower());
@@ -239,7 +227,7 @@ void PostprocessWindow::Create(EditorComponent* editor)
 	AddWidget(&motionBlurStrengthSlider);
 
 	depthOfFieldCheckBox.Create("DepthOfField: ");
-	depthOfFieldCheckBox.SetTooltip("Enable Depth of field effect. Additional focus and strength setup required.");
+	depthOfFieldCheckBox.SetTooltip("Enable Depth of field effect. Requires additional camera setup: focal length and aperture size.");
 	depthOfFieldCheckBox.SetScriptTip("RenderPath3D::SetDepthOfFieldEnabled(bool value)");
 	depthOfFieldCheckBox.SetSize(XMFLOAT2(hei, hei));
 	depthOfFieldCheckBox.SetPos(XMFLOAT2(x, y += step));
@@ -384,8 +372,28 @@ void PostprocessWindow::Create(EditorComponent* editor)
 		});
 	AddWidget(&chromaticaberrationSlider);
 
+	fsrCheckBox.Create("FSR: ");
+	fsrCheckBox.SetTooltip("FidelityFX FSR Upscaling. Use this only with Temporal AA or MSAA when the resolution scaling is lowered.");
+	fsrCheckBox.SetSize(XMFLOAT2(hei, hei));
+	fsrCheckBox.SetPos(XMFLOAT2(x, y += step));
+	fsrCheckBox.SetCheck(editor->renderPath->getFSREnabled());
+	fsrCheckBox.OnClick([=](wiEventArgs args) {
+		editor->renderPath->setFSREnabled(args.bValue);
+		});
+	AddWidget(&fsrCheckBox);
 
-	Translate(XMFLOAT3((float)wiRenderer::GetDevice()->GetScreenWidth() - 500, 80, 0));
+	fsrSlider.Create(0, 2, 1.0f, 1000, "Sharpness: ");
+	fsrSlider.SetTooltip("The sharpening amount to apply for FSR upscaling.");
+	fsrSlider.SetSize(XMFLOAT2(100, hei));
+	fsrSlider.SetPos(XMFLOAT2(x + 100, y));
+	fsrSlider.SetValue(editor->renderPath->getFSRSharpness());
+	fsrSlider.OnSlide([=](wiEventArgs args) {
+		editor->renderPath->setFSRSharpness(args.fValue);
+		});
+	AddWidget(&fsrSlider);
+
+
+	Translate(XMFLOAT3((float)editor->GetLogicalWidth() - 500, 80, 0));
 	SetVisible(false);
 
 }

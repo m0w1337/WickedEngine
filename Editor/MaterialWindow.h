@@ -20,6 +20,7 @@ public:
 	wiCheckBox occlusionPrimaryCheckBox;
 	wiCheckBox occlusionSecondaryCheckBox;
 	wiCheckBox windCheckBox;
+	wiCheckBox doubleSidedCheckBox;
 	wiSlider normalMapSlider;
 	wiSlider roughnessSlider;
 	wiSlider reflectanceSlider;
@@ -43,23 +44,12 @@ public:
 	wiSlider clearcoatSlider;
 	wiSlider clearcoatRoughnessSlider;
 
-	struct TextureSlotControls
-	{
-		std::string name;
-		wiLabel label;
-		wiButton button;
-		wiTextInputField uvsetField;
-
-		void SetEnabled(bool value)
-		{
-			label.SetEnabled(value);
-			button.SetEnabled(value);
-			uvsetField.SetEnabled(value);
-		}
-	};
-	TextureSlotControls slots[wiScene::MaterialComponent::TEXTURESLOT_COUNT];
-
 	wiComboBox colorComboBox;
 	wiColorPicker colorPicker;
+
+	wiComboBox textureSlotComboBox;
+	wiButton textureSlotButton;
+	wiLabel textureSlotLabel;
+	wiTextInputField textureSlotUvsetField;
 };
 

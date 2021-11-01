@@ -23,13 +23,15 @@
  *
  */
 
+PUSHCONSTANT(postprocess, PostProcess);
+
 TEXTURE3D(texture_shapeNoise, float4, TEXSLOT_ONDEMAND1);
 TEXTURE3D(texture_detailNoise, float4, TEXSLOT_ONDEMAND2);
 TEXTURE2D(texture_curlNoise, float4, TEXSLOT_ONDEMAND3);
 TEXTURE2D(texture_weatherMap, float4, TEXSLOT_ONDEMAND4);
 
 RWTEXTURE2D(texture_render, float4, 0);
-RWTEXTURE2D(texture_cloudDepth, float, 1);
+RWTEXTURE2D(texture_cloudDepth, float2, 1);
 
 
 // Octaves for multiple-scattering approximation. 1 means single-scattering only.
@@ -39,80 +41,12 @@ RWTEXTURE2D(texture_cloudDepth, float, 1);
 //#define CLOUD_MODE_SIMPLE_FBM
 
 
-// Lighting
-static const float g_CloudAmbientGroundMultiplier = 0.75; // [0; 1] Amount of ambient light to reach the bottom of clouds
-static const float3 g_Albedo = float3(1.0, 1.0, 1.0); // Cloud albedo is normally very close to 1
-static const float3 g_ExtinctionCoefficient = float3(0.71, 0.86, 1.0) * 0.1; // * 0.05 looks good too
-static const float g_BeerPowder = 20.0;
-static const float g_BeerPowderPower = 0.5;
-static const float g_PhaseG = 0.5; // [-0.999; 0.999]
-static const float g_PhaseG2 = -0.5; // [-0.999; 0.999]
-static const float g_PhaseBlend = 0.2; // [0; 1]
-static const float g_MultiScatteringScattering = 1.0;
-static const float g_MultiScatteringExtinction = 0.1;
-static const float g_MultiScatteringEccentricity = 0.2;
-static const float g_ShadowStepLength = 3000.0;
-static const float g_HorizonBlendAmount = 1.25;
-static const float g_HorizonBlendPower = 2.0;
-static const float g_WeatherDensityAmount = 0.0; // Rain clouds disabled by default.
-
-// Modelling
-static const float g_CloudStartHeight = 1500.0;
-static const float g_CloudThickness = 4000.0;
-static const float g_SkewAlongWindDirection = 700.0;
-
-static const float g_TotalNoiseScale = 1.0;
-static const float g_DetailScale = 5.0;
-static const float g_WeatherScale = 0.0625;
-static const float g_CurlScale = 7.5f;
-
-static const float g_ShapeNoiseHeightGradientAmount = 0.2;
-static const float g_ShapeNoiseMultiplier = 0.8;
-static const float g_ShapeNoisePower = 6.0;
-static const float2 g_ShapeNoiseMinMax = float2(0.25, 1.1); // 1.25
-
-static const float g_DetailNoiseModifier = 0.2;
-static const float g_DetailNoiseHeightFraction = 10.0;
-static const float g_CurlNoiseModifier = 550.0;
-
-static const float g_CoverageAmount = 2.0;
-static const float g_CoverageMinimum = 1.05;
-static const float g_TypeAmount = 1.0;
-static const float g_TypeOverall = 0.0;
-static const float g_AnvilAmount = 0.0; // Anvil clouds disabled by default.
-static const float g_AnvilOverhangHeight = 3.0;
-
-// Animation
-static const float g_AnimationMultiplier = 2.0;
-static const float g_WindSpeed = 15.9f;
-static const float g_WindAngle = -0.39;
-static const float g_WindUpAmount = 0.5;
-static const float g_CoverageWindSpeed = 25.0;
-static const float g_CoverageWindAngle = 0.087;
-
-// Cloud types
-// 4 positions of a black, white, white, black gradient
-static const float4 g_CloudGradientSmall = float4(0.02, 0.07, 0.12, 0.28);
-static const float4 g_CloudGradientMedium = float4(0.02, 0.07, 0.39, 0.59);
-static const float4 g_CloudGradientLarge = float4(0.02, 0.07, 0.88, 1.0);
-
-// Performance
-static const int g_MaxStepCount = 128; // Maximum number of iterations. Higher gives better images but may be slow.
-static const float g_MaxMarchingDistance = 30000.0; // Clamping the marching steps to be within a certain distance.
-static const float g_InverseDistanceStepCount = 15000.0; // Distance over which the raymarch steps will be evenly distributed.
-static const float g_RenderDistance = 70000.0; // Maximum distance to march before returning a miss.
-static const float g_LODDistance = 25000.0; // After a certain distance, noises will get higher LOD
-static const float g_LODMin = 0.0; // 
-static const float g_BigStepMarch = 3.0; // How long inital rays should be until they hit something. Lower values may ives a better image but may be slower.
-static const float g_TransmittanceThreshold = 0.005; // Default: 0.005. If the clouds transmittance has reached it's desired opacity, there's no need to keep raymarching for performance.
-
-
 float GetHeightFractionForPoint(AtmosphereParameters atmosphere, float3 pos)
 {
 	float planetRadius = atmosphere.bottomRadius * SKY_UNIT_TO_M;
 	float3 planetCenterWorld = atmosphere.planetCenter * SKY_UNIT_TO_M;
 
-	return saturate((distance(pos, planetCenterWorld) - (planetRadius + g_CloudStartHeight)) / g_CloudThickness);
+	return saturate((distance(pos, planetCenterWorld) - (planetRadius + GetWeather().volumetric_clouds.CloudStartHeight)) / GetWeather().volumetric_clouds.CloudThickness);
 }
 
 float SampleGradient(float4 gradient, float heightFraction)
@@ -128,21 +62,21 @@ float GetDensityHeightGradient(float heightFraction, float3 weatherData)
 	float mediumType = 1.0f - abs(cloudType - 0.5f) * 2.0f;
 	float largeType = saturate(cloudType - 0.5f) * 2.0f;
     
-	float4 cloudGradient = (g_CloudGradientSmall * smallType) + (g_CloudGradientMedium * mediumType) + (g_CloudGradientLarge * largeType);
+	float4 cloudGradient = (GetWeather().volumetric_clouds.CloudGradientSmall * smallType) + (GetWeather().volumetric_clouds.CloudGradientMedium * mediumType) + (GetWeather().volumetric_clouds.CloudGradientLarge * largeType);
 	return SampleGradient(cloudGradient, heightFraction);
 }
 
 float3 SampleWeather(float3 pos, float heightFraction, float2 coverageWindOffset)
 {
-	float4 weatherData = texture_weatherMap.SampleLevel(sampler_linear_wrap, (pos.xz + coverageWindOffset) * g_WeatherScale * 0.0004, 0);
+	float4 weatherData = texture_weatherMap.SampleLevel(sampler_linear_wrap, (pos.xz + coverageWindOffset) * GetWeather().volumetric_clouds.WeatherScale * 0.0004, 0);
     
     // Anvil clouds
-	weatherData.r = pow(weatherData.r, RemapClamped(heightFraction * g_AnvilOverhangHeight, 0.7, 0.8, 1.0, lerp(1.0, 0.5, g_AnvilAmount)));
+	weatherData.r = pow(abs(weatherData.r), RemapClamped(heightFraction * GetWeather().volumetric_clouds.AnvilOverhangHeight, 0.7, 0.8, 1.0, lerp(1.0, 0.5, GetWeather().volumetric_clouds.AnvilAmount)));
     //weatherData.r *= lerp(1, RemapClamped(pow(heightFraction * xPPDebugParams.y, 0.5), 0.4, 0.95, 1.0, 0.2), xPPDebugParams.x);
     
     // Apply effects for coverage
-	weatherData.r = RemapClamped(weatherData.r * g_CoverageAmount, 0.0, 1.0, g_CoverageMinimum - 1.0, 1.0);
-	weatherData.g = RemapClamped(weatherData.g * g_TypeAmount, 0.0, 1.0, g_TypeOverall, 1.0);
+	weatherData.r = RemapClamped(weatherData.r * GetWeather().volumetric_clouds.CoverageAmount, 0.0, 1.0, saturate(GetWeather().volumetric_clouds.CoverageMinimum - 1.0), 1.0);
+	weatherData.g = RemapClamped(weatherData.g * GetWeather().volumetric_clouds.TypeAmount, 0.0, 1.0, GetWeather().volumetric_clouds.TypeOverall, 1.0);
     
 	return weatherData.rgb;
 }
@@ -150,7 +84,7 @@ float3 SampleWeather(float3 pos, float heightFraction, float2 coverageWindOffset
 float WeatherDensity(float3 weatherData)
 {
 	const float wetness = saturate(weatherData.b);
-	return lerp(1.0, 1.0 - g_WeatherDensityAmount, wetness);
+	return lerp(1.0, 1.0 - GetWeather().volumetric_clouds.WeatherDensityAmount, wetness);
 }
 
 float SampleCloudDensity(float3 p, float heightFraction, float3 weatherData, float3 windOffset, float3 windDirection, float lod, bool sampleDetail)
@@ -158,10 +92,10 @@ float SampleCloudDensity(float3 p, float heightFraction, float3 weatherData, flo
 #ifdef CLOUD_MODE_SIMPLE_FBM
     
     float3 pos = p + windOffset;
-    pos += heightFraction * windDirection * g_SkewAlongWindDirection;
+    pos += heightFraction * windDirection * GetWeather().volumetric_clouds.SkewAlongWindDirection;
     
     // Since the clouds have a massive size, we have to adjust scale accordingly
-    float noiseScale = max(g_TotalNoiseScale * 0.0004, 0.00001);
+    float noiseScale = max(GetWeather().volumetric_clouds.TotalNoiseScale * 0.0004, 0.00001);
     
     float4 lowFrequencyNoises = texture_shapeNoise.SampleLevel(sampler_linear_wrap, pos * noiseScale, lod);
     
@@ -172,7 +106,7 @@ float SampleCloudDensity(float3 p, float heightFraction, float3 weatherData, flo
     
     lowFrequencyFBM = saturate(lowFrequencyFBM);
 
-	float cloudSample = Remap(lowFrequencyNoises.r * pow(1.2 - heightFraction, 0.1), lowFrequencyFBM * g_ShapeNoiseMinMax.x, g_ShapeNoiseMinMax.y, 0.0, 1.0);
+	float cloudSample = Remap(lowFrequencyNoises.r * pow(1.2 - heightFraction, 0.1), lowFrequencyFBM * GetWeather().volumetric_clouds.ShapeNoiseMinMax.x, GetWeather().volumetric_clouds.ShapeNoiseMinMax.y, 0.0, 1.0);
     cloudSample *= GetDensityHeightGradient(heightFraction, weatherData);
     
     float cloudCoverage = weatherData.r;
@@ -182,25 +116,25 @@ float SampleCloudDensity(float3 p, float heightFraction, float3 weatherData, flo
 #else
     
 	float3 pos = p + windOffset;
-	pos += heightFraction * windDirection * g_SkewAlongWindDirection;
+	pos += heightFraction * windDirection * GetWeather().volumetric_clouds.SkewAlongWindDirection;
     
-	float noiseScale = max(g_TotalNoiseScale * 0.0004, 0.00001);
+	float noiseScale = max(GetWeather().volumetric_clouds.TotalNoiseScale * 0.0004, 0.00001);
     
 	float4 lowFrequencyNoises = texture_shapeNoise.SampleLevel(sampler_linear_wrap, pos * noiseScale, lod);
     
-	float3 heightGradient = float3(SampleGradient(g_CloudGradientSmall, heightFraction),
-			                            SampleGradient(g_CloudGradientMedium, heightFraction),
-                                        SampleGradient(g_CloudGradientLarge, heightFraction));
+	float3 heightGradient = float3(SampleGradient(GetWeather().volumetric_clouds.CloudGradientSmall, heightFraction),
+			                            SampleGradient(GetWeather().volumetric_clouds.CloudGradientMedium, heightFraction),
+                                        SampleGradient(GetWeather().volumetric_clouds.CloudGradientLarge, heightFraction));
     
     // Depending on the type, clouds with higher altitudes may recieve smaller noises
-	lowFrequencyNoises.gba *= heightGradient * g_ShapeNoiseHeightGradientAmount;
+	lowFrequencyNoises.gba *= heightGradient * GetWeather().volumetric_clouds.ShapeNoiseHeightGradientAmount;
 
 	float densityHeightGradient = GetDensityHeightGradient(heightFraction, weatherData);
     
-	float cloudSample = (lowFrequencyNoises.r + lowFrequencyNoises.g + lowFrequencyNoises.b + lowFrequencyNoises.a) * g_ShapeNoiseMultiplier * densityHeightGradient;
-	cloudSample = pow(abs(cloudSample), min(1.0, g_ShapeNoisePower * heightFraction));
+	float cloudSample = (lowFrequencyNoises.r + lowFrequencyNoises.g + lowFrequencyNoises.b + lowFrequencyNoises.a) * GetWeather().volumetric_clouds.ShapeNoiseMultiplier * densityHeightGradient;
+	cloudSample = pow(abs(cloudSample), min(1.0, GetWeather().volumetric_clouds.ShapeNoisePower * heightFraction));
     
-	cloudSample = smoothstep(g_ShapeNoiseMinMax.x, g_ShapeNoiseMinMax.y, cloudSample);
+	cloudSample = smoothstep(GetWeather().volumetric_clouds.ShapeNoiseMinMax.x, GetWeather().volumetric_clouds.ShapeNoiseMinMax.y, cloudSample);
     
     // Remap function for noise against coverage, see GPU Pro 7 
 	float cloudCoverage = weatherData.r;
@@ -212,10 +146,10 @@ float SampleCloudDensity(float3 p, float heightFraction, float3 weatherData, flo
 	if (cloudSample > 0.0 && sampleDetail)
 	{
         // Apply our curl noise to erode with tiny details.
-		float3 curlNoise = DecodeCurlNoise(texture_curlNoise.SampleLevel(sampler_linear_wrap, p.xz * g_CurlScale * noiseScale, 0).rgb);
-		pos += float3(curlNoise.r, curlNoise.b, curlNoise.g) * heightFraction * g_CurlNoiseModifier;
+		float3 curlNoise = DecodeCurlNoise(texture_curlNoise.SampleLevel(sampler_linear_wrap, p.xz * GetWeather().volumetric_clouds.CurlScale * noiseScale, 0).rgb);
+		pos += float3(curlNoise.r, curlNoise.b, curlNoise.g) * heightFraction * GetWeather().volumetric_clouds.CurlNoiseModifier;
         
-		float3 highFrequencyNoises = texture_detailNoise.SampleLevel(sampler_linear_wrap, pos * g_DetailScale * noiseScale, lod).rgb;
+		float3 highFrequencyNoises = texture_detailNoise.SampleLevel(sampler_linear_wrap, pos * GetWeather().volumetric_clouds.DetailScale * noiseScale, lod).rgb;
     
         // Create an FBM out of the high-frequency Worley Noises
 		float highFrequencyFBM = (highFrequencyNoises.r * 0.625) +
@@ -225,10 +159,10 @@ float SampleCloudDensity(float3 p, float heightFraction, float3 weatherData, flo
 		highFrequencyFBM = saturate(highFrequencyFBM);
     
         // Dilate detail noise based on height
-		float highFrequenceNoiseModifier = lerp(1.0 - highFrequencyFBM, highFrequencyFBM, saturate(heightFraction * g_DetailNoiseHeightFraction));
+		float highFrequenceNoiseModifier = lerp(1.0 - highFrequencyFBM, highFrequencyFBM, saturate(heightFraction * GetWeather().volumetric_clouds.DetailNoiseHeightFraction));
         
         // Erode with base of clouds
-		cloudSample = Remap(cloudSample, highFrequenceNoiseModifier * g_DetailNoiseModifier, 1.0, 0.0, 1.0);
+		cloudSample = Remap(cloudSample, highFrequenceNoiseModifier * GetWeather().volumetric_clouds.DetailNoiseModifier, 1.0, 0.0, 1.0);
 	}
     
 	return max(cloudSample, 0.0);
@@ -280,19 +214,24 @@ void VolumetricShadow(inout ParticipatingMedia participatingMedia, in Atmosphere
 		extinctionAccumulation[ms] = 0.0f;
 	}
 	
-	const float shadowStepCount = 5.0;
-	const float invShadowStepCount = 1.0 / shadowStepCount;
-
-	float previousNormT = 0.0;
+	const float sampleCount = GetWeather().volumetric_clouds.ShadowSampleCount;
+	const float sampleSegmentT = 0.5f;
+	
 	float lodOffset = 0.5;
-	for (float shadowT = invShadowStepCount; shadowT <= 1.0; shadowT += invShadowStepCount)
+	for (float s = 0.0f; s < sampleCount; s += 1.0)
 	{
-		float currentNormT = shadowT * shadowT;
-		float deltaNormT = currentNormT - previousNormT; // 5 samples: 0.04, 0.12, 0.2, 0.28, 0.36
-		float extinctionFactor = deltaNormT;
-		float shadowSampleDistance = g_ShadowStepLength * (previousNormT + deltaNormT * 0.5); // 5 samples: 0.02, 0.1, 0.26, 0.5, 0.82
+		// More expensive but artefact free
+		float t0 = (s) / sampleCount;
+		float t1 = (s + 1.0) / sampleCount;
+		// Non linear distribution of sample within the range.
+		t0 = t0 * t0;
+		t1 = t1 * t1;
 
-		float3 samplePoint = worldPosition + sunDirection * shadowSampleDistance; // Step futher towards the light
+		float delta = t1 - t0; // 5 samples: 0.04, 0.12, 0.2, 0.28, 0.36
+		float t = t0 + delta * sampleSegmentT; // 5 samples: 0.02, 0.1, 0.26, 0.5, 0.82
+		
+		float shadowSampleT = GetWeather().volumetric_clouds.ShadowStepLength * t;
+		float3 samplePoint = worldPosition + sunDirection * shadowSampleT; // Step futher towards the light
 
 		float heightFraction = GetHeightFractionForPoint(atmosphere, samplePoint);
 		if (heightFraction < 0.0 || heightFraction > 1.0)
@@ -308,24 +247,91 @@ void VolumetricShadow(inout ParticipatingMedia participatingMedia, in Atmosphere
 
 		float shadowCloudDensity = SampleCloudDensity(samplePoint, heightFraction, weatherData, windOffset, windDirection, lod + lodOffset, true);
 
-		float3 shadowExtinction = g_ExtinctionCoefficient * shadowCloudDensity;
-		ParticipatingMedia shadowParticipatingMedia = SampleParticipatingMedia(0.0f, shadowExtinction, g_MultiScatteringScattering, g_MultiScatteringExtinction, 0.0f);
+		float3 shadowExtinction = GetWeather().volumetric_clouds.ExtinctionCoefficient * shadowCloudDensity;
+		ParticipatingMedia shadowParticipatingMedia = SampleParticipatingMedia(0.0f, shadowExtinction, GetWeather().volumetric_clouds.MultiScatteringScattering, GetWeather().volumetric_clouds.MultiScatteringExtinction, 0.0f);
 		
 		[unroll]
 		for (ms = 0; ms < MS_COUNT; ms++)
 		{
-			extinctionAccumulation[ms] += shadowParticipatingMedia.extinctionCoefficients[ms] * extinctionFactor;
+			extinctionAccumulation[ms] += shadowParticipatingMedia.extinctionCoefficients[ms] * delta;
 		}
 
-		previousNormT = currentNormT;
 		lodOffset += 0.5;
 	}
 
 	[unroll]
 	for (ms = 0; ms < MS_COUNT; ms++)
 	{
-		participatingMedia.transmittanceToLight[ms] *= exp(-extinctionAccumulation[ms] * g_ShadowStepLength);
+		participatingMedia.transmittanceToLight[ms] *= exp(-extinctionAccumulation[ms] * GetWeather().volumetric_clouds.ShadowStepLength);
 	}
+}
+
+void VolumetricGroundContribution(inout float3 environmentLuminance, in AtmosphereParameters atmosphere, float3 worldPosition, float3 sunDirection, float3 sunIlluminance, float3 atmosphereTransmittanceToLight, float3 windOffset, float3 windDirection, float2 coverageWindOffset, float lod)
+{
+	float planetRadius = atmosphere.bottomRadius * SKY_UNIT_TO_M;
+	float3 planetCenterWorld = atmosphere.planetCenter * SKY_UNIT_TO_M;
+
+	float cloudBottomRadius = planetRadius + GetWeather().volumetric_clouds.CloudStartHeight;
+
+	float cloudSampleAltitudde = length(worldPosition - planetCenterWorld); // Distance from planet center to tracing sample
+	float cloudSampleHeightToBottom = cloudSampleAltitudde - cloudBottomRadius; // Distance from altitude to bottom of clouds
+	
+	float3 opticalDepth = 0.0;
+	
+	const float contributionStepLength = min(4000.0, cloudSampleHeightToBottom);
+	const float3 groundScatterDirection = float3(0.0, -1.0, 0.0);
+	
+	const float sampleCount = GetWeather().volumetric_clouds.GroundContributionSampleCount;
+	const float sampleSegmentT = 0.5f;
+	
+	// Ground Contribution tracing loop, same idea as volumetric shadow
+	float lodOffset = 0.5;
+	for (float s = 0.0f; s < sampleCount; s += 1.0)
+	{
+		// More expensive but artefact free
+		float t0 = (s) / sampleCount;
+		float t1 = (s + 1.0) / sampleCount;
+		// Non linear distribution of sample within the range.
+		t0 = t0 * t0;
+		t1 = t1 * t1;
+
+		float delta = t1 - t0; // 5 samples: 0.04, 0.12, 0.2, 0.28, 0.36		
+		float t = t0 + (t1 - t0) * sampleSegmentT; // 5 samples: 0.02, 0.1, 0.26, 0.5, 0.82
+
+		float contributionSampleT = contributionStepLength * t;
+		float3 samplePoint = worldPosition + groundScatterDirection * contributionSampleT; // Step futher towards the scatter direction
+
+		float heightFraction = GetHeightFractionForPoint(atmosphere, samplePoint);
+		/*if (heightFraction < 0.0 || heightFraction > 1.0) // No impact
+		{
+			break;
+		}*/
+		
+		float3 weatherData = SampleWeather(samplePoint, heightFraction, coverageWindOffset);
+		if (weatherData.r < 0.4)
+		{
+			continue;
+		}
+
+		float contributionCloudDensity = SampleCloudDensity(samplePoint, heightFraction, weatherData, windOffset, windDirection, lod + lodOffset, true);
+
+		float3 contributionExtinction = GetWeather().volumetric_clouds.ExtinctionCoefficient * contributionCloudDensity;
+
+		opticalDepth += contributionExtinction * contributionStepLength * delta;
+		
+		lodOffset += 0.5;
+	}
+	
+	const float3 planetSurfaceNormal = float3(0.0, 1.0, 0.0); // Ambient contribution from the clouds is only done on a plane above the planet
+	const float3 groundBrdfNdotL = saturate(dot(sunDirection, planetSurfaceNormal)) * (atmosphere.groundAlbedo / PI); // Lambert BRDF diffuse shading
+
+	const float uniformPhase = UniformPhase();
+	const float groundHemisphereLuminanceIsotropic = (2.0f * PI) * uniformPhase; // Assumes the ground is uniform luminance to the cloud and solid angle is bottom hemisphere 2PI
+	const float3 groundToCloudTransfertIsoScatter = groundBrdfNdotL * groundHemisphereLuminanceIsotropic;
+	
+	const float3 scatteredLuminance = atmosphereTransmittanceToLight * sunIlluminance * groundToCloudTransfertIsoScatter;
+
+	environmentLuminance += scatteredLuminance * exp(-opticalDepth);
 }
 
 struct ParticipatingMediaPhase
@@ -362,12 +368,12 @@ ParticipatingMediaPhase SampleParticipatingMediaPhase(float basePhase, float bas
 float3 SampleAmbientLight(float heightFraction)
 {
 	// Early experiment by adding directionality to ambient, based on: http://patapom.com/topics/Revision2013/Revision%202013%20-%20Real-time%20Volumetric%20Rendering%20Course%20Notes.pdf
-	//float ambientTerm = -cloudDensity * (1.0 - saturate(g_CloudAmbientGroundMultiplier + heightFraction));
+	//float ambientTerm = -cloudDensity * (1.0 - saturate(GetWeather().volumetric_clouds.CloudAmbientGroundMultiplier + heightFraction));
 	//float isotropicScatteringTopContribution = max(0.0, exp(ambientTerm) - ambientTerm * ExponentialIntegral(ambientTerm));
 
-	float isotropicScatteringTopContribution = saturate(g_CloudAmbientGroundMultiplier + heightFraction);
+	float isotropicScatteringTopContribution = saturate(GetWeather().volumetric_clouds.CloudAmbientGroundMultiplier + heightFraction);
 	
-	if (g_xFrame_Options & OPTION_BIT_REALISTIC_SKY)
+	if (g_xFrame.Options & OPTION_BIT_REALISTIC_SKY)
 	{
 		float3 skyLuminance = texture_skyluminancelut.SampleLevel(sampler_point_clamp, float2(0.5, 0.5), 0).rgb;
 		return isotropicScatteringTopContribution * skyLuminance;
@@ -384,33 +390,44 @@ void VolumetricCloudLighting(AtmosphereParameters atmosphere, float3 startPositi
 	inout float3 luminance, inout float3 transmittanceToView, inout float depthWeightedSum, inout float depthWeightsSum)
 {
 	// Setup base parameters
-	//float3 albedo = g_Albedo * cloudDensity;
-	float3 albedo = pow(saturate(g_Albedo * cloudDensity * g_BeerPowder), g_BeerPowderPower); // Artistic approach
-	float3 extinction = g_ExtinctionCoefficient * cloudDensity;
+	//float3 albedo = GetWeather().volumetric_clouds.Albedo * cloudDensity;
+	float3 albedo = pow(saturate(GetWeather().volumetric_clouds.Albedo * cloudDensity * GetWeather().volumetric_clouds.BeerPowder), GetWeather().volumetric_clouds.BeerPowderPower); // Artistic approach
+	float3 extinction = GetWeather().volumetric_clouds.ExtinctionCoefficient * cloudDensity;
 	
 	float3 atmosphereTransmittanceToLight = 1.0;
-	if (g_xFrame_Options & OPTION_BIT_REALISTIC_SKY)
+	if (g_xFrame.Options & OPTION_BIT_REALISTIC_SKY)
 	{
 		atmosphereTransmittanceToLight = GetAtmosphericLightTransmittance(atmosphere, worldPosition, sunDirection, texture_transmittancelut); // Has to be in meters
 	}
 	
 	// Sample participating media with multiple scattering
-	ParticipatingMedia participatingMedia = SampleParticipatingMedia(albedo, extinction, g_MultiScatteringScattering, g_MultiScatteringExtinction, atmosphereTransmittanceToLight);
+	ParticipatingMedia participatingMedia = SampleParticipatingMedia(albedo, extinction, GetWeather().volumetric_clouds.MultiScatteringScattering, GetWeather().volumetric_clouds.MultiScatteringExtinction, atmosphereTransmittanceToLight);
 	
 
-	// Calcualte volumetric shadow
-	VolumetricShadow(participatingMedia, atmosphere, worldPosition, sunDirection, windOffset, windDirection, coverageWindOffset, lod);
+	// Sample environment lighting
+	float3 environmentLuminance = SampleAmbientLight(heightFraction);
+
+
+	// Only render if there is any sign of scattering (albedo * extinction)
+	if (any(participatingMedia.scatteringCoefficients[0] > 0.0))
+	{
+		// Calcualte volumetric shadow
+		VolumetricShadow(participatingMedia, atmosphere, worldPosition, sunDirection, windOffset, windDirection, coverageWindOffset, lod);
+
+
+		// Calculate bounced light from ground onto clouds
+		const float maxTransmittanceToView = max(max(transmittanceToView.x, transmittanceToView.y), transmittanceToView.z);
+		if (maxTransmittanceToView > 0.01f)
+		{
+			VolumetricGroundContribution(environmentLuminance, atmosphere, worldPosition, sunDirection, sunIlluminance, atmosphereTransmittanceToLight, windOffset, windDirection, coverageWindOffset, lod);
+		}
+	}
 
 
 	// Sample dual lob phase with multiple scattering
-	float phaseFunction = DualLobPhase(g_PhaseG, g_PhaseG2, g_PhaseBlend, -cosTheta);
-	ParticipatingMediaPhase participatingMediaPhase = SampleParticipatingMediaPhase(phaseFunction, g_MultiScatteringEccentricity);
+	float phaseFunction = DualLobPhase(GetWeather().volumetric_clouds.PhaseG, GetWeather().volumetric_clouds.PhaseG2, GetWeather().volumetric_clouds.PhaseBlend, -cosTheta);
+	ParticipatingMediaPhase participatingMediaPhase = SampleParticipatingMediaPhase(phaseFunction, GetWeather().volumetric_clouds.MultiScatteringEccentricity);
 
-
-	// Sample environment lighting
-	// Todo: Ground contribution?
-	float3 environmentLuminance = SampleAmbientLight(heightFraction);
-	
 
 	// Update depth sampling
 	float depthWeight = min(transmittanceToView.r, min(transmittanceToView.g, transmittanceToView.b));
@@ -451,14 +468,14 @@ void RenderClouds(float3 rayOrigin, float3 rayDirection, float t, float steps, f
 	inout float3 luminance, inout float3 transmittanceToView, inout float depthWeightedSum, inout float depthWeightsSum)
 {
     // Wind animation offsets
-	float3 windDirection = float3(cos(g_WindAngle), -g_WindUpAmount, sin(g_WindAngle));
-	float3 windOffset = g_WindSpeed * g_AnimationMultiplier * windDirection * g_xFrame_Time;
+	float3 windDirection = float3(cos(GetWeather().volumetric_clouds.WindAngle), -GetWeather().volumetric_clouds.WindUpAmount, sin(GetWeather().volumetric_clouds.WindAngle));
+	float3 windOffset = GetWeather().volumetric_clouds.WindSpeed * GetWeather().volumetric_clouds.AnimationMultiplier * windDirection * g_xFrame.Time;
     
-	float2 coverageWindDirection = float2(cos(g_CoverageWindAngle), sin(g_CoverageWindAngle));
-	float2 coverageWindOffset = g_CoverageWindSpeed * g_AnimationMultiplier * coverageWindDirection * g_xFrame_Time;
+	float2 coverageWindDirection = float2(cos(GetWeather().volumetric_clouds.CoverageWindAngle), sin(GetWeather().volumetric_clouds.CoverageWindAngle));
+	float2 coverageWindOffset = GetWeather().volumetric_clouds.CoverageWindSpeed * GetWeather().volumetric_clouds.AnimationMultiplier * coverageWindDirection * g_xFrame.Time;
 
 	
-	AtmosphereParameters atmosphere = GetAtmosphereParameters();
+	AtmosphereParameters atmosphere = GetWeather().atmosphere;
 	
 	float3 sunIlluminance = GetSunColor() * GetSunEnergy();
 	float3 sunDirection = GetSunDirection();
@@ -468,7 +485,7 @@ void RenderClouds(float3 rayOrigin, float3 rayDirection, float t, float steps, f
 	
     // Init
 	float zeroDensitySampleCount = 0.0;
-	float stepLength = g_BigStepMarch;
+	float stepLength = GetWeather().volumetric_clouds.BigStepMarch;
 
 	float3 sampleWorldPosition = rayOrigin + rayDirection * t;
 
@@ -487,13 +504,13 @@ void RenderClouds(float3 rayOrigin, float3 rayDirection, float t, float steps, f
             // If value is low, continue marching until we quit or hit something.
 			sampleWorldPosition += rayDirection * stepSize * stepLength;
 			zeroDensitySampleCount += 1.0;
-			stepLength = zeroDensitySampleCount > 10.0 ? g_BigStepMarch : 1.0; // If zero count has reached a high number, switch to big steps
+			stepLength = zeroDensitySampleCount > 10.0 ? GetWeather().volumetric_clouds.BigStepMarch : 1.0; // If zero count has reached a high number, switch to big steps
 			continue;
 		}
 
 
-		float rayDepth = distance(g_xCamera_CamPos, sampleWorldPosition);
-		float lod = step(g_LODDistance, rayDepth) + g_LODMin;
+		float rayDepth = distance(GetCamera().CamPos, sampleWorldPosition);
+		float lod = step(GetWeather().volumetric_clouds.LODDistance, rayDepth) + GetWeather().volumetric_clouds.LODMin;
 		float cloudDensity = saturate(SampleCloudDensity(sampleWorldPosition, heightFraction, weatherData, windOffset, windDirection, lod, true));
         
 		if (cloudDensity > 0.0)
@@ -514,7 +531,7 @@ void RenderClouds(float3 rayOrigin, float3 rayDirection, float t, float steps, f
 				stepSize, heightFraction, cloudDensity, weatherData, windOffset, windDirection, coverageWindOffset, lod,
 				luminance, transmittanceToView, depthWeightedSum, depthWeightsSum);
 			
-			if (all(transmittanceToView < g_TransmittanceThreshold))
+			if (all(transmittanceToView < GetWeather().volumetric_clouds.TransmittanceThreshold))
 			{
 				break;
 			}
@@ -524,41 +541,18 @@ void RenderClouds(float3 rayOrigin, float3 rayDirection, float t, float steps, f
 			zeroDensitySampleCount += 1.0;
 		}
         
-		stepLength = zeroDensitySampleCount > 10.0 ? g_BigStepMarch : 1.0;
+		stepLength = zeroDensitySampleCount > 10.0 ? GetWeather().volumetric_clouds.BigStepMarch : 1.0;
         
 		sampleWorldPosition += rayDirection * stepSize * stepLength;
 	}
 }
 
-bool TraceSphereIntersections(float3 rayOrigin, float3 rayDirection, float3 sphereCenter, float sphereRadius, inout float2 solutions)
-{
-	float3 localPosition = rayOrigin - sphereCenter;
-	float localPositionSqr = dot(localPosition, localPosition);
-    
-    // Quadratic Coefficients
-	float a = dot(rayDirection, rayDirection);
-	float b = 2 * dot(rayDirection, localPosition);
-	float c = localPositionSqr - sphereRadius * sphereRadius;
-    
-	float discriminant = b * b - 4 * a * c;
-    
-    // Only continue if the ray intersects with the sphere
-	if (discriminant >= 0.0)
-	{
-		float sqrtDiscriminant = sqrt(discriminant);
-		solutions = (-b + float2(-1, 1) * sqrtDiscriminant) / (2 * a);
-		return true;
-	}
-    
-	return false;
-}
-
 float CalculateAtmosphereBlend(float tDepth)
 {
     // Progressively increase alpha as clouds reaches the desired distance.
-	float fogDistance = saturate(tDepth * g_HorizonBlendAmount * 0.00001);
+	float fogDistance = saturate(tDepth * GetWeather().volumetric_clouds.HorizonBlendAmount * 0.00001);
     
-	float fade = pow(fogDistance, g_HorizonBlendPower);
+	float fade = pow(fogDistance, GetWeather().volumetric_clouds.HorizonBlendPower);
 	fade = smoothstep(0.0, 1.0, fade);
         
 	const float maxHorizonFade = 0.0;
@@ -567,41 +561,56 @@ float CalculateAtmosphereBlend(float tDepth)
 	return fade;
 }
 
+static const uint2 g_HalfResIndexToCoordinateOffset[4] = { uint2(0, 0), uint2(1, 0), uint2(0, 1), uint2(1, 1) };
+
+// Calculates checkerboard undersampling position
+int ComputeCheckerBoardIndex(int2 renderCoord, int subPixelIndex)
+{
+	const int localOffset = (renderCoord.x & 1 + renderCoord.y & 1) & 1;
+	const int checkerBoardLocation = (subPixelIndex + localOffset) & 0x3;
+	return checkerBoardLocation;
+}
+
 [numthreads(POSTPROCESS_BLOCKSIZE, POSTPROCESS_BLOCKSIZE, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-	const float2 uv = (DTid.xy + 0.5) * xPPResolution_rcp;
+	int subPixelIndex = g_xFrame.FrameCount % 4;
+	int checkerBoardIndex = ComputeCheckerBoardIndex(DTid.xy, subPixelIndex);
+	uint2 halfResCoord = DTid.xy * 2 + g_HalfResIndexToCoordinateOffset[checkerBoardIndex];
+
+	const float2 uv = (halfResCoord + 0.5) * postprocess.params0.zw;
 	
 	float x = uv.x * 2 - 1;
 	float y = (1 - uv.y) * 2 - 1;
 	float2 screenPosition = float2(x, y);
-
-	float4 unprojected = mul(g_xCamera_InvVP, float4(screenPosition, 0, 1));
+	
+	float4 unprojected = mul(GetCamera().InvVP, float4(screenPosition, 0, 1));
 	unprojected.xyz /= unprojected.w;
 
-	float3 rayOrigin = g_xCamera_CamPos;
+	float3 rayOrigin = GetCamera().CamPos;
 	float3 rayDirection = normalize(unprojected.xyz - rayOrigin);
 
 
 	float tMin = -FLT_MAX;
 	float tMax = -FLT_MAX;
 	float t;
+	float tToDepthBuffer;
 	float steps;
 	float stepSize;
     {
-		AtmosphereParameters parameters = GetAtmosphereParameters();
+		AtmosphereParameters parameters = GetWeather().atmosphere;
 		
 		float planetRadius = parameters.bottomRadius * SKY_UNIT_TO_M;
 		float3 planetCenterWorld = parameters.planetCenter * SKY_UNIT_TO_M;
 
-		const float cloudBottomRadius = planetRadius + g_CloudStartHeight;
-		const float cloudTopRadius = planetRadius + g_CloudStartHeight + g_CloudThickness;
+		const float cloudBottomRadius = planetRadius + GetWeather().volumetric_clouds.CloudStartHeight;
+		const float cloudTopRadius = planetRadius + GetWeather().volumetric_clouds.CloudStartHeight + GetWeather().volumetric_clouds.CloudThickness;
         
-		float2 tTopSolutions = 0.0;
-		if (TraceSphereIntersections(rayOrigin, rayDirection, planetCenterWorld, cloudTopRadius, tTopSolutions))
+		float2 tTopSolutions = RaySphereIntersect(rayOrigin, rayDirection, planetCenterWorld, cloudTopRadius);
+		if (tTopSolutions.x > 0.0 || tTopSolutions.y > 0.0)
 		{
-			float2 tBottomSolutions = 0.0;
-			if (TraceSphereIntersections(rayOrigin, rayDirection, planetCenterWorld, cloudBottomRadius, tBottomSolutions))
+			float2 tBottomSolutions = RaySphereIntersect(rayOrigin, rayDirection, planetCenterWorld, cloudBottomRadius);
+			if (tBottomSolutions.x > 0.0 || tBottomSolutions.y > 0.0)
 			{
                 // If we see both intersections on the screen, keep the min closest, otherwise the max furthest
 				float tempTop = all(tTopSolutions > 0.0f) ? min(tTopSolutions.x, tTopSolutions.y) : max(tTopSolutions.x, tTopSolutions.y);
@@ -627,52 +636,37 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		}
 		else
 		{
-			texture_render[DTid.xy] = float4(0.0, 0.0, 0.0, 0.0);
-			texture_cloudDepth[DTid.xy] = 0.0;
+			texture_render[DTid.xy] = float4(0.0, 0.0, 0.0, 0.0); // Inverted alpha
+			texture_cloudDepth[DTid.xy] = FLT_MAX;
 			return;
 		}
 
-		if (tMax <= tMin || tMin > g_RenderDistance)
+		if (tMax <= tMin || tMin > GetWeather().volumetric_clouds.RenderDistance)
 		{
-			texture_render[DTid.xy] = float4(0.0, 0.0, 0.0, 0.0);
-			texture_cloudDepth[DTid.xy] = 0.0;
+			texture_render[DTid.xy] = float4(0.0, 0.0, 0.0, 0.0); // Inverted alpha
+			texture_cloudDepth[DTid.xy] = FLT_MAX;
 			return;
 		}
 		
 		
 		// Depth buffer intersection
-		float depth = texture_depth.SampleLevel(sampler_point_clamp, uv, 0).r;
+		float depth = texture_depth.SampleLevel(sampler_point_clamp, uv, 1).r;
 		float3 depthWorldPosition = reconstructPosition(uv, depth);
-		float tToDepthBuffer = length(depthWorldPosition - rayOrigin);
+		tToDepthBuffer = length(depthWorldPosition - rayOrigin);
 		tMax = depth == 0.0 ? tMax : min(tMax, tToDepthBuffer); // Exclude skybox
 		
-		const float marchingDistance = min(g_MaxMarchingDistance, tMax - tMin);
+		const float marchingDistance = min(GetWeather().volumetric_clouds.MaxMarchingDistance, tMax - tMin);
 		tMax = tMin + marchingDistance;
 
-		steps = g_MaxStepCount * saturate((tMax - tMin) * (1.0 / g_InverseDistanceStepCount));
+		steps = GetWeather().volumetric_clouds.MaxStepCount * saturate((tMax - tMin) * (1.0 / GetWeather().volumetric_clouds.InverseDistanceStepCount));
 		stepSize = (tMax - tMin) / steps;
 
-
-#if 0 // Offset
-		
-		// Based on: https://github.com/yangrc1234/VolumeCloud
-		const float3x3 bayerOffsetMatrix = { 0.0, 7.0, 3.0, 6.0, 5.0, 2.0, 4.0, 1.0, 8.0, };
-		uint2 pixelID = uint2(fmod(DTid.xy, 3.0));
-		
-		float4 haltonSequence = xPPParams0;
-		
-		float bayerOffset = (bayerOffsetMatrix[pixelID.x][pixelID.y]) / 9.0;
-		float offset = -fmod(haltonSequence.x + bayerOffset, 1.0);
-		
-#else
-		
-		// Interleaved noise looks better imo
-		float offset = InterleavedGradientNoise(DTid.xy, g_xFrame_FrameCount % 16);
-
-#endif
+		//float offset = dither(DTid.xy + GetTemporalAASampleRotation());
+		float offset = blue_noise(DTid.xy).x;
+		//float offset = InterleavedGradientNoise(DTid.xy, g_xFrame.FrameCount % 16);
 		
         //t = tMin + 0.5 * stepSize;
-		t = tMin + offset * stepSize * g_BigStepMarch; // offset avg = 0.5
+		t = tMin + offset * stepSize * GetWeather().volumetric_clouds.BigStepMarch; // offset avg = 0.5
 	}
     
 
@@ -689,11 +683,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	//float3 absoluteWorldPosition = rayOrigin + rayDirection * tDepth; // Could be used for other effects later that require worldPosition
 
 	float approxTransmittance = dot(transmittanceToView.rgb, 1.0 / 3.0);
-	float grayScaleTransmittance = approxTransmittance < g_TransmittanceThreshold ? 0.0 : approxTransmittance;
+	float grayScaleTransmittance = approxTransmittance < GetWeather().volumetric_clouds.TransmittanceThreshold ? 0.0 : approxTransmittance;
 
 	float4 color = float4(luminance, grayScaleTransmittance);
-
-	color.a = 1.0 - color.a; // Invert to match reprojection. Early returns has to be inverted too.
+	
+	color.a = 1.0 - color.a; // Invert to match reprojection. Early color returns has to be inverted too.
 
     // Blend clouds with horizon
 	if (depthWeightsSum > 0.0)
@@ -707,5 +701,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	
     // Output
 	texture_render[DTid.xy] = color;
-	texture_cloudDepth[DTid.xy] = tDepth; // Linear depth
+	texture_cloudDepth[DTid.xy] = float2(tDepth, tToDepthBuffer); // Linear depth
 }

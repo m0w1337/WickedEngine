@@ -2,9 +2,11 @@
 
 # Wicked Engine
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE.txt)
 [![Discord chat](https://img.shields.io/discord/602811659224088577?logo=discord)](https://discord.gg/CFjRYmE)
-<a href="https://twitter.com/intent/follow?screen_name=turanszkij"><img src="https://img.shields.io/twitter/follow/turanszkij.svg?style=social" alt="follow on Twitter"></a><br/>
+[![Patreon](https://img.shields.io/badge/Support-Patreon-orange.svg)](https://www.patreon.com/wickedengine)
+<a href="https://twitter.com/intent/follow?screen_name=turanszkij"><img src="https://img.shields.io/twitter/follow/turanszkij.svg?style=social" alt="follow on Twitter"></a>
+<br/>
 [![Github Build Status](https://github.com/turanszkij/WickedEngine/workflows/Build/badge.svg)](https://github.com/turanszkij/WickedEngine/actions)
 [![Appveyor Build status](https://ci.appveyor.com/api/projects/status/3dbcee5gd6i7qh7v?svg=true)](https://ci.appveyor.com/project/turanszkij/wickedengine)
 [![Store](https://img.shields.io/badge/-Microsoft_Store-9cf.svg)](https://www.microsoft.com/store/productId/9PPMV065W9QJ)
@@ -117,7 +119,7 @@ RenderPath2D myMenuScreen; // This is an other render path, but now a simple 2D 
 main.ActivatePath(&myMenuScreen); // activate the menu, the previous path (myGame) will be stopped
 
 wiSprite mySprite("image.png"); // There are many utilities, such as a "sprite" helper class
-myMenuScreen.addSprite(&mySprite); // The 2D render path is ready to handle sprite and font rendering for you
+myMenuScreen.AddSprite(&mySprite); // The 2D render path is ready to handle sprite and font rendering for you
 
 wiAudio::Sound mySound;
 wiAudio::CreateSound("explosion.wav", &mySound); // Loads a sound file
@@ -201,7 +203,7 @@ The preferred workflow is to import models into the Editor, and save them as <b>
 
 ### Graphics API:
 
-The default renderer is `DirectX 11` on Windows and `Vulkan` on Linux. There is also an optional `DirectX 12` renderer for Windows.
+The default renderer is `DirectX 12` on Windows and `Vulkan` on Linux. The `DirectX 11` renderer is no longer available starting from version 0.57.0, but it can be found on the <a href="https://github.com/turanszkij/WickedEngine/tree/dx11-backup">dx11-backup branch</a>.
 You can specify command line arguments (without any prefix) to switch between render devices or other settings. Currently the list of options:
 <table>
   <tr>

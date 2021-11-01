@@ -11,7 +11,6 @@ public:
 	wiSlider exposureSlider;
 	wiCheckBox lensFlareCheckBox;
 	wiCheckBox lightShaftsCheckBox;
-	wiCheckBox volumetricCloudsCheckBox;
 	wiComboBox aoComboBox;
 	wiSlider aoPowerSlider;
 	wiSlider aoRangeSlider;
@@ -40,6 +39,8 @@ public:
 	wiSlider outlineThicknessSlider;
 	wiCheckBox chromaticaberrationCheckBox;
 	wiSlider chromaticaberrationSlider;
+	wiCheckBox fsrCheckBox;
+	wiSlider fsrSlider;
 
 
 };

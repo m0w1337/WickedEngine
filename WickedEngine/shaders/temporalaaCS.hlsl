@@ -1,9 +1,10 @@
 #include "globals.hlsli"
 #include "ShaderInterop_Postprocess.h"
 
+PUSHCONSTANT(postprocess, PostProcess);
+
 TEXTURE2D(input_current, float3, TEXSLOT_ONDEMAND0);
 TEXTURE2D(input_history, float3, TEXSLOT_ONDEMAND1);
-TEXTURE2D(texture_depth_history, float, TEXSLOT_ONDEMAND2);
 
 RWTEXTURE2D(output, float3, 0);
 
@@ -15,13 +16,13 @@ RWTEXTURE2D(output, float3, 0);
 
 static const uint TILE_BORDER = 1;
 static const uint TILE_SIZE = POSTPROCESS_BLOCKSIZE + TILE_BORDER * 2;
-groupshared uint tile_RG[TILE_SIZE*TILE_SIZE];
-groupshared uint tile_B_depth[TILE_SIZE*TILE_SIZE];
+groupshared uint tile_color[TILE_SIZE*TILE_SIZE];
+groupshared float tile_depth[TILE_SIZE*TILE_SIZE];
 
 [numthreads(POSTPROCESS_BLOCKSIZE, POSTPROCESS_BLOCKSIZE, 1)]
 void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 {
-	const float2 uv = (DTid.xy + 0.5f) * xPPResolution_rcp;
+	const float2 uv = (DTid.xy + 0.5f) * postprocess.resolution_rcp;
 	float3 neighborhoodMin = 100000;
 	float3 neighborhoodMax = -100000;
 	float3 current;
@@ -34,8 +35,8 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 		const uint2 pixel = tile_upperleft + unflatten2D(t, TILE_SIZE);
 		const float depth = texture_lineardepth[pixel];
 		const float3 color = input_current[pixel].rgb;
-		tile_RG[t] = f32tof16(color.r) | (f32tof16(color.g) << 16);
-		tile_B_depth[t] = f32tof16(color.b) | (f32tof16(depth) << 16);
+		tile_color[t] = Pack_R11G11B10_FLOAT(color);
+		tile_depth[t] = depth;
 	}
 	GroupMemoryBarrierWithGroupSync();
 
@@ -47,10 +48,8 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 		{
 			const int2 offset = int2(x, y);
 			const uint idx = flatten2D(GTid.xy + TILE_BORDER + offset, TILE_SIZE);
-			const uint RG = tile_RG[idx];
-			const uint B_depth = tile_B_depth[idx];
 
-			const float3 neighbor = float3(f16tof32(RG), f16tof32(RG >> 16), f16tof32(B_depth));
+			const float3 neighbor = Unpack_R11G11B10_FLOAT(tile_color[idx]);
 			neighborhoodMin = min(neighborhoodMin, neighbor);
 			neighborhoodMax = max(neighborhoodMax, neighbor);
 			if (x == 0 && y == 0)
@@ -58,7 +57,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 				current = neighbor;
 			}
 
-			const float depth = f16tof32(B_depth >> 16);
+			const float depth = tile_depth[idx];
 			if (depth < bestDepth)
 			{
 				bestDepth = depth;
@@ -66,7 +65,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 			}
 		}
 	}
-	const float2 velocity = texture_gbuffer2[DTid.xy + bestOffset].xy;
+	const float2 velocity = texture_gbuffer1[DTid.xy + bestOffset].xy;
 
 #else
 
@@ -94,7 +93,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 			}
 		}
 	}
-	const float2 velocity = texture_gbuffer2[bestPixel].xy;
+	const float2 velocity = texture_gbuffer1[bestPixel].xy;
 
 #endif // USE_LDS
 
@@ -102,7 +101,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 
 #if 0
 	// Disocclusion fallback:
-	float depth_current = texture_lineardepth[DTid.xy] * g_xCamera_ZFarP;
+	float depth_current = texture_lineardepth[DTid.xy] * GetCamera().ZFarP;
 	float depth_history = getLinearDepth(texture_depth_history.SampleLevel(sampler_point_clamp, prevUV, 0));
 	if (length(velocity) > 0.01 && abs(depth_current - depth_history) > 1)
 	{
@@ -119,7 +118,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 	history.rgb = clamp(history.rgb, neighborhoodMin, neighborhoodMax);
 
 	// the linear filtering can cause blurry image, try to account for that:
-	float subpixelCorrection = frac(max(abs(velocity.x)*g_xFrame_InternalResolution.x, abs(velocity.y)*g_xFrame_InternalResolution.y)) * 0.5f;
+	float subpixelCorrection = frac(max(abs(velocity.x) * GetCamera().InternalResolution.x, abs(velocity.y) * GetCamera().InternalResolution.y)) * 0.5f;
 
 	// compute a nice blend factor:
 	float blendfactor = saturate(lerp(0.05f, 0.8f, subpixelCorrection));

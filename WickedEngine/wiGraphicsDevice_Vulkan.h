@@ -8,9 +8,7 @@
 
 #ifdef WICKEDENGINE_BUILD_VULKAN
 #include "wiGraphicsDevice.h"
-#include "wiSpinLock.h"
-#include "wiContainers.h"
-#include "wiGraphicsDevice_SharedInternals.h"
+#include "wiMath.h"
 
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -33,27 +31,24 @@ namespace wiGraphics
 	class GraphicsDevice_Vulkan : public GraphicsDevice
 	{
 	protected:
+		bool debugUtils = false;
 		VkInstance instance = VK_NULL_HANDLE;
 	    VkDebugUtilsMessengerEXT debugUtilsMessenger = VK_NULL_HANDLE;
-		VkSurfaceKHR surface = VK_NULL_HANDLE;
 		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 		VkDevice device = VK_NULL_HANDLE;
-		int graphicsFamily = -1;
-		int presentFamily = -1;
-		int copyFamily = -1;
-		int computeFamily = -1;
+		std::vector<VkQueueFamilyProperties> queueFamilies;
+		uint32_t graphicsFamily = VK_QUEUE_FAMILY_IGNORED;
+		uint32_t computeFamily = VK_QUEUE_FAMILY_IGNORED;
+		uint32_t copyFamily = VK_QUEUE_FAMILY_IGNORED;
+		std::vector<uint32_t> families;
 		VkQueue graphicsQueue = VK_NULL_HANDLE;
-		VkQueue presentQueue = VK_NULL_HANDLE;
 		VkQueue computeQueue = VK_NULL_HANDLE;
-
 		VkQueue copyQueue = VK_NULL_HANDLE;
-		mutable std::mutex copyQueueLock;
-		mutable bool copyQueueUse = false;
-		VkSemaphore copySemaphore = VK_NULL_HANDLE;
 
 		VkPhysicalDeviceProperties2 properties2 = {};
 		VkPhysicalDeviceVulkan11Properties properties_1_1 = {};
 		VkPhysicalDeviceVulkan12Properties properties_1_2 = {};
+		VkPhysicalDeviceSamplerFilterMinmaxProperties sampler_minmax_properties = {};
 		VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR raytracing_properties = {};
 		VkPhysicalDeviceFragmentShadingRatePropertiesKHR fragment_shading_rate_properties = {};
@@ -67,23 +62,11 @@ namespace wiGraphics
 		VkPhysicalDeviceRayQueryFeaturesKHR raytracing_query_features = {};
 		VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragment_shading_rate_features = {};
 		VkPhysicalDeviceMeshShaderFeaturesNV mesh_shader_features = {};
-
-		VkSurfaceCapabilitiesKHR swapchain_capabilities;
-		std::vector<VkSurfaceFormatKHR> swapchain_formats;
-		std::vector<VkPresentModeKHR> swapchain_presentModes;
-
-		VkSwapchainKHR swapChain = VK_NULL_HANDLE;
-		VkFormat swapChainImageFormat;
-		VkExtent2D swapChainExtent;
-		uint32_t swapChainImageIndex = 0;
-		std::vector<VkImage> swapChainImages;
-		std::vector<VkImageView> swapChainImageViews;
-		std::vector<VkFramebuffer> swapChainFramebuffers;
+		VkPhysicalDeviceConditionalRenderingFeaturesEXT conditional_rendering_features = {};
+		VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable_features = {};
 
 		std::vector<VkDynamicState> pso_dynamicStates;
 		VkPipelineDynamicStateCreateInfo dynamicStateInfo = {};
-
-		VkRenderPass defaultRenderPass = VK_NULL_HANDLE;
 
 		VkBuffer		nullBuffer = VK_NULL_HANDLE;
 		VmaAllocation	nullBufferAllocation = VK_NULL_HANDLE;
@@ -103,73 +86,153 @@ namespace wiGraphics
 		VkImageView		nullImageViewCubeArray = VK_NULL_HANDLE;
 		VkImageView		nullImageView3D = VK_NULL_HANDLE;
 
-		void CreateBackBufferResources();
+		struct CommandQueue
+		{
+			VkQueue queue = VK_NULL_HANDLE;
+			VkSemaphore semaphore = VK_NULL_HANDLE;
+			std::vector<VkSwapchainKHR> submit_swapchains;
+			std::vector<uint32_t> submit_swapChainImageIndices;
+			std::vector<VkPipelineStageFlags> submit_waitStages;
+			std::vector<VkSemaphore> submit_waitSemaphores;
+			std::vector<uint64_t> submit_waitValues;
+			std::vector<VkSemaphore> submit_signalSemaphores;
+			std::vector<uint64_t> submit_signalValues;
+			std::vector<VkCommandBuffer> submit_cmds;
+
+			void submit(VkFence fence)
+			{
+				VkSubmitInfo submitInfo = {};
+				submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+				submitInfo.commandBufferCount = (uint32_t)submit_cmds.size();
+				submitInfo.pCommandBuffers = submit_cmds.data();
+
+				submitInfo.waitSemaphoreCount = (uint32_t)submit_waitSemaphores.size();
+				submitInfo.pWaitSemaphores = submit_waitSemaphores.data();
+				submitInfo.pWaitDstStageMask = submit_waitStages.data();
+
+				submitInfo.signalSemaphoreCount = (uint32_t)submit_signalSemaphores.size();
+				submitInfo.pSignalSemaphores = submit_signalSemaphores.data();
+
+				VkTimelineSemaphoreSubmitInfo timelineInfo = {};
+				timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+				timelineInfo.pNext = nullptr;
+				timelineInfo.waitSemaphoreValueCount = (uint32_t)submit_waitValues.size();
+				timelineInfo.pWaitSemaphoreValues = submit_waitValues.data();
+				timelineInfo.signalSemaphoreValueCount = (uint32_t)submit_signalValues.size();
+				timelineInfo.pSignalSemaphoreValues = submit_signalValues.data();
+
+				submitInfo.pNext = &timelineInfo;
+
+				VkResult res = vkQueueSubmit(queue, 1, &submitInfo, fence);
+				assert(res == VK_SUCCESS);
+
+				if (!submit_swapchains.empty())
+				{
+					VkPresentInfoKHR presentInfo = {};
+					presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+					presentInfo.waitSemaphoreCount = (uint32_t)submit_signalSemaphores.size();
+					presentInfo.pWaitSemaphores = submit_signalSemaphores.data();
+					presentInfo.swapchainCount = (uint32_t)submit_swapchains.size();
+					presentInfo.pSwapchains = submit_swapchains.data();
+					presentInfo.pImageIndices = submit_swapChainImageIndices.data();
+					res = vkQueuePresentKHR(queue, &presentInfo);
+					assert(res == VK_SUCCESS);
+				}
+
+				submit_swapchains.clear();
+				submit_swapChainImageIndices.clear();
+				submit_waitStages.clear();
+				submit_waitSemaphores.clear();
+				submit_waitValues.clear();
+				submit_signalSemaphores.clear();
+				submit_signalValues.clear();
+				submit_cmds.clear();
+			}
+
+		} queues[QUEUE_COUNT];
+
+		struct CopyAllocator
+		{
+			GraphicsDevice_Vulkan* device = nullptr;
+			VkSemaphore semaphore = VK_NULL_HANDLE;
+			uint64_t fenceValue = 0;
+			std::mutex locker;
+
+			struct CopyCMD
+			{
+				VkCommandPool commandPool = VK_NULL_HANDLE;
+				VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+				uint64_t target = 0;
+				GPUBuffer uploadbuffer;
+			};
+			std::vector<CopyCMD> freelist; // available
+			std::vector<CopyCMD> worklist; // in progress
+			std::vector<VkCommandBuffer> submit_cmds; // for next submit
+			uint64_t submit_wait = 0; // last submit wait value
+
+			void init(GraphicsDevice_Vulkan* device);
+			void destroy();
+			CopyCMD allocate(uint64_t staging_size);
+			void submit(CopyCMD cmd);
+			uint64_t flush();
+		};
+		mutable CopyAllocator copyAllocator;
+
+		mutable std::mutex initLocker;
+		mutable bool submit_inits = false;
 
 		struct FrameResources
 		{
-			VkFence frameFence = VK_NULL_HANDLE;
-			VkCommandPool commandPools[COMMANDLIST_COUNT] = {};
-			VkCommandBuffer commandBuffers[COMMANDLIST_COUNT] = {};
+			VkFence fence[QUEUE_COUNT] = {};
+			VkCommandPool commandPools[COMMANDLIST_COUNT][QUEUE_COUNT] = {};
+			VkCommandBuffer commandBuffers[COMMANDLIST_COUNT][QUEUE_COUNT] = {};
 
-			VkCommandPool copyCommandPool = VK_NULL_HANDLE;
-			VkCommandBuffer copyCommandBuffer = VK_NULL_HANDLE;
+			VkCommandPool initCommandPool = VK_NULL_HANDLE;
+			VkCommandBuffer initCommandBuffer = VK_NULL_HANDLE;
 
-			VkCommandPool transitionCommandPool = VK_NULL_HANDLE;
-			VkCommandBuffer transitionCommandBuffer = VK_NULL_HANDLE;
-			mutable std::vector<VkImageMemoryBarrier> loadedimagetransitions;
-
-			VkSemaphore swapchainAcquireSemaphore = VK_NULL_HANDLE;
-			VkSemaphore swapchainReleaseSemaphore = VK_NULL_HANDLE;
-
-			struct DescriptorBinder
+			struct DescriptorBinderPool
 			{
 				GraphicsDevice_Vulkan* device;
 				VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
 				uint32_t poolSize = 256;
 
-				std::vector<VkWriteDescriptorSet> descriptorWrites;
-				std::vector<VkDescriptorBufferInfo> bufferInfos;
-				std::vector<VkDescriptorImageInfo> imageInfos;
-				std::vector<VkBufferView> texelBufferViews;
-				std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureViews;
-				bool dirty = false;
-
-				const GPUBuffer* CBV[GPU_RESOURCE_HEAP_CBV_COUNT];
-				const GPUResource* SRV[GPU_RESOURCE_HEAP_SRV_COUNT];
-				int SRV_index[GPU_RESOURCE_HEAP_SRV_COUNT];
-				const GPUResource* UAV[GPU_RESOURCE_HEAP_UAV_COUNT];
-				int UAV_index[GPU_RESOURCE_HEAP_UAV_COUNT];
-				const Sampler* SAM[GPU_SAMPLER_HEAP_COUNT];
-
 				void init(GraphicsDevice_Vulkan* device);
 				void destroy();
-
 				void reset();
-				void validate(bool graphics, CommandList cmd);
-			};
-			DescriptorBinder descriptors[COMMANDLIST_COUNT];
-
-
-			struct ResourceFrameAllocator
-			{
-				GraphicsDevice_Vulkan*	device = nullptr;
-				GPUBuffer				buffer;
-				uint8_t*				dataBegin = nullptr;
-				uint8_t*				dataCur = nullptr;
-				uint8_t*				dataEnd = nullptr;
-
-				void init(GraphicsDevice_Vulkan* device, size_t size);
-
-				uint8_t* allocate(size_t dataSize, size_t alignment);
-				void clear();
-				uint64_t calculateOffset(uint8_t* address);
-			};
-			ResourceFrameAllocator resourceBuffer[COMMANDLIST_COUNT];
+			} binder_pools[COMMANDLIST_COUNT];
 		};
-		FrameResources frames[BACKBUFFER_COUNT];
-		const FrameResources& GetFrameResources() const { return frames[GetFrameCount() % BACKBUFFER_COUNT]; }
-		FrameResources& GetFrameResources() { return frames[GetFrameCount() % BACKBUFFER_COUNT]; }
-		inline VkCommandBuffer GetDirectCommandList(CommandList cmd) { return GetFrameResources().commandBuffers[cmd]; }
+		FrameResources frames[BUFFERCOUNT];
+		const FrameResources& GetFrameResources() const { return frames[GetBufferIndex()]; }
+		FrameResources& GetFrameResources() { return frames[GetBufferIndex()]; }
+
+		struct CommandListMetadata
+		{
+			QUEUE_TYPE queue = {};
+			std::vector<CommandList> waits;
+		} cmd_meta[COMMANDLIST_COUNT];
+
+		inline VkCommandBuffer GetCommandList(CommandList cmd)
+		{
+			return GetFrameResources().commandBuffers[cmd][cmd_meta[cmd].queue];
+		}
+
+		struct DescriptorBinder
+		{
+			DescriptorBindingTable table;
+			GraphicsDevice_Vulkan* device;
+
+			std::vector<VkWriteDescriptorSet> descriptorWrites;
+			std::vector<VkDescriptorBufferInfo> bufferInfos;
+			std::vector<VkDescriptorImageInfo> imageInfos;
+			std::vector<VkBufferView> texelBufferViews;
+			std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureViews;
+			bool dirty = false;
+
+			void init(GraphicsDevice_Vulkan* device);
+			void reset();
+			void flush(bool graphics, CommandList cmd);
+		};
+		DescriptorBinder binders[COMMANDLIST_COUNT];
 
 		std::vector<VkMemoryBarrier> frame_memoryBarriers[COMMANDLIST_COUNT];
 		std::vector<VkImageMemoryBarrier> frame_imageBarriers[COMMANDLIST_COUNT];
@@ -185,6 +248,7 @@ namespace wiGraphics
 		mutable std::unordered_map<size_t, PSOLayout> pso_layout_cache;
 		mutable std::mutex pso_layout_cache_mutex;
 
+		VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 		std::unordered_map<size_t, VkPipeline> pipelines_global;
 		std::vector<std::pair<size_t, VkPipeline>> pipelines_worker[COMMANDLIST_COUNT];
 		size_t prev_pipeline_hash[COMMANDLIST_COUNT] = {};
@@ -193,6 +257,7 @@ namespace wiGraphics
 		const RaytracingPipelineState* active_rt[COMMANDLIST_COUNT] = {};
 		const RenderPass* active_renderpass[COMMANDLIST_COUNT] = {};
 		SHADING_RATE prev_shadingrate[COMMANDLIST_COUNT] = {};
+		std::vector<const SwapChain*> prev_swapchains[COMMANDLIST_COUNT];
 
 		uint32_t vb_strides[COMMANDLIST_COUNT][8] = {};
 		size_t vb_hash[COMMANDLIST_COUNT] = {};
@@ -207,19 +272,20 @@ namespace wiGraphics
 		bool dirty_pso[COMMANDLIST_COUNT] = {};
 		void pso_validate(CommandList cmd);
 
-		void barrier_flush(CommandList cmd);
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
+
 
 		std::atomic<CommandList> cmd_count{ 0 };
 
 		std::vector<StaticSampler> common_samplers;
 
 	public:
-		GraphicsDevice_Vulkan(wiPlatform::window_type window, bool fullscreen = false, bool debuglayer = false);
+		GraphicsDevice_Vulkan(wiPlatform::window_type window, bool debuglayer = false);
 		virtual ~GraphicsDevice_Vulkan();
 
-		bool CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) const override;
+		bool CreateSwapChain(const SwapChainDesc* pDesc, wiPlatform::window_type window, SwapChain* swapChain) const override;
+		bool CreateBuffer(const GPUBufferDesc *pDesc, const void* pInitialData, GPUBuffer *pBuffer) const override;
 		bool CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) const override;
 		bool CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) const override;
 		bool CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) const override;
@@ -239,73 +305,64 @@ namespace wiGraphics
 		void WriteTopLevelAccelerationStructureInstance(const RaytracingAccelerationStructureDesc::TopLevel::Instance* instance, void* dest) const override;
 		void WriteShaderIdentifier(const RaytracingPipelineState* rtpso, uint32_t group_index, void* dest) const override;
 		
-		void Map(const GPUResource* resource, Mapping* mapping) const override;
-		void Unmap(const GPUResource* resource) const override;
-		void QueryRead(const GPUQueryHeap* heap, uint32_t index, uint32_t count, uint64_t* results) const override;
-
 		void SetCommonSampler(const StaticSampler* sam) override;
 
 		void SetName(GPUResource* pResource, const char* name) override;
 
-		void PresentBegin(CommandList cmd) override;
-		void PresentEnd(CommandList cmd) override;
-
-		CommandList BeginCommandList() override;
+		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
 
-		void WaitForGPU() override;
+		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;
-
-		void SetResolution(int width, int height) override;
-
-		Texture GetBackBuffer() override;
-
-		void SetVSyncEnabled(bool value) override { VSYNC = value; CreateBackBufferResources(); };
 
 		SHADERFORMAT GetShaderFormat() const override { return SHADERFORMAT_SPIRV; }
 
+		Texture GetBackBuffer(const SwapChain* swapchain) const override;
+
 		///////////////Thread-sensitive////////////////////////
 
+		void WaitCommandList(CommandList cmd, CommandList wait_for) override;
+		void RenderPassBegin(const SwapChain* swapchain, CommandList cmd) override;
 		void RenderPassBegin(const RenderPass* renderpass, CommandList cmd) override;
 		void RenderPassEnd(CommandList cmd) override;
 		void BindScissorRects(uint32_t numRects, const Rect* rects, CommandList cmd) override;
 		void BindViewports(uint32_t NumViewports, const Viewport *pViewports, CommandList cmd) override;
-		void BindResource(SHADERSTAGE stage, const GPUResource* resource, uint32_t slot, CommandList cmd, int subresource = -1) override;
-		void BindResources(SHADERSTAGE stage, const GPUResource *const* resources, uint32_t slot, uint32_t count, CommandList cmd) override;
-		void BindUAV(SHADERSTAGE stage, const GPUResource* resource, uint32_t slot, CommandList cmd, int subresource = -1) override;
-		void BindUAVs(SHADERSTAGE stage, const GPUResource *const* resources, uint32_t slot, uint32_t count, CommandList cmd) override;
-		void UnbindResources(uint32_t slot, uint32_t num, CommandList cmd) override;
-		void UnbindUAVs(uint32_t slot, uint32_t num, CommandList cmd) override;
-		void BindSampler(SHADERSTAGE stage, const Sampler* sampler, uint32_t slot, CommandList cmd) override;
-		void BindConstantBuffer(SHADERSTAGE stage, const GPUBuffer* buffer, uint32_t slot, CommandList cmd) override;
-		void BindVertexBuffers(const GPUBuffer *const* vertexBuffers, uint32_t slot, uint32_t count, const uint32_t* strides, const uint32_t* offsets, CommandList cmd) override;
-		void BindIndexBuffer(const GPUBuffer* indexBuffer, const INDEXBUFFER_FORMAT format, uint32_t offset, CommandList cmd) override;
+		void BindResource(const GPUResource* resource, uint32_t slot, CommandList cmd, int subresource = -1) override;
+		void BindResources(const GPUResource *const* resources, uint32_t slot, uint32_t count, CommandList cmd) override;
+		void BindUAV(const GPUResource* resource, uint32_t slot, CommandList cmd, int subresource = -1) override;
+		void BindUAVs(const GPUResource *const* resources, uint32_t slot, uint32_t count, CommandList cmd) override;
+		void BindSampler(const Sampler* sampler, uint32_t slot, CommandList cmd) override;
+		void BindConstantBuffer(const GPUBuffer* buffer, uint32_t slot, CommandList cmd, uint64_t offset = 0ull) override;
+		void BindVertexBuffers(const GPUBuffer *const* vertexBuffers, uint32_t slot, uint32_t count, const uint32_t* strides, const uint64_t* offsets, CommandList cmd) override;
+		void BindIndexBuffer(const GPUBuffer* indexBuffer, const INDEXBUFFER_FORMAT format, uint64_t offset, CommandList cmd) override;
 		void BindStencilRef(uint32_t value, CommandList cmd) override;
 		void BindBlendFactor(float r, float g, float b, float a, CommandList cmd) override;
 		void BindShadingRate(SHADING_RATE rate, CommandList cmd) override;
 		void BindPipelineState(const PipelineState* pso, CommandList cmd) override;
 		void BindComputeShader(const Shader* cs, CommandList cmd) override;
 		void Draw(uint32_t vertexCount, uint32_t startVertexLocation, CommandList cmd) override;
-		void DrawIndexed(uint32_t indexCount, uint32_t startIndexLocation, uint32_t baseVertexLocation, CommandList cmd) override;
+		void DrawIndexed(uint32_t indexCount, uint32_t startIndexLocation, int32_t baseVertexLocation, CommandList cmd) override;
 		void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation, CommandList cmd) override;
-		void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t startIndexLocation, uint32_t baseVertexLocation, uint32_t startInstanceLocation, CommandList cmd) override;
-		void DrawInstancedIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd) override;
-		void DrawIndexedInstancedIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd) override;
+		void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation, CommandList cmd) override;
+		void DrawInstancedIndirect(const GPUBuffer* args, uint64_t args_offset, CommandList cmd) override;
+		void DrawIndexedInstancedIndirect(const GPUBuffer* args, uint64_t args_offset, CommandList cmd) override;
 		void Dispatch(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ, CommandList cmd) override;
-		void DispatchIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd) override;
+		void DispatchIndirect(const GPUBuffer* args, uint64_t args_offset, CommandList cmd) override;
 		void DispatchMesh(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ, CommandList cmd) override;
-		void DispatchMeshIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd) override;
+		void DispatchMeshIndirect(const GPUBuffer* args, uint64_t args_offset, CommandList cmd) override;
 		void CopyResource(const GPUResource* pDst, const GPUResource* pSrc, CommandList cmd) override;
-		void UpdateBuffer(const GPUBuffer* buffer, const void* data, CommandList cmd, int dataSize = -1) override;
+		void CopyBuffer(const GPUBuffer* pDst, uint64_t dst_offset, const GPUBuffer* pSrc, uint64_t src_offset, uint64_t size, CommandList cmd) override;
 		void QueryBegin(const GPUQueryHeap* heap, uint32_t index, CommandList cmd) override;
 		void QueryEnd(const GPUQueryHeap* heap, uint32_t index, CommandList cmd) override;
+		void QueryResolve(const GPUQueryHeap* heap, uint32_t index, uint32_t count, const GPUBuffer* dest, uint64_t dest_offset, CommandList cmd) override;
+		void QueryReset(const GPUQueryHeap* heap, uint32_t index, uint32_t count, CommandList cmd) override;
 		void Barrier(const GPUBarrier* barriers, uint32_t numBarriers, CommandList cmd) override;
 		void BuildRaytracingAccelerationStructure(const RaytracingAccelerationStructure* dst, CommandList cmd, const RaytracingAccelerationStructure* src = nullptr) override;
 		void BindRaytracingPipelineState(const RaytracingPipelineState* rtpso, CommandList cmd) override;
 		void DispatchRays(const DispatchRaysDesc* desc, CommandList cmd) override;
 		void PushConstants(const void* data, uint32_t size, CommandList cmd) override;
-
-		GPUAllocation AllocateGPU(size_t dataSize, CommandList cmd) override;
+		void PredicationBegin(const GPUBuffer* buffer, uint64_t offset, PREDICATION_OP op, CommandList cmd) override;
+		void PredicationEnd(CommandList cmd) override;
 
 		void EventBegin(const char* name, CommandList cmd) override;
 		void EventEnd(CommandList cmd) override;
@@ -321,8 +378,8 @@ namespace wiGraphics
 
 			struct BindlessDescriptorHeap
 			{
-				VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
 				VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+				VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
 				VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 				std::vector<int> freelist;
 				std::mutex locker;
@@ -387,8 +444,17 @@ namespace wiGraphics
 				}
 				void destroy(VkDevice device)
 				{
-					vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-					vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+					if (descriptorSetLayout != VK_NULL_HANDLE)
+					{
+						vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+						descriptorSetLayout = VK_NULL_HANDLE;
+					}
+
+					if (descriptorPool != VK_NULL_HANDLE)
+					{
+						vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+						descriptorPool = VK_NULL_HANDLE;
+					}
 				}
 
 				int allocate()
@@ -411,7 +477,6 @@ namespace wiGraphics
 					locker.unlock();
 				}
 			};
-			BindlessDescriptorHeap bindlessUniformBuffers;
 			BindlessDescriptorHeap bindlessSampledImages;
 			BindlessDescriptorHeap bindlessUniformTexelBuffers;
 			BindlessDescriptorHeap bindlessStorageBuffers;
@@ -435,7 +500,6 @@ namespace wiGraphics
 			std::deque<std::pair<VkRenderPass, uint64_t>> destroyer_renderpasses;
 			std::deque<std::pair<VkFramebuffer, uint64_t>> destroyer_framebuffers;
 			std::deque<std::pair<VkQueryPool, uint64_t>> destroyer_querypools;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessUniformBuffers;
 			std::deque<std::pair<int, uint64_t>> destroyer_bindlessSampledImages;
 			std::deque<std::pair<int, uint64_t>> destroyer_bindlessUniformTexelBuffers;
 			std::deque<std::pair<int, uint64_t>> destroyer_bindlessStorageBuffers;
@@ -446,7 +510,6 @@ namespace wiGraphics
 
 			~AllocationHandler()
 			{
-				bindlessUniformBuffers.destroy(device);
 				bindlessSampledImages.destroy(device);
 				bindlessUniformTexelBuffers.destroy(device);
 				bindlessStorageBuffers.destroy(device);
@@ -461,13 +524,13 @@ namespace wiGraphics
 			}
 
 			// Deferred destroy of resources that the GPU is already finished with:
-			void Update(uint64_t FRAMECOUNT, uint32_t BACKBUFFER_COUNT)
+			void Update(uint64_t FRAMECOUNT, uint32_t BUFFERCOUNT)
 			{
 				destroylocker.lock();
 				framecount = FRAMECOUNT;
 				while (!destroyer_images.empty())
 				{
-					if (destroyer_images.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_images.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_images.front();
 						destroyer_images.pop_front();
@@ -480,7 +543,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_imageviews.empty())
 				{
-					if (destroyer_imageviews.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_imageviews.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_imageviews.front();
 						destroyer_imageviews.pop_front();
@@ -493,7 +556,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_buffers.empty())
 				{
-					if (destroyer_buffers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_buffers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_buffers.front();
 						destroyer_buffers.pop_front();
@@ -506,7 +569,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bufferviews.empty())
 				{
-					if (destroyer_bufferviews.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bufferviews.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_bufferviews.front();
 						destroyer_bufferviews.pop_front();
@@ -519,7 +582,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bvhs.empty())
 				{
-					if (destroyer_bvhs.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bvhs.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_bvhs.front();
 						destroyer_bvhs.pop_front();
@@ -532,7 +595,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_samplers.empty())
 				{
-					if (destroyer_samplers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_samplers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_samplers.front();
 						destroyer_samplers.pop_front();
@@ -545,7 +608,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_descriptorPools.empty())
 				{
-					if (destroyer_descriptorPools.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_descriptorPools.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_descriptorPools.front();
 						destroyer_descriptorPools.pop_front();
@@ -558,7 +621,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_descriptorSetLayouts.empty())
 				{
-					if (destroyer_descriptorSetLayouts.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_descriptorSetLayouts.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_descriptorSetLayouts.front();
 						destroyer_descriptorSetLayouts.pop_front();
@@ -571,7 +634,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_descriptorUpdateTemplates.empty())
 				{
-					if (destroyer_descriptorUpdateTemplates.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_descriptorUpdateTemplates.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_descriptorUpdateTemplates.front();
 						destroyer_descriptorUpdateTemplates.pop_front();
@@ -584,7 +647,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_shadermodules.empty())
 				{
-					if (destroyer_shadermodules.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_shadermodules.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_shadermodules.front();
 						destroyer_shadermodules.pop_front();
@@ -597,7 +660,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_pipelineLayouts.empty())
 				{
-					if (destroyer_pipelineLayouts.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_pipelineLayouts.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_pipelineLayouts.front();
 						destroyer_pipelineLayouts.pop_front();
@@ -610,7 +673,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_pipelines.empty())
 				{
-					if (destroyer_pipelines.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_pipelines.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_pipelines.front();
 						destroyer_pipelines.pop_front();
@@ -623,7 +686,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_renderpasses.empty())
 				{
-					if (destroyer_renderpasses.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_renderpasses.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_renderpasses.front();
 						destroyer_renderpasses.pop_front();
@@ -636,7 +699,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_framebuffers.empty())
 				{
-					if (destroyer_framebuffers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_framebuffers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_framebuffers.front();
 						destroyer_framebuffers.pop_front();
@@ -649,7 +712,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_querypools.empty())
 				{
-					if (destroyer_querypools.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_querypools.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						auto item = destroyer_querypools.front();
 						destroyer_querypools.pop_front();
@@ -660,22 +723,9 @@ namespace wiGraphics
 						break;
 					}
 				}
-				while (!destroyer_bindlessUniformBuffers.empty())
-				{
-					if (destroyer_bindlessUniformBuffers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
-					{
-						int index= destroyer_bindlessUniformBuffers.front().first;
-						destroyer_bindlessUniformBuffers.pop_front();
-						bindlessUniformBuffers.free(index);
-					}
-					else
-					{
-						break;
-					}
-				}
 				while (!destroyer_bindlessSampledImages.empty())
 				{
-					if (destroyer_bindlessSampledImages.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessSampledImages.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessSampledImages.front().first;
 						destroyer_bindlessSampledImages.pop_front();
@@ -688,7 +738,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bindlessUniformTexelBuffers.empty())
 				{
-					if (destroyer_bindlessUniformTexelBuffers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessUniformTexelBuffers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessUniformTexelBuffers.front().first;
 						destroyer_bindlessUniformTexelBuffers.pop_front();
@@ -701,7 +751,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bindlessStorageBuffers.empty())
 				{
-					if (destroyer_bindlessStorageBuffers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessStorageBuffers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessStorageBuffers.front().first;
 						destroyer_bindlessStorageBuffers.pop_front();
@@ -714,7 +764,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bindlessStorageImages.empty())
 				{
-					if (destroyer_bindlessStorageImages.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessStorageImages.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessStorageImages.front().first;
 						destroyer_bindlessStorageImages.pop_front();
@@ -727,7 +777,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bindlessStorageTexelBuffers.empty())
 				{
-					if (destroyer_bindlessStorageTexelBuffers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessStorageTexelBuffers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessStorageTexelBuffers.front().first;
 						destroyer_bindlessStorageTexelBuffers.pop_front();
@@ -740,7 +790,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bindlessSamplers.empty())
 				{
-					if (destroyer_bindlessSamplers.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessSamplers.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessSamplers.front().first;
 						destroyer_bindlessSamplers.pop_front();
@@ -753,7 +803,7 @@ namespace wiGraphics
 				}
 				while (!destroyer_bindlessAccelerationStructures.empty())
 				{
-					if (destroyer_bindlessAccelerationStructures.front().second + BACKBUFFER_COUNT < FRAMECOUNT)
+					if (destroyer_bindlessAccelerationStructures.front().second + BUFFERCOUNT < FRAMECOUNT)
 					{
 						int index = destroyer_bindlessAccelerationStructures.front().first;
 						destroyer_bindlessAccelerationStructures.pop_front();

@@ -22,10 +22,10 @@ void RendererWindow::Create(EditorComponent* editor)
 	vsyncCheckBox.SetScriptTip("SetVSyncEnabled(opt bool enabled)");
 	vsyncCheckBox.SetPos(XMFLOAT2(x, y += step));
 	vsyncCheckBox.SetSize(XMFLOAT2(itemheight, itemheight));
-	vsyncCheckBox.OnClick([](wiEventArgs args) {
-		wiRenderer::GetDevice()->SetVSyncEnabled(args.bValue);
+	vsyncCheckBox.OnClick([=](wiEventArgs args) {
+		wiEvent::SetVSync(args.bValue);
 	});
-	vsyncCheckBox.SetCheck(wiRenderer::GetDevice()->GetVSyncEnabled());
+	vsyncCheckBox.SetCheck(editor->main->swapChain.desc.vsync);
 	AddWidget(&vsyncCheckBox);
 
 	occlusionCullingCheckBox.Create("Occlusion Culling: ");
@@ -48,7 +48,6 @@ void RendererWindow::Create(EditorComponent* editor)
 		if (editor->resolutionScale != args.fValue)
 		{
 			editor->renderPath->resolutionScale = args.fValue;
-			editor->renderPath->ResizeBuffers();
 			editor->resolutionScale = args.fValue;
 			editor->ResizeBuffers();
 		}
@@ -64,6 +63,26 @@ void RendererWindow::Create(EditorComponent* editor)
 		wiRenderer::SetGamma(args.fValue);
 	});
 	AddWidget(&gammaSlider);
+
+	surfelGICheckBox.Create("Surfel GI: ");
+	surfelGICheckBox.SetTooltip("Surfel GI is a raytraced diffuse GI using raytracing and surface cache.");
+	surfelGICheckBox.SetPos(XMFLOAT2(x, y += step));
+	surfelGICheckBox.SetSize(XMFLOAT2(itemheight, itemheight));
+	surfelGICheckBox.OnClick([](wiEventArgs args) {
+		wiRenderer::SetSurfelGIEnabled(args.bValue);
+		});
+	surfelGICheckBox.SetCheck(wiRenderer::GetSurfelGIEnabled());
+	AddWidget(&surfelGICheckBox);
+
+	surfelGIDebugCheckBox.Create("DEBUG: ");
+	surfelGIDebugCheckBox.SetTooltip("Toggle Surfel GI visualization.");
+	surfelGIDebugCheckBox.SetPos(XMFLOAT2(x + 122, y));
+	surfelGIDebugCheckBox.SetSize(XMFLOAT2(itemheight, itemheight));
+	surfelGIDebugCheckBox.OnClick([](wiEventArgs args) {
+		wiRenderer::SetSurfelGIDebugEnabled(args.bValue);
+		});
+	surfelGIDebugCheckBox.SetCheck(wiRenderer::GetSurfelGIDebugEnabled());
+	AddWidget(&surfelGIDebugCheckBox);
 
 	voxelRadianceCheckBox.Create("Voxel GI: ");
 	voxelRadianceCheckBox.SetTooltip("Toggle voxel Global Illumination computation.");
@@ -159,8 +178,9 @@ void RendererWindow::Create(EditorComponent* editor)
 	variableRateShadingClassificationCheckBox.SetTooltip("Enable classification of variable rate shading on the screen. Less important parts will be shaded with lesser resolution.\nRequires Tier2 support for variable shading rate");
 	variableRateShadingClassificationCheckBox.SetPos(XMFLOAT2(x, y += step));
 	variableRateShadingClassificationCheckBox.SetSize(XMFLOAT2(itemheight, itemheight));
-	variableRateShadingClassificationCheckBox.OnClick([](wiEventArgs args) {
+	variableRateShadingClassificationCheckBox.OnClick([editor](wiEventArgs args) {
 		wiRenderer::SetVariableRateShadingClassification(args.bValue);
+		editor->ResizeBuffers();
 		});
 	variableRateShadingClassificationCheckBox.SetCheck(wiRenderer::GetVariableRateShadingClassification());
 	AddWidget(&variableRateShadingClassificationCheckBox);
@@ -250,7 +270,7 @@ void RendererWindow::Create(EditorComponent* editor)
 		}
 		});
 	shadowTypeComboBox.SetSelected(0);
-	shadowTypeComboBox.SetTooltip("Choose between shadowmaps and ray traced shadows (if available).\n(ray traced shadows experimental, needs hardware support and shaders compiled with HLSL6.5)");
+	shadowTypeComboBox.SetTooltip("Choose between shadowmaps and ray traced shadows (if available).\n(ray traced shadows need hardware raytracing support)");
 	AddWidget(&shadowTypeComboBox);
 
 	shadowProps2DComboBox.Create("2D Shadowmap resolution: ");
@@ -370,20 +390,6 @@ void RendererWindow::Create(EditorComponent* editor)
 	MSAAComboBox.SetSelected(0);
 	MSAAComboBox.SetTooltip("Multisampling Anti Aliasing quality. ");
 	AddWidget(&MSAAComboBox);
-
-	raytracedShadowsSlider.Create(1, 16, 1, 15, "Raytraced Shadow Quality: ");
-	raytracedShadowsSlider.SetTooltip("Sample count of raytraced shadows (per light). Higher numbers increase quality, but reduce performance.\nTip: Temporal AA will also help to improve quality.");
-	raytracedShadowsSlider.SetSize(XMFLOAT2(100, itemheight));
-	raytracedShadowsSlider.SetPos(XMFLOAT2(x, y += step));
-	raytracedShadowsSlider.SetValue((float)wiRenderer::GetRaytracedShadowsSampleCount());
-	raytracedShadowsSlider.OnSlide([&](wiEventArgs args) {
-		wiRenderer::SetRaytracedShadowsSampleCount((uint32_t)args.iValue);
-		});
-	AddWidget(&raytracedShadowsSlider);
-	if (!wiRenderer::GetDevice()->CheckCapability(wiGraphics::GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
-	{
-		raytracedShadowsSlider.SetEnabled(false);
-	}
 
 	temporalAACheckBox.Create("Temporal AA: ");
 	temporalAACheckBox.SetTooltip("Toggle Temporal Anti Aliasing. It is a supersampling techique which is performed across multiple frames.");
@@ -646,7 +652,7 @@ void RendererWindow::Create(EditorComponent* editor)
 
 
 
-	disableAlbedoMapsCheckBox.Create("Disable Albedo maps: ");
+	disableAlbedoMapsCheckBox.Create("Disable albedo maps: ");
 	disableAlbedoMapsCheckBox.SetTooltip("Disables albedo maps on objects for easier lighting debugging");
 	disableAlbedoMapsCheckBox.SetPos(XMFLOAT2(x, y += step));
 	disableAlbedoMapsCheckBox.SetSize(XMFLOAT2(itemheight, itemheight));
@@ -655,6 +661,17 @@ void RendererWindow::Create(EditorComponent* editor)
 		});
 	disableAlbedoMapsCheckBox.SetCheck(wiRenderer::IsDisableAlbedoMaps());
 	AddWidget(&disableAlbedoMapsCheckBox);
+
+
+	forceDiffuseLightingCheckBox.Create("Force diffuse lighting: ");
+	forceDiffuseLightingCheckBox.SetTooltip("Sets every surface fully diffuse, with zero specularity");
+	forceDiffuseLightingCheckBox.SetPos(XMFLOAT2(x, y += step));
+	forceDiffuseLightingCheckBox.SetSize(XMFLOAT2(itemheight, itemheight));
+	forceDiffuseLightingCheckBox.OnClick([](wiEventArgs args) {
+		wiRenderer::SetForceDiffuseLighting(args.bValue);
+		});
+	forceDiffuseLightingCheckBox.SetCheck(wiRenderer::IsForceDiffuseLighting());
+	AddWidget(&forceDiffuseLightingCheckBox);
 
 
 

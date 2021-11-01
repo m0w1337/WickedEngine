@@ -4,7 +4,6 @@
 
 #include <sstream>
 
-using namespace std;
 using namespace wiGraphics;
 using namespace wiECS;
 using namespace wiScene;
@@ -12,7 +11,7 @@ using namespace wiScene;
 void MaterialWindow::Create(EditorComponent* editor)
 {
 	wiWindow::Create("Material Window");
-	SetSize(XMFLOAT2(720, 600));
+	SetSize(XMFLOAT2(720, 620));
 
 	float x = 670, y = 0;
 	float hei = 18;
@@ -96,6 +95,17 @@ void MaterialWindow::Create(EditorComponent* editor)
 		});
 	AddWidget(&windCheckBox);
 
+	doubleSidedCheckBox.Create("Double sided: ");
+	doubleSidedCheckBox.SetTooltip("Decide whether to render both sides of the material (It's also possible to set this behaviour per mesh).");
+	doubleSidedCheckBox.SetPos(XMFLOAT2(540, y));
+	doubleSidedCheckBox.SetSize(XMFLOAT2(hei, hei));
+	doubleSidedCheckBox.OnClick([&](wiEventArgs args) {
+		MaterialComponent* material = wiScene::GetScene().materials.GetComponent(entity);
+		if (material != nullptr)
+			material->SetDoubleSided(args.bValue);
+		});
+	AddWidget(&doubleSidedCheckBox);
+
 
 
 	x = 520;
@@ -155,6 +165,7 @@ void MaterialWindow::Create(EditorComponent* editor)
 	blendModeComboBox.AddItem("Alpha");
 	blendModeComboBox.AddItem("Premultiplied");
 	blendModeComboBox.AddItem("Additive");
+	blendModeComboBox.AddItem("Multiply");
 	blendModeComboBox.SetEnabled(false);
 	blendModeComboBox.SetTooltip("Set the blend mode of the material.");
 	AddWidget(&blendModeComboBox);
@@ -210,7 +221,7 @@ void MaterialWindow::Create(EditorComponent* editor)
 	AddWidget(&roughnessSlider);
 
 	reflectanceSlider.Create(0, 1, 0.5f, 1000, "Reflectance: ");
-	reflectanceSlider.SetTooltip("Adjust the overall surface reflectivity.\nNote: this is not available in specular-glossiness workflow");
+	reflectanceSlider.SetTooltip("Adjust the surface [non-metal] reflectivity (also called specularFactor).\nNote: this is not available in specular-glossiness workflow");
 	reflectanceSlider.SetSize(XMFLOAT2(wid, hei));
 	reflectanceSlider.SetPos(XMFLOAT2(x, y += step));
 	reflectanceSlider.OnSlide([&](wiEventArgs args) {
@@ -416,13 +427,11 @@ void MaterialWindow::Create(EditorComponent* editor)
 	AddWidget(&clearcoatRoughnessSlider);
 
 
-	// Textures:
-
+	// 
 	x = 10;
 	y = 0;
 	hei = 20;
 	step = hei + 2;
-	float uvset_offset = 385;
 
 	materialNameField.Create("MaterialName");
 	materialNameField.SetTooltip("Set a name for the material...");
@@ -451,130 +460,6 @@ void MaterialWindow::Create(EditorComponent* editor)
 		SetEntity(entity);
 		});
 	AddWidget(&newMaterialButton);
-
-
-
-
-	auto add_texturemap_controls = [&](MaterialComponent::TEXTURESLOT i)
-	{
-		auto& slot = slots[i];
-
-		slot.label.Create("");
-		slot.label.SetPos(XMFLOAT2(x, y += step));
-		slot.label.SetSize(XMFLOAT2(120, 20));
-		AddWidget(&slot.label);
-
-		slot.button.Create("");
-		slot.button.SetPos(XMFLOAT2(x + 122, y));
-		slot.button.SetSize(XMFLOAT2(260, 20));
-		slot.button.OnClick([this, i, &slot](wiEventArgs args) {
-			MaterialComponent* material = wiScene::GetScene().materials.GetComponent(entity);
-			if (material == nullptr)
-				return;
-
-			if (material->textures[i].resource != nullptr)
-			{
-				material->textures[i].resource = nullptr;
-				material->textures[i].name = "";
-				material->SetDirty();
-				slot.button.SetText("");
-			}
-			else
-			{
-				wiHelper::FileDialogParams params;
-				params.type = wiHelper::FileDialogParams::OPEN;
-				params.description = "Texture";
-				params.extensions.push_back("dds");
-				params.extensions.push_back("png");
-				params.extensions.push_back("jpg");
-				params.extensions.push_back("jpeg");
-				params.extensions.push_back("tga");
-				params.extensions.push_back("bmp");
-				wiHelper::FileDialog(params, [this, material, &slot, i](std::string fileName) {
-					wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
-						material->textures[i].resource = wiResourceManager::Load(fileName, wiResourceManager::IMPORT_RETAIN_FILEDATA);
-						material->textures[i].name = fileName;
-						material->SetDirty();
-						slots[i].button.SetText(wiHelper::GetFileNameFromPath(fileName));
-						});
-					});
-			}
-			});
-		AddWidget(&slot.button);
-
-		slot.uvsetField.Create("uvset");
-		slot.uvsetField.SetText("");
-		slot.uvsetField.SetTooltip("uv set number");
-		slot.uvsetField.SetPos(XMFLOAT2(x + uvset_offset, y));
-		slot.uvsetField.SetSize(XMFLOAT2(20, 20));
-		slot.uvsetField.OnInputAccepted([this, i](wiEventArgs args) {
-			MaterialComponent* material = wiScene::GetScene().materials.GetComponent(entity);
-			if (material != nullptr)
-			{
-				material->textures[i].uvset = (uint32_t)args.iValue;
-			}
-			});
-		AddWidget(&slot.uvsetField);
-	};
-
-	for (int i = 0; i < MaterialComponent::TEXTURESLOT_COUNT; ++i)
-	{
-		add_texturemap_controls((MaterialComponent::TEXTURESLOT)i);
-
-		switch (i)
-		{
-		case MaterialComponent::BASECOLORMAP:
-			slots[i].label.SetText("BaseColorMap:");
-			slots[i].button.SetTooltip("RGBA: Basecolor");
-			break;
-		case MaterialComponent::NORMALMAP:
-			slots[i].label.SetText("NormalMap:");
-			slots[i].button.SetTooltip("RGB: Normal");
-			break;
-		case MaterialComponent::SURFACEMAP:
-			slots[i].label.SetText("SurfaceMap:");
-			slots[i].button.SetTooltip("Default workflow: R: Occlusion, G: Roughness, B: Metalness, A: Reflectance\nSpecular-glossiness workflow: RGB: Specular color (f0), A: smoothness");
-			break;
-		case MaterialComponent::EMISSIVEMAP:
-			slots[i].label.SetText("EmissiveMap:");
-			slots[i].button.SetTooltip("RGBA: Emissive");
-			break;
-		case MaterialComponent::OCCLUSIONMAP:
-			slots[i].label.SetText("OcclusionMap:");
-			slots[i].button.SetTooltip("R: Occlusion");
-			break;
-		case MaterialComponent::DISPLACEMENTMAP:
-			slots[i].label.SetText("DisplacementMap:");
-			slots[i].button.SetTooltip("R: Displacement heightmap");
-			break;
-		case MaterialComponent::TRANSMISSIONMAP:
-			slots[i].label.SetText("TransmissionMap:");
-			slots[i].button.SetTooltip("R: Transmission factor");
-			break;
-		case MaterialComponent::SHEENCOLORMAP:
-			slots[i].label.SetText("SheenColorMap:");
-			slots[i].button.SetTooltip("RGB: Sheen color");
-			break;
-		case MaterialComponent::SHEENROUGHNESSMAP:
-			slots[i].label.SetText("SheenRoughMap:");
-			slots[i].button.SetTooltip("A: Roughness");
-			break;
-		case MaterialComponent::CLEARCOATMAP:
-			slots[i].label.SetText("ClearcoatMap:");
-			slots[i].button.SetTooltip("R: Clearcoat factor");
-			break;
-		case MaterialComponent::CLEARCOATROUGHNESSMAP:
-			slots[i].label.SetText("ClearcoatRoughMap:");
-			slots[i].button.SetTooltip("G: Roughness");
-			break;
-		case MaterialComponent::CLEARCOATNORMALMAP:
-			slots[i].label.SetText("ClearcoatNormMap:");
-			slots[i].button.SetTooltip("RGB: Normal");
-			break;
-		default:
-			break;
-		}
-	}
 
 	colorComboBox.Create("Color picker mode: ");
 	colorComboBox.SetSize(XMFLOAT2(120, hei));
@@ -612,17 +497,191 @@ void MaterialWindow::Create(EditorComponent* editor)
 			break;
 			case 3:
 				material->SetSubsurfaceScatteringColor(args.color.toFloat3());
-			break;
+				break;
 			case 4:
 				material->SetSheenColor(args.color.toFloat3());
 				break;
 			}
 		}
-	});
+		});
 	AddWidget(&colorPicker);
 
 
-	Translate(XMFLOAT3((float)wiRenderer::GetDevice()->GetScreenWidth() - 880, 120, 0));
+	// Textures:
+
+	y += colorPicker.GetScale().y;
+
+	textureSlotComboBox.Create("Texture Slot: ");
+	textureSlotComboBox.SetSize(XMFLOAT2(170, hei));
+	textureSlotComboBox.SetPos(XMFLOAT2(x + 100, y += step));
+	for (int i = 0; i < MaterialComponent::TEXTURESLOT_COUNT; ++i)
+	{
+		switch (i)
+		{
+		case MaterialComponent::BASECOLORMAP:
+			textureSlotComboBox.AddItem("BaseColor map");
+			break;
+		case MaterialComponent::NORMALMAP:
+			textureSlotComboBox.AddItem("Normal map");
+			break;
+		case MaterialComponent::SURFACEMAP:
+			textureSlotComboBox.AddItem("Surface map");
+			break;
+		case MaterialComponent::EMISSIVEMAP:
+			textureSlotComboBox.AddItem("Emissive map");
+			break;
+		case MaterialComponent::OCCLUSIONMAP:
+			textureSlotComboBox.AddItem("Occlusion map");
+			break;
+		case MaterialComponent::DISPLACEMENTMAP:
+			textureSlotComboBox.AddItem("Displacement map");
+			break;
+		case MaterialComponent::TRANSMISSIONMAP:
+			textureSlotComboBox.AddItem("Transmission map");
+			break;
+		case MaterialComponent::SHEENCOLORMAP:
+			textureSlotComboBox.AddItem("SheenColor map");
+			break;
+		case MaterialComponent::SHEENROUGHNESSMAP:
+			textureSlotComboBox.AddItem("SheenRoughness map");
+			break;
+		case MaterialComponent::CLEARCOATMAP:
+			textureSlotComboBox.AddItem("Clearcoat map");
+			break;
+		case MaterialComponent::CLEARCOATROUGHNESSMAP:
+			textureSlotComboBox.AddItem("ClearcoatRoughness map");
+			break;
+		case MaterialComponent::CLEARCOATNORMALMAP:
+			textureSlotComboBox.AddItem("ClearcoatNormal map");
+			break;
+		case MaterialComponent::SPECULARMAP:
+			textureSlotComboBox.AddItem("Specular map");
+			break;
+		default:
+			break;
+		}
+	}
+	textureSlotComboBox.OnSelect([this](wiEventArgs args)
+		{
+
+			switch (args.iValue)
+			{
+			case MaterialComponent::BASECOLORMAP:
+				textureSlotButton.SetTooltip("RGBA: Basecolor");
+				break;
+			case MaterialComponent::NORMALMAP:
+				textureSlotButton.SetTooltip("RGB: Normal");
+				break;
+			case MaterialComponent::SURFACEMAP:
+				textureSlotButton.SetTooltip("Default workflow: R: Occlusion, G: Roughness, B: Metalness, A: Reflectance\nSpecular-glossiness workflow: RGB: Specular color (f0), A: smoothness");
+				break;
+			case MaterialComponent::EMISSIVEMAP:
+				textureSlotButton.SetTooltip("RGBA: Emissive");
+				break;
+			case MaterialComponent::OCCLUSIONMAP:
+				textureSlotButton.SetTooltip("R: Occlusion");
+				break;
+			case MaterialComponent::DISPLACEMENTMAP:
+				textureSlotButton.SetTooltip("R: Displacement heightmap");
+				break;
+			case MaterialComponent::TRANSMISSIONMAP:
+				textureSlotButton.SetTooltip("R: Transmission factor");
+				break;
+			case MaterialComponent::SHEENCOLORMAP:
+				textureSlotButton.SetTooltip("RGB: Sheen color");
+				break;
+			case MaterialComponent::SHEENROUGHNESSMAP:
+				textureSlotButton.SetTooltip("A: Roughness");
+				break;
+			case MaterialComponent::CLEARCOATMAP:
+				textureSlotButton.SetTooltip("R: Clearcoat factor");
+				break;
+			case MaterialComponent::CLEARCOATROUGHNESSMAP:
+				textureSlotButton.SetTooltip("G: Roughness");
+				break;
+			case MaterialComponent::CLEARCOATNORMALMAP:
+				textureSlotButton.SetTooltip("RGB: Normal");
+				break;
+			case MaterialComponent::SPECULARMAP:
+				textureSlotButton.SetTooltip("RGB: Specular color, A: Specular intensity [non-metal]");
+				break;
+			default:
+				break;
+			}
+
+			MaterialComponent* material = wiScene::GetScene().materials.GetComponent(entity);
+			if (material == nullptr)
+				return;
+			textureSlotButton.SetImage(material->textures[args.iValue].resource);
+
+		});
+	textureSlotComboBox.SetSelected(0);
+	textureSlotComboBox.SetTooltip("Choose the texture slot to modify.");
+	AddWidget(&textureSlotComboBox);
+
+	textureSlotButton.Create("");
+	textureSlotButton.SetSize(XMFLOAT2(180, 180));
+	textureSlotButton.SetPos(XMFLOAT2(textureSlotComboBox.GetPosition().x + textureSlotComboBox.GetScale().x - textureSlotButton.GetScale().x, y += step));
+	textureSlotButton.sprites[wiWidget::IDLE].params.color = wiColor::White();
+	textureSlotButton.sprites[wiWidget::FOCUS].params.color = wiColor::Gray();
+	textureSlotButton.sprites[wiWidget::ACTIVE].params.color = wiColor::White();
+	textureSlotButton.sprites[wiWidget::DEACTIVATING].params.color = wiColor::Gray();
+	textureSlotButton.OnClick([this](wiEventArgs args) {
+		MaterialComponent* material = wiScene::GetScene().materials.GetComponent(entity);
+		if (material == nullptr)
+			return;
+
+		int slot = textureSlotComboBox.GetSelected();
+
+		if (material->textures[slot].resource != nullptr)
+		{
+			material->textures[slot].resource = nullptr;
+			material->textures[slot].name = "";
+			material->SetDirty();
+			textureSlotLabel.SetText("");
+		}
+		else
+		{
+			wiHelper::FileDialogParams params;
+			params.type = wiHelper::FileDialogParams::OPEN;
+			params.description = "Texture";
+			params.extensions = wiResourceManager::GetSupportedImageExtensions();
+			wiHelper::FileDialog(params, [this, material, slot](std::string fileName) {
+				wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
+					material->textures[slot].resource = wiResourceManager::Load(fileName, wiResourceManager::IMPORT_RETAIN_FILEDATA);
+					material->textures[slot].name = fileName;
+					material->SetDirty();
+					textureSlotLabel.SetText(wiHelper::GetFileNameFromPath(fileName));
+					});
+				});
+		}
+		});
+	AddWidget(&textureSlotButton);
+
+	y += textureSlotButton.GetScale().y - step + 2;
+
+	textureSlotLabel.Create("");
+	textureSlotLabel.SetPos(XMFLOAT2(x, y += step));
+	textureSlotLabel.SetSize(XMFLOAT2(colorPicker.GetScale().x - hei - 2, hei));
+	AddWidget(&textureSlotLabel);
+
+	textureSlotUvsetField.Create("uvset");
+	textureSlotUvsetField.SetText("");
+	textureSlotUvsetField.SetTooltip("uv set number");
+	textureSlotUvsetField.SetPos(XMFLOAT2(x + textureSlotLabel.GetScale().x + 2, y));
+	textureSlotUvsetField.SetSize(XMFLOAT2(hei, hei));
+	textureSlotUvsetField.OnInputAccepted([this](wiEventArgs args) {
+		MaterialComponent* material = wiScene::GetScene().materials.GetComponent(entity);
+		if (material != nullptr)
+		{
+			int slot = textureSlotComboBox.GetSelected();
+			material->textures[slot].uvset = (uint32_t)args.iValue;
+		}
+		});
+	AddWidget(&textureSlotUvsetField);
+
+
+	Translate(XMFLOAT3((float)editor->GetLogicalWidth() - 880, 120, 0));
 	SetVisible(false);
 
 	SetEntity(INVALID_ENTITY);
@@ -651,6 +710,7 @@ void MaterialWindow::SetEntity(Entity entity)
 		occlusionPrimaryCheckBox.SetCheck(material->IsOcclusionEnabled_Primary());
 		occlusionSecondaryCheckBox.SetCheck(material->IsOcclusionEnabled_Secondary());
 		windCheckBox.SetCheck(material->IsUsingWind());
+		doubleSidedCheckBox.SetCheck(material->IsDoubleSided());
 		normalMapSlider.SetValue(material->normalMapStrength);
 		roughnessSlider.SetValue(material->roughness);
 		reflectanceSlider.SetValue(material->reflectance);
@@ -677,12 +737,6 @@ void MaterialWindow::SetEntity(Entity entity)
 			shaderTypeComboBox.SetSelectedByUserdata(material->shaderType);
 		}
 		shadingRateComboBox.SetSelected((int)material->shadingRate);
-
-		for (int i = 0; i < MaterialComponent::TEXTURESLOT_COUNT; ++i)
-		{
-			slots[i].button.SetText(wiHelper::GetFileNameFromPath(material->textures[i].name));
-			slots[i].uvsetField.SetText(std::to_string(material->textures[i].uvset));
-		}
 
 		colorComboBox.SetEnabled(true);
 		colorPicker.SetEnabled(true);
@@ -727,34 +781,19 @@ void MaterialWindow::SetEntity(Entity entity)
 		sheenRoughnessSlider.SetEnabled(false);
 		clearcoatSlider.SetEnabled(false);
 		clearcoatRoughnessSlider.SetEnabled(false);
-		slots[MaterialComponent::SHEENCOLORMAP].SetEnabled(false);
-		slots[MaterialComponent::SHEENROUGHNESSMAP].SetEnabled(false);
-		slots[MaterialComponent::CLEARCOATMAP].SetEnabled(false);
-		slots[MaterialComponent::CLEARCOATROUGHNESSMAP].SetEnabled(false);
-		slots[MaterialComponent::CLEARCOATNORMALMAP].SetEnabled(false);
 		switch (material->shaderType)
 		{
 		case MaterialComponent::SHADERTYPE_PBR_CLOTH:
 			sheenRoughnessSlider.SetEnabled(true);
-			slots[MaterialComponent::SHEENCOLORMAP].SetEnabled(true);
-			slots[MaterialComponent::SHEENROUGHNESSMAP].SetEnabled(true);
 			break;
 		case MaterialComponent::SHADERTYPE_PBR_CLEARCOAT:
 			clearcoatSlider.SetEnabled(true);
 			clearcoatRoughnessSlider.SetEnabled(true);
-			slots[MaterialComponent::CLEARCOATMAP].SetEnabled(true);
-			slots[MaterialComponent::CLEARCOATROUGHNESSMAP].SetEnabled(true);
-			slots[MaterialComponent::CLEARCOATNORMALMAP].SetEnabled(true);
 			break;
 		case MaterialComponent::SHADERTYPE_PBR_CLOTH_CLEARCOAT:
 			sheenRoughnessSlider.SetEnabled(true);
 			clearcoatSlider.SetEnabled(true);
 			clearcoatRoughnessSlider.SetEnabled(true);
-			slots[MaterialComponent::SHEENCOLORMAP].SetEnabled(true);
-			slots[MaterialComponent::SHEENROUGHNESSMAP].SetEnabled(true);
-			slots[MaterialComponent::CLEARCOATMAP].SetEnabled(true);
-			slots[MaterialComponent::CLEARCOATROUGHNESSMAP].SetEnabled(true);
-			slots[MaterialComponent::CLEARCOATNORMALMAP].SetEnabled(true);
 			break;
 		}
 		sheenRoughnessSlider.SetValue(material->sheenRoughness);
@@ -768,6 +807,11 @@ void MaterialWindow::SetEntity(Entity entity)
 			reflectanceSlider.SetEnabled(false);
 			metalnessSlider.SetEnabled(false);
 		}
+
+		int slot = textureSlotComboBox.GetSelected();
+		textureSlotButton.SetImage(material->textures[slot].resource);
+		textureSlotLabel.SetText(wiHelper::GetFileNameFromPath(material->textures[slot].name));
+		textureSlotUvsetField.SetText(std::to_string(material->textures[slot].uvset));
 	}
 	else
 	{
@@ -776,11 +820,9 @@ void MaterialWindow::SetEntity(Entity entity)
 		colorComboBox.SetEnabled(false);
 		colorPicker.SetEnabled(false);
 
-		for (int i = 0; i < MaterialComponent::TEXTURESLOT_COUNT; ++i)
-		{
-			slots[i].button.SetText("");
-			slots[i].uvsetField.SetText("");
-		}
+		textureSlotButton.SetImage(nullptr);
+		textureSlotLabel.SetText("");
+		textureSlotUvsetField.SetText("");
 	}
 
 	newMaterialButton.SetEnabled(true);

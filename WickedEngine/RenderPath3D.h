@@ -33,12 +33,13 @@ private:
 	XMFLOAT4 outlineColor = XMFLOAT4(0, 0, 0, 1);
 	float aoRange = 1.0f;
 	uint32_t aoSampleCount = 16;
-	float aoPower = 2.0f;
+	float aoPower = 1.0f;
 	float chromaticAberrationAmount = 2.0f;
 	uint32_t screenSpaceShadowSampleCount = 16;
 	float screenSpaceShadowRange = 1;
 	float eyeadaptionKey = 0.115f;
 	float eyeadaptionRate = 1;
+	float fsrSharpness = 1.0f;
 
 	AO ao = AO_DISABLED;
 	bool fxaaEnabled = false;
@@ -47,7 +48,6 @@ private:
 	bool reflectionsEnabled = true;
 	bool shadowsEnabled = true;
 	bool bloomEnabled = true;
-	bool volumetricCloudsEnabled = false;
 	bool colorGradingEnabled = true;
 	bool volumeLightsEnabled = true;
 	bool lightShaftsEnabled = false;
@@ -61,12 +61,15 @@ private:
 	bool ditherEnabled = true;
 	bool occlusionCullingEnabled = true;
 	bool sceneUpdateEnabled = true;
+	bool fsrEnabled = true;
 
 	uint32_t msaaSampleCount = 1;
 
 public:
+	wiGraphics::Texture rtMain;
+	wiGraphics::Texture rtMain_render; // can be MSAA
 	wiGraphics::Texture rtGbuffer[GBUFFER_COUNT];
-	wiGraphics::Texture rtGbuffer_resolved[GBUFFER_COUNT];
+	wiGraphics::Texture rtPrimitiveID_render; // can be MSAA
 	wiGraphics::Texture rtReflection; // contains the scene rendered for planar reflections
 	wiGraphics::Texture rtSSR; // standard screen-space reflection results
 	wiGraphics::Texture rtSceneCopy; // contains the rendered scene that can be fed into transparent pass for distortion effect
@@ -84,6 +87,7 @@ public:
 	wiGraphics::Texture rtSun_resolved; // sun render target, but the resolved version if MSAA is enabled
 	wiGraphics::Texture rtGUIBlurredBackground[3];	// downsampled, gaussian blurred scene for GUI
 	wiGraphics::Texture rtShadingRate; // UINT8 shading rate per tile
+	wiGraphics::Texture rtFSR[2]; // FSR upscaling result (full resolution LDR)
 
 	wiGraphics::Texture rtPostprocess_HDR; // ping-pong with main scene RT in HDR post-process chain
 	wiGraphics::Texture rtPostprocess_LDR[2]; // ping-pong with itself in LDR post-process chain
@@ -107,6 +111,7 @@ public:
 
 	wiGraphics::Texture debugUAV; // debug UAV can be used by some shaders...
 	wiRenderer::TiledLightResources tiledLightResources;
+	wiRenderer::TiledLightResources tiledLightResources_planarReflection;
 	wiRenderer::LuminanceResources luminanceResources;
 	wiRenderer::SSAOResources ssaoResources;
 	wiRenderer::MSAOResources msaoResources;
@@ -118,34 +123,17 @@ public:
 	wiRenderer::DepthOfFieldResources depthoffieldResources;
 	wiRenderer::MotionBlurResources motionblurResources;
 	wiRenderer::VolumetricCloudResources volumetriccloudResources;
+	wiRenderer::VolumetricCloudResources volumetriccloudResources_reflection;
 	wiRenderer::BloomResources bloomResources;
-
-	const constexpr wiGraphics::Texture* GetGbuffer_Read() const
-	{
-		if (getMSAASampleCount() > 1)
-		{
-			return rtGbuffer_resolved;
-		}
-		else
-		{
-			return rtGbuffer;
-		}
-	}
-	const constexpr wiGraphics::Texture* GetGbuffer_Read(GBUFFER i) const
-	{
-		if (getMSAASampleCount() > 1)
-		{
-			return &rtGbuffer_resolved[i];
-		}
-		else
-		{
-			return &rtGbuffer[i];
-		}
-	}
+	wiRenderer::SurfelGIResources surfelGIResources;
 
 	// Post-processes are ping-ponged, this function helps to obtain the last postprocess render target that was written
 	const wiGraphics::Texture* GetLastPostprocessRT() const
 	{
+		if (rtFSR[0].IsValid() && getFSREnabled())
+		{
+			return &rtFSR[0];
+		}
 		int ldr_postprocess_count = 0;
 		ldr_postprocess_count += getSharpenFilterEnabled() ? 1 : 0;
 		ldr_postprocess_count += getFXAAEnabled() ? 1 : 0;
@@ -154,7 +142,6 @@ public:
 		return &rtPostprocess_LDR[rt_index];
 	}
 
-	virtual void RenderFrameSetUp(wiGraphics::CommandList cmd) const;
 	virtual void RenderAO(wiGraphics::CommandList cmd) const;
 	virtual void RenderSSR(wiGraphics::CommandList cmd) const;
 	virtual void RenderOutline(wiGraphics::CommandList cmd) const;
@@ -169,6 +156,7 @@ public:
 	wiScene::CameraComponent* camera = &wiScene::GetCamera();
 	wiScene::CameraComponent camera_previous;
 	wiScene::CameraComponent camera_reflection;
+	wiScene::CameraComponent camera_reflection_previous;
 
 	wiScene::Scene* scene = &wiScene::GetScene();
 	wiRenderer::Visibility visibility_main;
@@ -195,6 +183,7 @@ public:
 	constexpr float getScreenSpaceShadowRange() const { return screenSpaceShadowRange; }
 	constexpr float getEyeAdaptionKey() const { return eyeadaptionKey; }
 	constexpr float getEyeAdaptionRate() const { return eyeadaptionRate; }
+	constexpr float getFSRSharpness() const { return fsrSharpness; }
 
 	constexpr bool getAOEnabled() const { return ao != AO_DISABLED; }
 	constexpr AO getAO() const { return ao; }
@@ -204,7 +193,6 @@ public:
 	constexpr bool getReflectionsEnabled() const { return reflectionsEnabled; }
 	constexpr bool getFXAAEnabled() const { return fxaaEnabled; }
 	constexpr bool getBloomEnabled() const { return bloomEnabled; }
-	constexpr bool getVolumetricCloudsEnabled() const { return volumetricCloudsEnabled; }
 	constexpr bool getColorGradingEnabled() const { return colorGradingEnabled; }
 	constexpr bool getVolumeLightsEnabled() const { return volumeLightsEnabled; }
 	constexpr bool getLightShaftsEnabled() const { return lightShaftsEnabled; }
@@ -218,6 +206,7 @@ public:
 	constexpr bool getDitherEnabled() const { return ditherEnabled; }
 	constexpr bool getOcclusionCullingEnabled() const { return occlusionCullingEnabled; }
 	constexpr bool getSceneUpdateEnabled() const { return sceneUpdateEnabled; }
+	constexpr bool getFSREnabled() const { return fsrEnabled; }
 
 	constexpr uint32_t getMSAASampleCount() const { return msaaSampleCount; }
 
@@ -237,15 +226,15 @@ public:
 	constexpr void setScreenSpaceShadowRange(float value) { screenSpaceShadowRange = value; }
 	constexpr void setEyeAdaptionKey(float value) { eyeadaptionKey = value; }
 	constexpr void setEyeAdaptionRate(float value) { eyeadaptionRate = value; }
+	constexpr void setFSRSharpness(float value) { fsrSharpness = value; }
 
-	constexpr void setAO(AO value) { ao = value; }
-	constexpr void setSSREnabled(bool value){ ssrEnabled = value; }
-	constexpr void setRaytracedReflectionsEnabled(bool value){ raytracedReflectionsEnabled = value; }
+	void setAO(AO value);
+	void setSSREnabled(bool value);
+	void setRaytracedReflectionsEnabled(bool value);
 	constexpr void setShadowsEnabled(bool value){ shadowsEnabled = value; }
 	constexpr void setReflectionsEnabled(bool value){ reflectionsEnabled = value; }
 	constexpr void setFXAAEnabled(bool value){ fxaaEnabled = value; }
 	constexpr void setBloomEnabled(bool value){ bloomEnabled = value; }
-	constexpr void setVolumetricCloudsEnabled(bool value) { volumetricCloudsEnabled = value; }
 	constexpr void setColorGradingEnabled(bool value){ colorGradingEnabled = value; }
 	constexpr void setVolumeLightsEnabled(bool value){ volumeLightsEnabled = value; }
 	constexpr void setLightShaftsEnabled(bool value){ lightShaftsEnabled = value; }
@@ -259,8 +248,9 @@ public:
 	constexpr void setDitherEnabled(bool value) { ditherEnabled = value; }
 	constexpr void setOcclusionCullingEnabled(bool value) { occlusionCullingEnabled = value; }
 	constexpr void setSceneUpdateEnabled(bool value) { sceneUpdateEnabled = value; }
+	void setFSREnabled(bool value);
 
-	virtual void setMSAASampleCount(uint32_t value) { if (msaaSampleCount != value) { msaaSampleCount = value; ResizeBuffers(); } }
+	virtual void setMSAASampleCount(uint32_t value) { msaaSampleCount = value; }
 
 	void PreUpdate() override;
 	void Update(float dt) override;

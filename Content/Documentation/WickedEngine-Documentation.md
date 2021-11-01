@@ -10,6 +10,7 @@ This is a reference for the C++ features of Wicked Engine
 	3. [RenderPath2D](#renderpath2d)
 	4. [RenderPath3D](#renderpath3d)
 	9. [RenderPath3D_Pathtracing](#renderpath3d_pathtracing)
+		1.[Denoiser](#denoiser)
 	10. [LoadingScreen](#loadingscreen)
 2. [System](#system)
 	1. [wiECS (Entity-Component System)](#wiecs)
@@ -41,6 +42,7 @@ This is a reference for the C++ features of Wicked Engine
 	4. [wiInitializer](#wiinitializer)
 	5. [wiPlatform](#wiplatform)
 	6. [wiEvent](#wievent)
+	7. [wiCanvas](#wicanvas)
 3. [Graphics](#graphics)
 	1. [wiGraphics](#wigraphics)
 		1. [GraphicsDevice](#wigraphicsdevice)
@@ -48,6 +50,7 @@ This is a reference for the C++ features of Wicked Engine
 			2. [Creating resources](#creating-resources)
 			3. [Destroying resources](#destroying-resources)
 			4. [Work submission](#work-submission)
+				1. [Async compute](#async-compute)
 			5. [Presenting to the screen](#presenting-to-the-screen)
 			6. [Resource binding](#resource-binding)
 			6. [Bindless resources](#bindless-resources)
@@ -65,8 +68,6 @@ This is a reference for the C++ features of Wicked Engine
 		2. [GraphicsDevice_DX11](#wigraphicsdevice_dx11)
 		3. [GraphicsDevice_DX12](#wigraphicsdevice_dx12)
 		4. [GraphicsDevice_Vulkan](#wigraphicsdevice_vulkan)
-		5. [Graphics Descriptors](#graphics-descriptors)
-		6. [Graphics Resources](#graphics-resources)
 	2. [wiRenderer](#wirenderer)
 		1. [DrawScene](#drawscene)
 		2. [DrawScene_Transparent](#drawscene_transparent)
@@ -170,6 +171,7 @@ The high level interface consists of classes that allow for extending the engine
 ### MainComponent
 [[Header]](../../WickedEngine/MainComponent.h) [[Cpp]](../../WickedEngine/MainComponent.cpp)
 This is the main runtime component that has the Run() function. It should be included in the application entry point while calling Run() in an infinite loop. <br/>
+The user should call the SetWindow() function to associate it with a window of the operating system. This window will be used to render to.<br/>
 The MainComponent has many uses that the user is not necessarily interested in. The most important part is that it manages the RenderPaths. There can be one active RenderPath at a time, which will be updated and rendered to the screen every frame. However, because a RenderPath is a highly customizable class, there is no limitation what can be done within the RenderPath, for example supporting multiple concurrent RenderPaths if required. RenderPaths can be switched wit ha Fade out screen easily. Loading Screen can be activated as an active Renderpath and it will load and switch to an other RenderPath if desired. A RenderPath can be simply activated with the MainComponent::ActivatePath() function.<br/>
 The MainComponent does the following every frame while it is running:<br/>
 1. FixedUpdate() <br/>
@@ -183,7 +185,7 @@ Calls Compose for the active RenderPath
 
 ### RenderPath
 [[Header]](../../WickedEngine/RenderPath.h)
-This is an empty base class that can be activated with a MainComponent. It calls its Start(), Update(), FixedUpdate(), Render(), Compose(), Stop() functions as needed. Override this to perform custom gameplay or rendering logic. <br/>
+This is an empty base class that can be activated with a MainComponent. It calls its Start(), Update(), FixedUpdate(), Render(), Compose(), Stop() functions as needed. Override this to perform custom gameplay or rendering logic. The RenderPath inherits from [wiCanvas](#wicanvas), and the canvas properties will be set by the [MainComponent](#maincomponent) when the RenderPath was activated, and while the RenderPath is active. <br/>
 The order in which the functions are executed every frame: <br/>
 1. PreUpdate() <br/>
 This will be called once per frame before any script that calls Update().
@@ -229,6 +231,9 @@ The HDR and LDR post process chain are using the "ping-ponging" technique, which
 ### RenderPath3D_PathTracing
 [[Header]](../../WickedEngine/RenderPath3D_PathTracing.h) [[Cpp]](../../WickedEngine/RenderPath3D_PathTracing.cpp)
 Implements a compute shader based path tracing solution. In a static scene, the rendering will converge to ground truth. When something changes in the scene (something moves, ot material changes, etc...), the convergence will be restarted from the beginning. The raytracing is implemented in [wiRenderer](#wirenderer) and multiple [shaders](#shaders). The ray tracing is available on any GPU that supports compute shaders.
+
+#### Denoiser
+To enable denoising for path traced images, you can use the [Open Image Denoise library](https://github.com/OpenImageDenoise/oidn). To enable this functionality, the engine will try to include the "OpenImageDenoise/oidn.hpp" file. If this file could be included, it will attampt to link with OpenImageDenoise.lib and tbb.lib. It is also required to provide the OpenImageDenoise.dll and tbb.dll near the exe to correctly launch the application after this. If you satisfy these steps, the denoiser will work automatically after the path tracer reached the target sample count. The final path traced image will be denoised and presented to the screen.
 
 ### LoadingScreen
 [[Header]](../../WickedEngine/LoadingScreen.h) [[Cpp]](../../WickedEngine/LoadingScreen.cpp)
@@ -412,6 +417,10 @@ The first argument is the event id, that says which events to invoke.
 The second argument will be passed to the subscribed event's userdata parameter.
 All events that are subsribed to the specified event id will run immediately at the time of the call of FireEvent. The order of execution among events is the order of which they were subscribed.
 
+### wiCanvas
+[[Header]](../../WickedEngine/wiCanvas.h)
+The canvas specifies a DPI-aware drawing area. Use the GetLogical... functions to get parameters with DPI aware scale factors applied. Use the GetPhysical... functions to get the real pixel counts.
+
 
 ## Graphics
 Everything related to rendering graphics will be discussed below
@@ -434,7 +443,7 @@ Functions like `CreateTexture()`, `CreateBuffer()`, etc. can be used to create c
 Resources will be destroyed automatically by the graphics device when they are no longer used.
 
 ##### Work submission
-Rendering commands that expect a `CommandList` as a parameter are not executed immediately. They will be recorded into command lists and submitted to the GPU for execution upon calling the `PresentEnd()` function. The `CommandList` is a simple handle that associates rendering commands to a CPU execution timeline. The `CommandList` is not thread safe, so every `CommandList` can be used by a single CPU thread at a time to record commands. In a multithreading scenario, each CPU thread should have its own `CommandList`. `CommandList`s can be retrieved from the [GraphicsDevice](#graphicsdevice) by calling `GraphicsDevice::BeginCommandList()` that will return a `CommandList` handle that is free to be used from that point by the calling thread. All such handles will be in use until `SubmitCommandLists()` or `PresentEnd()` was called, where GPU submission takes place. The command lists will be submitted in the order they were retrieved with `GraphicsDevice::BeginCommandList()`. The order of submission correlates with the order of actual GPU execution. For example:
+Rendering commands that expect a `CommandList` as a parameter are not executed immediately. They will be recorded into command lists and submitted to the GPU for execution upon calling the `SubmitCommandLists()` function. The `CommandList` is a simple handle that associates rendering commands to a CPU execution timeline. The `CommandList` is not thread safe, so every `CommandList` can be used by a single CPU thread at a time to record commands. In a multithreading scenario, each CPU thread should have its own `CommandList`. `CommandList`s can be retrieved from the [GraphicsDevice](#graphicsdevice) by calling `GraphicsDevice::BeginCommandList()` that will return a `CommandList` handle that is free to be used from that point by the calling thread. All such handles will be in use until `SubmitCommandLists()` or `PresentEnd()` was called, where GPU submission takes place. The command lists will be submitted in the order they were retrieved with `GraphicsDevice::BeginCommandList()`. The order of submission correlates with the order of actual GPU execution. For example:
 
 ```cpp
 CommandList cmd1 = device->BeginCommandList();
@@ -446,32 +455,35 @@ Render_Shadowmaps(cmd1); // CPU executes these commands second
 //...
 
 CommandList cmd_present = device->BeginCommandList();
-device->PresentBegin(cmd_present);
-// ...
-device->PresentEnd(cmd_present); // CPU submits work for GPU
+
+device->SubmitCommandLists(cmd_present); // CPU submits work for GPU
 // The GPU will execute the Render_Shadowmaps() commands first, then the Read_Shadowmaps() commands second
-// The GPU will execute the commands between PresentBegin() and PresentEnd() last.
-// PresentEnd displays the final image (render command executed between PresentBegin and PresentEnd) to the screen
 ```
 
-In specific circumstances, when outputting the final image to the screen is not immediately required, the `SubmitCommandLists()` option can also be used to submit and execute GPU work:
-
-```cpp
-CommandList cmd1 = device->BeginCommandList();
-CommandList cmd2 = device->BeginCommandList();
-
-// Record something with command lists...
-
-device->SubmitCommandLists(); // CPU submits work for GPU
-// The GPU will execute commands recorded with cmd1, then cmd2
-```
-
-When submitting command lists with `SubmitCommandLists()` or `PresentEnd()`, the CPU can be blocked in cases when there is too much GPU work submitted already that didn't finish.
+When submitting command lists with `SubmitCommandLists()`, the CPU thread can be blocked in cases when there is too much GPU work submitted already that didn't finish. It's not appropriate to start recording new command lists until `SubmitCommandLists()` finished.
 
 Furthermore, the `BeginCommandList()` is thread safe, so the user can call it from worker threads if ordering between command lists is not a requirement (such as when they are producing workloads that are independent of each other).
 
+###### Async compute
+Async workload can be performed on the compute queue with `CommandList` granularity. The `BeginCommandList()` function has an optional `QUEUE_TYPE` parameter, which can be specified to execute the command list on the specified queue. By default, if no such parameter is specified, the work will be executed on the main graphics queue (`QUEUE_GRAPHICS`), serially to other such graphics work. In case the graphics device or API doesn't support async compute (such as DX11), then the `QUEUE_GRAPHICS` will be assumed. The main graphics queue can execute both graphics and compute work, but the `QUEUE_COMPUTE` can only execute compute work. Two queues can also be synchronized with `CommandList` granularity, with the `WaitCommandList()` function. This function inserts a dependency barrier before the first parameter command list, that synchronizes with the second parameter command list. For example:
+
+```cpp
+CommandList cmd0 = device->BeginCommandList(QUEUE_GRAPHICS);
+CommandList cmd1 = device->BeginCommandList(QUEUE_COMPUTE);
+device->WaitCommandList(cmd1, cmd0); // cmd1 waits for cmd0 to finish
+CommandList cmd2 = device->BeginCommandList(QUEUE_GRAPHICS); // cmd2 doesn't wait, it runs async with cmd1
+CommandList cmd3 = device->BeginCommandList(QUEUE_GRAPHICS);
+device->WaitCommandList(cmd3, cmd1); // cmd3 waits for cmd1 to finish
+
+device->SubmitCommandLists(); // execute all of the above
+```
+
+The `WaitCommandList()` function is a GPU wait operation, so it will not block CPU execution. Furthermore, it is not required to use this between two `CommandList`s that are on the same queue, because the synchronization between those is implicit.
+
+Important: The `RESOURCE_STATE_SHADER_RESOURCE` state cannot be used on the compute queue. The device could convert these to `RESOURCE_STATE_SHADER_RESOURCE_COMPUTE` while issuing `Barrier()` commands. However, the starting resource state must be correctly specified, because those cannot be converted. Consider always choosing a `_SHADER_RESOURCE_COMPUTE` starting resource state if the resource is goig to be used in a compute queue, and transition them to regular `SHADER_RESOURCE` only before the resource is going to be used in a pixel shader. The graphics queue with compute commands doesn't have this limitation however.
+
 ##### Presenting to the screen
-The `PresentBegin()` and `PresentEnd()` functions are used to prepare for rendering to the back buffer. When the `PresentBegin()` is called, the back buffer will be set as the current active render target or render pass. This means, that rendering commands will draw directly to the screen. This is generally used to draw textures that were previously rendered to, or 2D GUI elements. For example, the `RenderPath3D::Compose()` function is used in the [High Level Interface](#high-level-interface) to draw the results of the `RenderPath3D::Render()`, and the [GUI](#gui) elements. The rendering commands executed between `PresentBegin()` and `PresentEnd()` are still executed by the GPU in the command list beginning order described in the topic: [Work submission](#work-submission).
+To present to the screen (an operating system window), first create a SwapChain with the `CreateSwapChain()` function that will be associated with a window. The SwapChain acts as a special kind of [RenderPass](#render-passes), so there is a `BeginRenderPass()` function with an overload that accepts a SwapChain parameter instead of a RenderPass. Simply use this `BeginRenderPass()` and `EndRenderPass()` to draw to the SwapChain. The final presentation will happen when calling `SubmitCommandLists()`.
 
 ##### Resource binding
 The resource binding model is based on DirectX 11. That means, resources are bound to slot numbers that are simple integers. This makes it easy to share binding information between shaders and C++ code, just define the bind slot number as global constants in [shared header files](#shaderinterop). For sharing, the bind slot numbers can be easily defined as compile time constants using:
@@ -493,14 +505,14 @@ After this, the user can bind the texture resource from the CPU side:
 ```cpp
 Texture myTexture;
 // after texture was created, etc:
-device->BindResource(PS, myTexture, my_texture_bind_slot, cmd);
+device->BindResource(myTexture, my_texture_bind_slot, cmd);
 ```
 
 Other than this, resources like `Texture` can have different subresources, so an extra parameter can be specified to the `BindResources()` function called `subresource`:
 ```cpp
 Texture myTexture;
 // after texture was created, etc:
-device->BindResource(PS, myTexture, my_texture_bind_slot, cmd, 42);
+device->BindResource(myTexture, my_texture_bind_slot, cmd, 42);
 ```
 By default, the `subresource` parameter is `-1`, which means that the entire resource will be bound. For more information about subresources, see the [Subresources](#subresources) section.
 
@@ -524,7 +536,7 @@ Remarks:
 
 ##### Bindless resources
 
-Some graphics API supports bindless resource management, this can greatly improve performance and removes resource binding constraints to allow great flexibility. This can be queried by `GraphicsDevice::CheckCapability()` and providing the `GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS` flag. If the device supports this feature, the function will return true.
+Wicked Engine supports bindless resource management, this can greatly improve performance and removes resource binding constraints to allow great flexibility.
 
 Related functions to this feature:
 - `GetDescriptorIndex()` : returns an `int` that identifies the resource in bindless space. The queried resource can be a `Sampler` or a `GPUResource`. If the resource is not usable (for example if it was not created), then the function returns `-1`. **In this case, the shaders must not use the resource, but instead rely on dynamic branching to avoid it, because this would be undefined behaviour and could result in a GPU hang**. Otherwise, the index can be used by shaders to index into a descriptor heap.
@@ -553,7 +565,7 @@ struct PushConstants
 	int textureindex;
 };
 PushConstants push;
-push.materialIndex = device->GetDescriptorIndex(materialCB, CBV);
+push.materialIndex = device->GetDescriptorIndex(materialCB, SRV);
 push.textureindex = device->GetDescriptorIndex(texture, SRV);
 device->PushConstants(&push, sizeof(push), cmd);
 ```
@@ -608,13 +620,13 @@ Defines how the texture contents are initialized at the start of the render pass
 - Store operation: <br/>
 Defines how the texture contents are handled after the render pass ends. `STOREOP_STORE` means that the contents will be preserved. `STOREOP_DONTCARE` means that the contents won't be necessarily preserved, they are only temporarily valid within the duration of the render pass, which can save some memory bandwidth on some platforms (specifically tile based rendering architectures, like mobile GPUs).
 - Layout transition: <br/>
-Define the `intial_layout`, `subpass_layout` (only for `RENDERTARGET` or `DEPTH_STENCIL`) and `final_layout` members to have an implicit transition performed as part of the render pass, that works like an [IMAGE_BARRIER](#gpu-barriers), but can be more optimal. The `initial_layout` states the starting state of the resource. The resource will be transitioned from `initial_layout` to `subpass_layout` within the render pass. The `subpass_layout` states how the resource is accessed within the render pass. For `RENDERTARGET`, this must be `IMAGE_LAYOUT_RENDERTARGET`, for `DEPTH_STENCIL` type, it must be either `IMAGE_LAYOUT_DEPTHSTENCIL` or `IMAGE_LAYOUT_DEPTHSTENCIL_READONLY`. For `RESOLVE` type, the subpass_layout have no meaning, it is implicitly defined. At the end of the render pass, the resources will be transitioned from `subpass_layout` to `final_layout`.
+Define the `intial_layout`, `subpass_layout` (only for `RENDERTARGET` or `DEPTH_STENCIL`) and `final_layout` members to have an implicit transition performed as part of the render pass, that works like an [IMAGE_BARRIER](#gpu-barriers), but can be more optimal. The `initial_layout` states the starting state of the resource. The resource will be transitioned from `initial_layout` to `subpass_layout` within the render pass. The `subpass_layout` states how the resource is accessed within the render pass. For `RENDERTARGET`, this must be `RESOURCE_STATE_RENDERTARGET`, for `DEPTH_STENCIL` type, it must be either `RESOURCE_STATE_DEPTHSTENCIL` or `RESOURCE_STATE_DEPTHSTENCIL_READONLY`. For `RESOLVE` type, the subpass_layout have no meaning, it is implicitly defined. At the end of the render pass, the resources will be transitioned from `subpass_layout` to `final_layout`.
 
 Notes:
 - When `RenderPassBegin()` is called, `RenderPassEnd()` must be called after on the same command list before the command list gets [submitted](#work-submission).
 - It is not allowed to call `CopyResource()`, `CopyTexture2D()`, etc. inside a render pass.
 - It is not allowed to call `Dispatch()` and `DispatchIndirect()` inside a render pass.
-- It is not allowed to call `UpdateBuffer()` inside the render pass unless the buffer is `USAGE_DYNAMIC` and is a `BIND_CONSTANT_BUFFER`.
+- It is not allowed to call `UpdateBuffer()` inside the render pass.
 
 ##### GPU Barriers
 `GPUBarrier`s can be used to state dependencies between GPU workloads. There are different kinds of barriers:
@@ -622,7 +634,7 @@ Notes:
 - MEMORY_BARRIER <br/>
 Memory barriers are used to wait for UAV writes to finish, or in other words to wait for shaders to finish that are writing to a BIND_UNORDERED_ACCESS resource. The `GPUBarrier::memory.resource` member is a pointer to the GPUResource to wait on. If it is nullptr, than the barrier means "wait for every UAV write that is in flight to finish".
 - IMAGE_BARRIER <br/>
-Image barriers are stating resource state transition for [textures](#textures). The most common use case for example is to transition from `IMAGE_LAYOUT_RENDERTARGET` to `IMAGE_LAYOUT_SHADER_RESOURCE`, which means that the [RenderPass](#render-passes) that writes to the texture as render target must finish before the barrier, and the texture can be used as a read only shader resource after the barrier. There are other cases that can be indicated using the `GPUBarrier::image.layout_before` and `GPUBarrier::image.layout_after` states. The `GPUBarrier::image.resource` is a pointer to the resource which will have its state changed. If the texture's `layout` (as part of the TextureDesc) is not `IMAGE_LAYOUT_SHADER_RESOURCE`, the layout must be transitioned to `IMAGE_LAYOUT_SHADER_RESOURCE` before binding as shader resource. The image layout can also be transitioned using a [RenderPass](#render-passes), which should be preferred to `GPUBarrier`s.
+Image barriers are stating resource state transition for [textures](#textures). The most common use case for example is to transition from `RESOURCE_STATE_RENDERTARGET` to `RESOURCE_STATE_SHADER_RESOURCE`, which means that the [RenderPass](#render-passes) that writes to the texture as render target must finish before the barrier, and the texture can be used as a read only shader resource after the barrier. There are other cases that can be indicated using the `GPUBarrier::image.layout_before` and `GPUBarrier::image.layout_after` states. The `GPUBarrier::image.resource` is a pointer to the resource which will have its state changed. If the texture's `layout` (as part of the TextureDesc) is not `RESOURCE_STATE_SHADER_RESOURCE`, the layout must be transitioned to `RESOURCE_STATE_SHADER_RESOURCE` before binding as shader resource. The image layout can also be transitioned using a [RenderPass](#render-passes), which should be preferred to `GPUBarrier`s.
 - BUFFER_BARRIER <br/>
 Similar to `IMAGE_BARRIER`, but for [GPU Buffer](#gpu-buffers) state transitions.
 
@@ -633,29 +645,25 @@ It is very important to place barriers to the right places if using low level gr
 
 `SubresourceData` usage: 
 - The `SubresourceData` parameter points to an array of `SubresourceData` structs. The array size is determined by the `TextureDesc::ArraySize` * `TextureDesc::MipLevels`, so one structure for every subresource. 
-- The `SubresourceData::pSysMem` pointer should point to the texture contents on the CPU that will be uploaded to the GPU.
-- The `SubresourceData::SysMemPitch` member is indicating the distance (in bytes) from the beginning of one line of a texture to the next line.
-System-memory pitch is used only for 2D and 3D texture data as it is has no meaning for the other resource types. Specify the distance from the first pixel of one 2D slice of a 3D texture to the first pixel of the next 2D slice in that texture in the `SysMemSlicePitch` member.
-- The `SubresourcData::SysMemSlicePitch` member is indicating the distance (in bytes) from the beginning of one depth level to the next.
+- The `SubresourceData::pData` pointer should point to the texture contents on the CPU that will be uploaded to the GPU.
+- The `SubresourceData::rowPitch` member is indicating the distance (in bytes) from the beginning of one line of a texture to the next line.
+System-memory pitch is used only for 2D and 3D texture data as it is has no meaning for the other resource types. Specify the distance from the first pixel of one 2D slice of a 3D texture to the first pixel of the next 2D slice in that texture in the `slicePitch` member.
+- The `SubresourcData::slicePitch` member is indicating the distance (in bytes) from the beginning of one depth level to the next.
 System-memory-slice pitch is only used for 3D texture data as it has no meaning for the other resource types.
 - For more complete information, refer to the [DirectX 11 documentation](https://docs.microsoft.com/en-us/windows/win32/api/d3d11/ns-d3d11-d3d11_subresource_data) on this topic, which should closely match.
 
 Related topics: [Creating Resources](#creating-resources), [Destroying Resources](#destroying-resources), [Binding resources](#resource-binding), [Subresources](#subresources)
 
 ##### GPU Buffers
-`GPUBuffer` type resources are used to store linear data which will be read or written by the GPU. There are a lot of buffer types, such as structured buffers, raw buffers, vertex buffers, index buffers, typed buffers, etc. used in [shaders](#shaders), that correspond to the simple `GPUBuffer` type on the CPU. The buffer type will be determined when creating the buffer with `GraphicsDevice::CreateBuffer(const GPUBufferDesc*, const SubresourceData*, GPUBuffer*)` function. The first argument is the `GPUBufferDesc` that determines the dimensions, size, format and other properties of the texture resource. The `SubresourceData` is used to initialize the texture contents, it can be left as `nullptr`, when the texture contents don't need to be initialized, such as for textures that will be rendered into. The `GPUBuffer` is the texture that will be initialized.
-
-`SubresourceData` usage: 
-- The `SubresourceData::pSysMem` pointer should point to the buffer contents on the CPU that will be uploaded to the GPU Buffer. The size of the data is determined by the `GPUBufferDesc::ByteWidth` value that was passed to the `GraphicsDevice::CreateBuffer()` function. The buffer contents will be readily available by the time the GPU first accesses the buffer.
+`GPUBuffer` type resources are used to store linear data which will be read or written by the GPU. There are a lot of buffer types, such as structured buffers, raw buffers, vertex buffers, index buffers, typed buffers, etc. used in [shaders](#shaders), that correspond to the simple `GPUBuffer` type on the CPU. The buffer type will be determined when creating the buffer with `GraphicsDevice::CreateBuffer(const GPUBufferDesc*, const void*, GPUBuffer*)` function. The first argument is the `GPUBufferDesc` that determines the dimensions, size, format and other properties of the texture resource. The `pInitialData` is used to initialize the buffer contents, it can be left as `nullptr`. The `GPUBuffer` is the buffer that will be initialized.
 
 Related topics: [Creating Resources](#creating-resources), [Destroying Resources](#destroying-resources), [Binding resources](#resource-binding), [Subresources](#subresources), [Updating GPU Buffers](#updating-gpu-buffers)
 
 ##### Updating GPU buffers
-A common scenario is updating buffers, when the developer wants to make data visible from the CPU to the GPU. The simplest way is to use the `GraphicsDevice::UpdateBuffer()` function. To use this successfully, the buffer must have been created with a `Usage` that is either `USAGE_DEFAULT` or `USAGE_DYNAMIC`. The `USAGE_IMMUTABLE` buffers cannot be updated after having been created. If the `USAGE_DEFAULT` is in effect, the buffer updating can be heavier on the CPU, and introduce additional [GPUBarriers](#gpu-barriers), but they can have superior GPU read performance, or can be writable by the GPU. On the other hand, `USAGE_DYNAMIC` type buffers will be lighter weight on the CPU side, but they could have worse GPU performance. If `USAGE_DYNAMIC` was specified, the buffer must also have been created with `CPUAccessFlags` member of the `GPUBufferDesc` that contains the value `CPU_ACCESS_WRITE` in order to be successfully updated. 
-
-`GraphicsDevice::UpdateBuffer()` function can either take the dataSize parameter, or if it is left as default, the `GPUBufferDesc::ByteWidth` (that was specified at buffer creation time) number of bytes will be read from the `data` parameter and uploaded to the buffer.
-
-An other case is to dynamically allocate a temporary buffer using the `GraphicsDevice::AllocateGPU()` function. The developer has to specify the amount of space that needs to be allocated, and the function will return a `GPUAllocation` struct that has a `buffer` member that can be used for [resource binding](#resource-binding), a `data` pointer member that the application can write into, and an offset value, that indicates an offset that the new data will start from in the temporary buffer. Buffers that were allocated like this can be only used as index buffers, vertex buffers, instance buffers, or raw buffers. Attempting to use these as constant buffers, structured buffers, or typed buffers is not supported.
+A `GPUBuffer`'s `Usage` parameter specifies how the buffer memory is accessed.
+- `USAGE_DEFAULT`: The buffer memory is visible to the GPU but not the CPU. This means that it will observe maximum GPU performance, but special care needs to be taken to write the buffer contents. The GPU could write the memory from a shader or copy operation for example. You can also use the `UpdateBuffer()` function to update such a buffer from CPU (which uses a GPU copy).
+- `USAGE_UPLOAD`: The buffer can be written by the CPU and read by the GPU. Once such a `GPUBuffer` was created, it's memory is persistently mapped for CPU access, and can be accessed through the `GPUResource::mapped_data` pointer. It's perfect to update a `USAGE_DEFAULT` buffer from this by first filling the `USAGE_UPLOAD` buffer from the CPU, then let the GPU copy its contents to the `USAGE_DEFAULT` buffer with a shader or copy operation.
+- `USAGE_READBACK`: The buffer can be written by the GPU and the contents read by the CPU. The buffer memory is persistently mapped after creation, and accessible through the `GPUResource::mapped_data` pointer.
 
 ##### GPU Queries
 The `GPUQueryHeap` can be used to retrieve information from GPU to CPU. There are different query types:
@@ -675,7 +683,7 @@ Binding a ray tracing pipeline state is required to dispatch ray tracing shaders
 Variable Rate Shading can be used to decrease shading quality while retaining depth testing accuracy. The shading rate can be set up in different ways:
 
 - `BindShadingRate()`: Set the shading rate for the following draw calls. The first parameter is the shading rate, which is by default `SHADING_RATE_1X1` (the best quality). The increasing enum values are standing for decreasing shading rates.
-- Shading rate image: Set the shading rate for the screen via a tiled texture. The texture must be set as a RenderPassAttachment of `SHADING_RATE_SOURCE` type. The texture must be using the `FORMAT_R8_UINT` format. In each pixel, the texture contains the shading rate value for a tile of pixels (8x8, 16x16 or 32x32). The tile size can be queried via `GetVariableRateShadingTileSize()`. The shading rate values that the texture contains are not the raw values from `SHADING_RATE` enum, but they must be converted to values that are native to the graphics API used using the `WriteShadingRateValue()` function. The shading rate texture must be written with a compute shader and transitioned to `IMAGE_LAYOUT_SHADING_RATE_SOURCE` with a [GPUBarrier](#gpu-barriers) before setting it with `BindShadingRateImage()`. It is valid to set a `nullptr` instead of the texture, indicating that the shading rate is not specified by a texture.
+- Shading rate image: Set the shading rate for the screen via a tiled texture. The texture must be set as a RenderPassAttachment of `SHADING_RATE_SOURCE` type. The texture must be using the `FORMAT_R8_UINT` format. In each pixel, the texture contains the shading rate value for a tile of pixels (8x8, 16x16 or 32x32). The tile size can be queried via `GetVariableRateShadingTileSize()`. The shading rate values that the texture contains are not the raw values from `SHADING_RATE` enum, but they must be converted to values that are native to the graphics API used using the `WriteShadingRateValue()` function. The shading rate texture must be written with a compute shader and transitioned to `RESOURCE_STATE_SHADING_RATE_SOURCE` with a [GPUBarrier](#gpu-barriers) before setting it with `BindShadingRateImage()`. It is valid to set a `nullptr` instead of the texture, indicating that the shading rate is not specified by a texture.
 - Or setting the shading rate from a vertex or geometry shader with the `SV_ShadingRate` system value semantic.
 
 The final shading rate will be determined from the above methods using the maximum shading rate (least detailed) which is applicable to the screen tile. In the future it might be considered to expose the operator to define this.
@@ -684,8 +692,7 @@ To read more about variable rate shading, refer to the [DirectX specifications.]
 
 
 #### GraphicsDevice_DX11
-[[Header]](../../WickedEngine/wiGraphicsDevice_DX11.h) [[Cpp]](../../WickedEngine/wiGraphicsDevice_DX11.cpp)
-DirectX11 implementation for rendering interface
+The DirectX11 interface has been removed after version 0.56
 
 #### GraphicsDevice_DX12
 [[Header]](../../WickedEngine/wiGraphicsDevice_DX12.h) [[Cpp]](../../WickedEngine/wiGraphicsDevice_DX12.cpp)
@@ -694,14 +701,6 @@ DirectX12 implementation for rendering interface
 #### wiGraphicsDevice_Vulkan
 [[Header]](../../WickedEngine/wiGraphicsDevice_Vulkan.h) [[Cpp]](../../WickedEngine/wiGraphicsDevice_Vulkan.cpp)
 Vulkan implementation for rendering interface
-
-#### GraphicsDescriptors
-[[Header]](../../WickedEngine/wiGraphicsDescriptors.h) [[Cpp]](../../WickedEngine/wiGraphicsDescriptors.cpp)
-The place for graphics types like COMPARISON_FUNC, STENCIL_OP and descriptors like TextureDesc, GPUBufferDesc, etc. These types are used to create [graphics resources](#graphics-resources)
-
-#### Graphics Resources
-[[Header]](../../WickedEngine/wiGraphicsResource.h) [[Cpp]](../../WickedEngine/wiGraphicsResource.cpp)
-Graphics resource wrappers for Texture, Shader, GPUBuffer, etc.
 
 
 ### wiRenderer
@@ -755,7 +754,7 @@ Ray tracing can be used in multiple ways to render the scene. The `RayTraceScene
 
 Other than path tracing, the scene BVH can be rendered by using the `RayTraceSceneBVH` function. This will render the bounding box hierarchy to the screen as a heatmap. Blue colors mean that few boxes were hit per pixel, and with more bounding box hits the colors go to green, yellow, red, and finaly white. This is useful to determine how expensive a the scene is with regards to ray tracing performance.
 
-The lightmap baking is also using ray tracing on the GPU to precompute static lighting for objects in the scene. [Objects](#objectcomponent) that contain lightmap atlas texture coordinate set can start lightmap rendering by setting `ObjectComponent::SetLightmapRenderRequest(true)`. Every object that have this flag set will have their lightmaps updated by performing ray traced rendering by the [wiRenderer](#wirenderer) internally. Lightmap texture coordinates can be generated by a separate tool, such as the Wicked Engine Editor application. Lightmaps will be rendered to a global lightmap atlas that can be used by all shaders to read static lighting data. The global lightmap atlas texture contains lightmaps from all objects inside the scene in a compact format for performance. Apart from that, each object contains its own lightmap in a full precision texture format that can be post-processed and saved to disc for later use.
+The lightmap baking is also using ray tracing on the GPU to precompute static lighting for objects in the scene. [Objects](#objectcomponent) that contain lightmap atlas texture coordinate set can start lightmap rendering by setting `ObjectComponent::SetLightmapRenderRequest(true)`. Every object that have this flag set will have their lightmaps updated by performing ray traced rendering by the [wiRenderer](#wirenderer) internally. Lightmap texture coordinates can be generated by a separate tool, such as the Wicked Engine Editor application. Lightmaps will be rendered to a global lightmap atlas that can be used by all shaders to read static lighting data. The global lightmap atlas texture contains lightmaps from all objects inside the scene in a compact format for performance. Apart from that, each object contains its own lightmap in a full precision texture format that can be post-processed and saved to disc for later use. To denoise lightmaps, follow the same steps as the path tracer denoiser setup described in the [Denoiser](#denoiser) section.
 
 #### Scene BVH
 The scene BVH can be rebuilt from scratch using the `wiRenderer::BuildSceneBVH()` function. This will use the global scene to build the BVH hierarchy and global material atlases. The [ray tracing](#ray-tracing) features require the scene BVH to be built before using them. This is using the [wiGPUBVH](#wigpubvh) facility to build the BVH using compute shaders running on the GPU. 
@@ -840,18 +839,19 @@ enum CBTYPE
 };
 GPUBuffer buffers[CBTYPE_COUNT]; // this example array contains 3 elements
 //...
-device->BindConstantBuffer(PS, &buffers[CBTYPE_MESH], 0, cmd); // makes it easy to reference an element
+device->BindConstantBuffer(&buffers[CBTYPE_MESH], 0, cmd); // makes it easy to reference an element
 ```
 
 This is widely used to make code straight forward and easy to add new objects, without needing to create additional declarations, except for the enum values.
 
 ### wiImage
 [[Header]](../../WickedEngine/wiImage.h) [[Cpp]](../../WickedEngine/wiImage.cpp)
-This can render images to the screen in a simple manner. You can draw an image to the screen with a simple one liner:
+This can render images to the screen in a simple manner. You can draw an image like this:
 ```cpp
+wiImage::SetCanvas(canvas, cmd); // setting the canvas area is required to set the drawing area and perform DPI scaling (the canvas will remain for the duration of the command list)
 wiImage::Draw(myTexture, wiImageParams(10, 20, 256, 128), cmd);
 ```
-The example will draw a 2D texture image to the position (10, 20), with a size of 256 x 128 pixels to the screen (or the curernt render pass). There are a lot of other parameters to customize the rendered image, for more information see wiImageParams structure.
+The example will draw a 2D texture image to the position (10, 20), with a size of 256 x 128 pixels to the current render pass. There are a lot of other parameters to customize the rendered image, for more information see wiImageParams structure.
 - wiImageParams <br/>
 Describe all parameters of how and where to draw the image on the screen.
 
@@ -859,6 +859,7 @@ Describe all parameters of how and where to draw the image on the screen.
 [[Header]](../../WickedEngine/wiFont.h) [[Cpp]](../../WickedEngine/wiFont.cpp)
 This can render fonts to the screen in a simple manner. You can render a font as simple as this:
 ```cpp
+wiFont::SetCanvas(canvas, cmd); // setting the canvas area is required to set the drawing area and perform DPI scaling (the canvas will remain for the duration of the command list)
 wiFont::Draw("write this!", wiFontParams(10, 20), cmd);
 ```
 Which will write the text <i>write this!</i> to 10, 20 pixel position onto the screen. There are many other parameters to describe the font's position, size, color, etc. See the wiFontParams structure for more details.
@@ -872,7 +873,7 @@ The wiFont can load and render .ttf (TrueType) fonts. The default arial font sty
 GPU driven emitter particle system, used to draw large amount of camera facing quad billboards. Supports simulation with force fields and fluid simulation based on Smooth Particle Hydrodynamics computation.
 
 ### wiHairParticle
-[[Header]](../../WickedEngine/wiHairParticle.h) [[Cpp]](../../WickedEngine/wiHaorParticle.cpp)
+[[Header]](../../WickedEngine/wiHairParticle.h) [[Cpp]](../../WickedEngine/wiHairParticle.cpp)
 GPU driven particles that are attached to a mesh surface. It can be used to render vegetation. It participates in force fields simulation.
 
 ### wiOcean
@@ -1538,8 +1539,6 @@ Shader Interop is used for declaring shared structures or values between C++ Eng
 [ShaderInterop_Raytracing.h](../WickedEngine/ShaderInterop_Raytracing.h) <br/>
 [ShaderInterop_Renderer.h](../WickedEngine/ShaderInterop_Renderer.h) <br/>
 [ShaderInterop_Skinning.h](../WickedEngine/ShaderInterop_Skinning.h) <br/>
-[ShaderInterop_Utility.h](../WickedEngine/ShaderInterop_Utility.h) <br/>
-[ShaderInterop_Vulkan.h](../WickedEngine/ShaderInterop_Vulkan.h) <br/>
 The ShaderInterop also contains the resource macros to help share code between C++ and HLSL, and portability between shader compilers. Read more about macros in the [Shaders section](#shaders)
 
 ### Shader Compiler

@@ -209,6 +209,12 @@ namespace wiScene
 				archive >> textures[CLEARCOATNORMALMAP].uvset;
 			}
 
+			if (archive.GetVersion() >= 68)
+			{
+				archive >> textures[SPECULARMAP].name;
+				archive >> textures[SPECULARMAP].uvset;
+			}
+
 			for (auto& x : textures)
 			{
 				if (!x.name.empty())
@@ -327,6 +333,12 @@ namespace wiScene
 				archive << textures[CLEARCOATMAP].uvset;
 				archive << textures[CLEARCOATROUGHNESSMAP].uvset;
 				archive << textures[CLEARCOATNORMALMAP].uvset;
+			}
+
+			if (archive.GetVersion() >= 68)
+			{
+				archive << textures[SPECULARMAP].name;
+				archive << textures[SPECULARMAP].uvset;
 			}
 		}
 	}
@@ -485,6 +497,18 @@ namespace wiScene
 				archive >> lightmapWidth;
 				archive >> lightmapHeight;
 				archive >> lightmapTextureData;
+
+				if (!lightmapTextureData.empty())
+				{
+					const uint32_t expected_datasize = lightmapWidth * lightmapHeight * sizeof(PackedVector::XMFLOAT3PK);
+					if (expected_datasize != lightmapTextureData.size())
+					{
+						// This means it's from an old version, when lightmap data was stored in raw format, so compress it...
+						wiJobSystem::Execute(seri.ctx, [this](wiJobArgs args) {
+							CompressLightmap();
+							});
+					}
+				}
 			}
 			if (archive.GetVersion() >= 31)
 			{
@@ -702,7 +726,7 @@ namespace wiScene
 					if (!lensFlareNames[i].empty())
 					{
 						lensFlareNames[i] = dir + lensFlareNames[i];
-						lensFlareRimTextures[i] = wiResourceManager::Load(dir + lensFlareNames[i], wiResourceManager::IMPORT_RETAIN_FILEDATA);
+						lensFlareRimTextures[i] = wiResourceManager::Load(lensFlareNames[i], wiResourceManager::IMPORT_RETAIN_FILEDATA);
 					}
 				}
 			});
@@ -927,7 +951,7 @@ namespace wiScene
 			archive >> ambient;
 			archive >> fogStart;
 			archive >> fogEnd;
-			archive >> fogHeight;
+			archive >> fogHeightSky;
 			archive >> cloudiness;
 			archive >> cloudScale;
 			archive >> cloudSpeed;
@@ -943,7 +967,18 @@ namespace wiScene
 			archive >> oceanParameters.wind_speed;
 			archive >> oceanParameters.wind_dependency;
 			archive >> oceanParameters.choppy_scale;
-			archive >> oceanParameters.waterColor;
+			if (archive.GetVersion() < 67)
+			{
+				XMFLOAT3 waterColor;
+				archive >> waterColor;
+				oceanParameters.waterColor.x = waterColor.x;
+				oceanParameters.waterColor.y = waterColor.y;
+				oceanParameters.waterColor.z = waterColor.z;
+			}
+			else
+			{
+				archive >> oceanParameters.waterColor;
+			}
 			archive >> oceanParameters.waterHeight;
 			archive >> oceanParameters.surfaceDetail;
 			archive >> oceanParameters.surfaceDisplacementTolerance;
@@ -971,6 +1006,91 @@ namespace wiScene
 				}
 			}
 
+			if (archive.GetVersion() >= 66)
+			{
+				archive >> skyExposure;
+
+				archive >> atmosphereParameters.bottomRadius;
+				archive >> atmosphereParameters.topRadius;
+				archive >> atmosphereParameters.planetCenter;
+				archive >> atmosphereParameters.rayleighDensityExpScale;
+				archive >> atmosphereParameters.rayleighScattering;
+				archive >> atmosphereParameters.mieDensityExpScale;
+				archive >> atmosphereParameters.mieScattering;
+				archive >> atmosphereParameters.mieExtinction;
+				archive >> atmosphereParameters.mieAbsorption;
+				archive >> atmosphereParameters.absorptionDensity0LayerWidth;
+				archive >> atmosphereParameters.absorptionDensity0ConstantTerm;
+				archive >> atmosphereParameters.absorptionDensity0LinearTerm;
+				archive >> atmosphereParameters.absorptionDensity1ConstantTerm;
+				archive >> atmosphereParameters.absorptionDensity1LinearTerm;
+				archive >> atmosphereParameters.absorptionExtinction;
+				archive >> atmosphereParameters.groundAlbedo;
+			}
+
+			if (archive.GetVersion() >= 70)
+			{
+				archive >> volumetricCloudParameters.Albedo;
+				archive >> volumetricCloudParameters.CloudAmbientGroundMultiplier;
+				archive >> volumetricCloudParameters.ExtinctionCoefficient;
+				archive >> volumetricCloudParameters.BeerPowder;
+				archive >> volumetricCloudParameters.BeerPowderPower;
+				archive >> volumetricCloudParameters.PhaseG;
+				archive >> volumetricCloudParameters.PhaseG2;
+				archive >> volumetricCloudParameters.PhaseBlend;
+				archive >> volumetricCloudParameters.MultiScatteringScattering;
+				archive >> volumetricCloudParameters.MultiScatteringExtinction;
+				archive >> volumetricCloudParameters.MultiScatteringEccentricity;
+				archive >> volumetricCloudParameters.ShadowStepLength;
+				archive >> volumetricCloudParameters.HorizonBlendAmount;
+				archive >> volumetricCloudParameters.HorizonBlendPower;
+				archive >> volumetricCloudParameters.WeatherDensityAmount;
+				archive >> volumetricCloudParameters.CloudStartHeight;
+				archive >> volumetricCloudParameters.CloudThickness;
+				archive >> volumetricCloudParameters.SkewAlongWindDirection;
+				archive >> volumetricCloudParameters.TotalNoiseScale;
+				archive >> volumetricCloudParameters.DetailScale;
+				archive >> volumetricCloudParameters.WeatherScale;
+				archive >> volumetricCloudParameters.CurlScale;
+				archive >> volumetricCloudParameters.ShapeNoiseHeightGradientAmount;
+				archive >> volumetricCloudParameters.ShapeNoiseMultiplier;
+				archive >> volumetricCloudParameters.ShapeNoiseMinMax;
+				archive >> volumetricCloudParameters.ShapeNoisePower;
+				archive >> volumetricCloudParameters.DetailNoiseModifier;
+				archive >> volumetricCloudParameters.DetailNoiseHeightFraction;
+				archive >> volumetricCloudParameters.CurlNoiseModifier;
+				archive >> volumetricCloudParameters.CoverageAmount;
+				archive >> volumetricCloudParameters.CoverageMinimum;
+				archive >> volumetricCloudParameters.TypeAmount;
+				archive >> volumetricCloudParameters.TypeOverall;
+				archive >> volumetricCloudParameters.AnvilAmount;
+				archive >> volumetricCloudParameters.AnvilOverhangHeight;
+				archive >> volumetricCloudParameters.AnimationMultiplier;
+				archive >> volumetricCloudParameters.WindSpeed;
+				archive >> volumetricCloudParameters.WindAngle;
+				archive >> volumetricCloudParameters.WindUpAmount;
+				archive >> volumetricCloudParameters.CoverageWindSpeed;
+				archive >> volumetricCloudParameters.CoverageWindAngle;
+				archive >> volumetricCloudParameters.CloudGradientSmall;
+				archive >> volumetricCloudParameters.CloudGradientMedium;
+				archive >> volumetricCloudParameters.CloudGradientLarge;
+				archive >> volumetricCloudParameters.MaxStepCount;
+				archive >> volumetricCloudParameters.MaxMarchingDistance;
+				archive >> volumetricCloudParameters.InverseDistanceStepCount;
+				archive >> volumetricCloudParameters.RenderDistance;
+				archive >> volumetricCloudParameters.LODDistance;
+				archive >> volumetricCloudParameters.LODMin;
+				archive >> volumetricCloudParameters.BigStepMarch;
+				archive >> volumetricCloudParameters.TransmittanceThreshold;
+				archive >> volumetricCloudParameters.ShadowSampleCount;
+				archive >> volumetricCloudParameters.GroundContributionSampleCount;
+			}
+
+			if (archive.GetVersion() >= 71)
+			{
+				archive >> fogHeightStart;
+				archive >> fogHeightEnd;
+			}
 		}
 		else
 		{
@@ -982,7 +1102,7 @@ namespace wiScene
 			archive << ambient;
 			archive << fogStart;
 			archive << fogEnd;
-			archive << fogHeight;
+			archive << fogHeightSky;
 			archive << cloudiness;
 			archive << cloudScale;
 			archive << cloudSpeed;
@@ -1019,6 +1139,91 @@ namespace wiScene
 				archive << colorGradingMapName;
 			}
 
+			if (archive.GetVersion() >= 66)
+			{
+				archive << skyExposure;
+
+				archive << atmosphereParameters.bottomRadius;
+				archive << atmosphereParameters.topRadius;
+				archive << atmosphereParameters.planetCenter;
+				archive << atmosphereParameters.rayleighDensityExpScale;
+				archive << atmosphereParameters.rayleighScattering;
+				archive << atmosphereParameters.mieDensityExpScale;
+				archive << atmosphereParameters.mieScattering;
+				archive << atmosphereParameters.mieExtinction;
+				archive << atmosphereParameters.mieAbsorption;
+				archive << atmosphereParameters.absorptionDensity0LayerWidth;
+				archive << atmosphereParameters.absorptionDensity0ConstantTerm;
+				archive << atmosphereParameters.absorptionDensity0LinearTerm;
+				archive << atmosphereParameters.absorptionDensity1ConstantTerm;
+				archive << atmosphereParameters.absorptionDensity1LinearTerm;
+				archive << atmosphereParameters.absorptionExtinction;
+				archive << atmosphereParameters.groundAlbedo;
+			}
+
+			if (archive.GetVersion() >= 70)
+			{
+				archive << volumetricCloudParameters.Albedo;
+				archive << volumetricCloudParameters.CloudAmbientGroundMultiplier;
+				archive << volumetricCloudParameters.ExtinctionCoefficient;
+				archive << volumetricCloudParameters.BeerPowder;
+				archive << volumetricCloudParameters.BeerPowderPower;
+				archive << volumetricCloudParameters.PhaseG;
+				archive << volumetricCloudParameters.PhaseG2;
+				archive << volumetricCloudParameters.PhaseBlend;
+				archive << volumetricCloudParameters.MultiScatteringScattering;
+				archive << volumetricCloudParameters.MultiScatteringExtinction;
+				archive << volumetricCloudParameters.MultiScatteringEccentricity;
+				archive << volumetricCloudParameters.ShadowStepLength;
+				archive << volumetricCloudParameters.HorizonBlendAmount;
+				archive << volumetricCloudParameters.HorizonBlendPower;
+				archive << volumetricCloudParameters.WeatherDensityAmount;
+				archive << volumetricCloudParameters.CloudStartHeight;
+				archive << volumetricCloudParameters.CloudThickness;
+				archive << volumetricCloudParameters.SkewAlongWindDirection;
+				archive << volumetricCloudParameters.TotalNoiseScale;
+				archive << volumetricCloudParameters.DetailScale;
+				archive << volumetricCloudParameters.WeatherScale;
+				archive << volumetricCloudParameters.CurlScale;
+				archive << volumetricCloudParameters.ShapeNoiseHeightGradientAmount;
+				archive << volumetricCloudParameters.ShapeNoiseMultiplier;
+				archive << volumetricCloudParameters.ShapeNoiseMinMax;
+				archive << volumetricCloudParameters.ShapeNoisePower;
+				archive << volumetricCloudParameters.DetailNoiseModifier;
+				archive << volumetricCloudParameters.DetailNoiseHeightFraction;
+				archive << volumetricCloudParameters.CurlNoiseModifier;
+				archive << volumetricCloudParameters.CoverageAmount;
+				archive << volumetricCloudParameters.CoverageMinimum;
+				archive << volumetricCloudParameters.TypeAmount;
+				archive << volumetricCloudParameters.TypeOverall;
+				archive << volumetricCloudParameters.AnvilAmount;
+				archive << volumetricCloudParameters.AnvilOverhangHeight;
+				archive << volumetricCloudParameters.AnimationMultiplier;
+				archive << volumetricCloudParameters.WindSpeed;
+				archive << volumetricCloudParameters.WindAngle;
+				archive << volumetricCloudParameters.WindUpAmount;
+				archive << volumetricCloudParameters.CoverageWindSpeed;
+				archive << volumetricCloudParameters.CoverageWindAngle;
+				archive << volumetricCloudParameters.CloudGradientSmall;
+				archive << volumetricCloudParameters.CloudGradientMedium;
+				archive << volumetricCloudParameters.CloudGradientLarge;
+				archive << volumetricCloudParameters.MaxStepCount;
+				archive << volumetricCloudParameters.MaxMarchingDistance;
+				archive << volumetricCloudParameters.InverseDistanceStepCount;
+				archive << volumetricCloudParameters.RenderDistance;
+				archive << volumetricCloudParameters.LODDistance;
+				archive << volumetricCloudParameters.LODMin;
+				archive << volumetricCloudParameters.BigStepMarch;
+				archive << volumetricCloudParameters.TransmittanceThreshold;
+				archive << volumetricCloudParameters.ShadowSampleCount;
+				archive << volumetricCloudParameters.GroundContributionSampleCount;
+			}
+
+			if (archive.GetVersion() >= 71)
+			{
+				archive << fogHeightStart;
+				archive << fogHeightEnd;
+			}
 		}
 	}
 	void SoundComponent::Serialize(wiArchive& archive, EntitySerializer& seri)
@@ -1439,6 +1644,25 @@ namespace wiScene
 					component.Serialize(archive, seri);
 				}
 			}
+
+			if (archive.GetVersion() >= 72)
+			{
+				// serialize children:
+				size_t childCount = 0;
+				archive >> childCount;
+				for (size_t i = 0; i < childCount; ++i)
+				{
+					Entity child = Entity_Serialize(archive);
+					if (child != INVALID_ENTITY)
+					{
+						HierarchyComponent* hier = hierarchy.GetComponent(child);
+						if (hier != nullptr)
+						{
+							hier->parentID = entity;
+						}
+					}
+				}
+			}
 		}
 		else
 		{
@@ -1796,6 +2020,25 @@ namespace wiScene
 				}
 			}
 
+			if (archive.GetVersion() >= 72)
+			{
+				// Recursive serialization for all children:
+				std::vector<Entity> children;
+				for (size_t i = 0; i < hierarchy.GetCount(); ++i)
+				{
+					const HierarchyComponent& hier = hierarchy[i];
+					if (hier.parentID == entity)
+					{
+						Entity child = hierarchy.GetEntity(i);
+						children.push_back(child);
+					}
+				}
+				archive << children.size();
+				for (Entity child : children)
+				{
+					Entity_Serialize(archive, child);
+				}
+			}
 		}
 
 		return entity;

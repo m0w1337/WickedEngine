@@ -67,7 +67,7 @@ int main(int argc, char* argv[])
 	if (targets.empty())
 	{
 		targets = {
-			{ wiGraphics::SHADERFORMAT_HLSL5, "shaders/hlsl5/" },
+			//{ wiGraphics::SHADERFORMAT_HLSL5, "shaders/hlsl5/" },
 			{ wiGraphics::SHADERFORMAT_HLSL6, "shaders/hlsl6/" },
 			{ wiGraphics::SHADERFORMAT_SPIRV, "shaders/spirv/" },
 		};
@@ -104,6 +104,8 @@ int main(int argc, char* argv[])
 		"temporalaaCS.hlsl"											,
 		"tileFrustumsCS.hlsl"										,
 		"tonemapCS.hlsl"											,
+		"fsr_upscalingCS.hlsl"										,
+		"fsr_sharpenCS.hlsl"										,
 		"ssr_resolveCS.hlsl"										,
 		"ssr_temporalCS.hlsl"										,
 		"ssaoCS.hlsl"												,
@@ -111,7 +113,6 @@ int main(int argc, char* argv[])
 		"ssr_raytraceCS.hlsl"										,
 		"sharpenCS.hlsl"											,
 		"skinningCS.hlsl"											,
-		"skinningCS_LDS.hlsl"										,
 		"resolveMSAADepthStencilCS.hlsl"							,
 		"raytraceCS.hlsl"											,
 		"raytraceCS_rtapi.hlsl"										,
@@ -135,7 +136,6 @@ int main(int argc, char* argv[])
 		"motionblurCS.hlsl"											,
 		"motionblurCS_cheap.hlsl"									,
 		"motionblurCS_earlyexit.hlsl"								,
-		"lineardepthCS.hlsl"										,
 		"luminancePass1CS.hlsl"										,
 		"lightShaftsCS.hlsl"										,
 		"lightCullingCS_ADVANCED_DEBUG.hlsl"						,
@@ -197,7 +197,6 @@ int main(int argc, char* argv[])
 		"blur_bilateral_float3CS.hlsl"								,
 		"blur_bilateral_float4CS.hlsl"								,
 		"blur_bilateral_unorm1CS.hlsl"								,
-		"bloomcombineCS.hlsl"										,
 		"voxelSceneCopyClearCS_TemporalSmoothing.hlsl"				,
 		"normalsfromdepthCS.hlsl"									,
 		"volumetricCloud_shapenoiseCS.hlsl"							,
@@ -206,27 +205,37 @@ int main(int argc, char* argv[])
 		"volumetricCloud_weathermapCS.hlsl"							,
 		"volumetricCloud_renderCS.hlsl"								,
 		"volumetricCloud_reprojectCS.hlsl"							,
+		"volumetricCloud_temporalCS.hlsl"							,
 		"shadingRateClassificationCS.hlsl"							,
 		"shadingRateClassificationCS_DEBUG.hlsl"					,
 		"skyAtmosphere_transmittanceLutCS.hlsl"						,
 		"skyAtmosphere_skyViewLutCS.hlsl"							,
 		"skyAtmosphere_multiScatteredLuminanceLutCS.hlsl"			,
 		"skyAtmosphere_skyLuminanceLutCS.hlsl"						,
-		"rtao_denoise_blurCS.hlsl"									,
-		"rtao_denoise_temporalCS.hlsl"								,
-		"rtshadow_denoise_temporalCS.hlsl"							,
 		"upsample_bilateral_uint4CS.hlsl"							,
 		"screenspaceshadowCS.hlsl"									,
+		"rtshadowCS.hlsl"											,
+		"rtshadow_denoise_tileclassificationCS.hlsl"				,
+		"rtshadow_denoise_filterCS.hlsl"							,
+		"rtshadow_denoise_temporalCS.hlsl"							,
+		"rtaoCS.hlsl"												,
+		"rtao_denoise_tileclassificationCS.hlsl",
+		"rtao_denoise_filterCS.hlsl",
+		"visibility_resolveCS.hlsl",
+		"visibility_resolveCS_MSAA.hlsl",
+		"surfel_coverageCS.hlsl",
+		"surfel_indirectprepareCS.hlsl",
+		"surfel_updateCS.hlsl",
+		"surfel_gridresetCS.hlsl",
+		"surfel_gridoffsetsCS.hlsl",
+		"surfel_binningCS.hlsl",
+		"surfel_raytraceCS_rtapi.hlsl",
+		"surfel_raytraceCS.hlsl",
 	};
 
 	shaders[wiGraphics::PS] = {
 		"emittedparticlePS_soft.hlsl"					,
 		"screenPS.hlsl"									,
-		"imagePS_separatenormalmap.hlsl"				,
-		"imagePS_separatenormalmap_bicubic.hlsl"		,
-		"imagePS_backgroundblur_masked.hlsl"			,
-		"imagePS_masked.hlsl"							,
-		"imagePS_backgroundblur.hlsl"					,
 		"imagePS.hlsl"									,
 		"emittedparticlePS_soft_lighting.hlsl"			,
 		"oceanSurfacePS.hlsl"							,
@@ -241,7 +250,6 @@ int main(int argc, char* argv[])
 		"sunPS.hlsl"									,
 		"skyPS_dynamic.hlsl"							,
 		"skyPS_static.hlsl"								,
-		"skyPS_velocity.hlsl"							,
 		"shadowPS_transparent.hlsl"						,
 		"shadowPS_water.hlsl"							,
 		"shadowPS_alphatest.hlsl"						,
@@ -262,7 +270,7 @@ int main(int argc, char* argv[])
 		"objectPS.hlsl"									,
 		"objectPS_hologram.hlsl"						,
 		"objectPS_paintradius.hlsl"						,
-		"objectPS_simplest.hlsl"						,
+		"objectPS_simple.hlsl"						,
 		"objectPS_debug.hlsl"							,
 		"objectPS_prepass.hlsl"							,
 		"objectPS_prepass_alphatest.hlsl"				,
@@ -283,7 +291,7 @@ int main(int argc, char* argv[])
 		"impostorPS_wire.hlsl"							,
 		"impostorPS_simple.hlsl"						,
 		"impostorPS_prepass.hlsl"						,
-		"hairparticlePS_simplest.hlsl"					,
+		"hairparticlePS_simple.hlsl"					,
 		"hairparticlePS_prepass.hlsl"					,
 		"forceFieldVisualizerPS.hlsl"					,
 		"fontPS.hlsl"									,
@@ -293,7 +301,7 @@ int main(int argc, char* argv[])
 		"envMapPS_terrain.hlsl"							,
 		"emittedparticlePS_soft_distortion.hlsl"		,
 		"downsampleDepthBuffer4xPS.hlsl"				,
-		"emittedparticlePS_simplest.hlsl"				,
+		"emittedparticlePS_simple.hlsl"				,
 		"cubeMapPS.hlsl"								,
 		"circlePS.hlsl"									,
 		"captureImpostorPS_normal.hlsl"					,
@@ -330,6 +338,7 @@ int main(int argc, char* argv[])
 		"objectVS_prepass_alphatest.hlsl"				,
 		"objectVS_prepass_tessellation.hlsl"			,
 		"objectVS_prepass_alphatest_tessellation.hlsl"	,
+		"objectVS_simple_tessellation.hlsl"	,
 		"objectVS_debug.hlsl"							,
 		"lensFlareVS.hlsl"								,
 		"impostorVS.hlsl"								,
@@ -356,19 +365,20 @@ int main(int argc, char* argv[])
 		"cubeShadowGS_transparent_emulation.hlsl"	,
 		"voxelGS.hlsl"								,
 		"objectGS_voxelizer.hlsl"					,
-		"lensFlareGS.hlsl"							,
 	};
 
 	shaders[wiGraphics::DS] = {
 		"objectDS.hlsl",
 		"objectDS_prepass.hlsl",
 		"objectDS_prepass_alphatest.hlsl",
+		"objectDS_simple.hlsl",
 	};
 
 	shaders[wiGraphics::HS] = {
 		"objectHS.hlsl",
 		"objectHS_prepass.hlsl",
 		"objectHS_prepass_alphatest.hlsl",
+		"objectHS_simple.hlsl",
 	};
 
 	shaders[wiGraphics::AS] = {
@@ -380,13 +390,14 @@ int main(int argc, char* argv[])
 	};
 
 	shaders[wiGraphics::LIB] = {
-		"rtaoLIB.hlsl",
 		"rtreflectionLIB.hlsl",
-		"rtshadowLIB.hlsl",
 	};
 
 	minshadermodels["renderlightmapPS_rtapi.hlsl"] = wiGraphics::SHADERMODEL_6_5;
 	minshadermodels["raytraceCS_rtapi.hlsl"] = wiGraphics::SHADERMODEL_6_5;
+	minshadermodels["rtshadowCS.hlsl"] = wiGraphics::SHADERMODEL_6_5;
+	minshadermodels["rtaoCS.hlsl"] = wiGraphics::SHADERMODEL_6_5;
+	minshadermodels["surfel_raytraceCS_rtapi.hlsl"] = wiGraphics::SHADERMODEL_6_5;
 
 	wiShaderCompiler::Initialize();
 	wiJobSystem::Initialize();

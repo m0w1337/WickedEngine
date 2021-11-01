@@ -14,25 +14,28 @@
 #include <mutex>
 #include <deque>
 
-using namespace std;
 using namespace wiGraphics;
 
 
 namespace wiBackLog
 {
 	bool enabled = false;
-	deque<string> stream;
-	deque<string> history;
+	std::deque<std::string> stream;
+	std::deque<std::string> history;
 	const float speed = 50.0f;
 	unsigned int deletefromline = 500;
 	float pos = -FLT_MAX;
 	float scroll = 0;
-	string inputArea;
+	std::string inputArea;
 	int historyPos = 0;
 	wiSpriteFont font;
 	wiSpinLock logLock;
 	Texture backgroundTex;
 	bool refitscroll = false;
+
+	bool locked = false;
+	bool blockLuaExec = false;
+	LogLevel logLevel = LogLevel::Default;
 
 	void Toggle() 
 	{
@@ -42,34 +45,37 @@ namespace wiBackLog
 	{
 		scroll += dir;
 	}
-	void Update() 
+	void Update(const wiCanvas& canvas)
 	{
-		if (wiInput::Press(wiInput::KEYBOARD_BUTTON_HOME))
+		if (!locked)
 		{
-			Toggle();
-		}
+			if (wiInput::Press(wiInput::KEYBOARD_BUTTON_HOME))
+			{
+				Toggle();
+			}
 
-		if (isActive())
-		{
-			if (wiInput::Press(wiInput::KEYBOARD_BUTTON_UP))
+			if (isActive())
 			{
-				historyPrev();
-			}
-			if (wiInput::Press(wiInput::KEYBOARD_BUTTON_DOWN))
-			{
-				historyNext();
-			}
-			if (wiInput::Press(wiInput::KEYBOARD_BUTTON_ENTER))
-			{
-				acceptInput();
-			}
-			if (wiInput::Down(wiInput::KEYBOARD_BUTTON_PAGEUP))
-			{
-				Scroll(10);
-			}
-			if (wiInput::Down(wiInput::KEYBOARD_BUTTON_PAGEDOWN))
-			{
-				Scroll(-10);
+				if (wiInput::Press(wiInput::KEYBOARD_BUTTON_UP))
+				{
+					historyPrev();
+				}
+				if (wiInput::Press(wiInput::KEYBOARD_BUTTON_DOWN))
+				{
+					historyNext();
+				}
+				if (wiInput::Press(wiInput::KEYBOARD_BUTTON_ENTER))
+				{
+					acceptInput();
+				}
+				if (wiInput::Down(wiInput::KEYBOARD_BUTTON_PAGEUP))
+				{
+					Scroll(10);
+				}
+				if (wiInput::Down(wiInput::KEYBOARD_BUTTON_PAGEDOWN))
+				{
+					Scroll(-10);
+				}
 			}
 		}
 
@@ -81,11 +87,11 @@ namespace wiBackLog
 		{
 			pos -= speed;
 		}
-		pos = wiMath::Clamp(pos, -wiRenderer::GetDevice()->GetScreenHeight(), 0);
+		pos = wiMath::Clamp(pos, -canvas.GetLogicalHeight(), 0);
 	}
-	void Draw(CommandList cmd)
+	void Draw(const wiCanvas& canvas, CommandList cmd)
 	{
-		if (pos > -wiRenderer::GetDevice()->GetScreenHeight())
+		if (pos > -canvas.GetLogicalHeight())
 		{
 			if (!backgroundTex.IsValid())
 			{
@@ -93,11 +99,11 @@ namespace wiBackLog
 				wiTextureHelper::CreateTexture(backgroundTex, colorData, 1, 2);
 			}
 
-			wiImageParams fx = wiImageParams((float)wiRenderer::GetDevice()->GetScreenWidth(), (float)wiRenderer::GetDevice()->GetScreenHeight());
+			wiImageParams fx = wiImageParams((float)canvas.GetLogicalWidth(), (float)canvas.GetLogicalHeight());
 			fx.pos = XMFLOAT3(0, pos, 0);
-			fx.opacity = wiMath::Lerp(1, 0, -pos / wiRenderer::GetDevice()->GetScreenHeight());
+			fx.opacity = wiMath::Lerp(1, 0, -pos / canvas.GetLogicalHeight());
 			wiImage::Draw(&backgroundTex, fx, cmd);
-			wiFont::Draw(inputArea, wiFontParams(10, wiRenderer::GetDevice()->GetScreenHeight() - 10, WIFONTSIZE_DEFAULT, WIFALIGN_LEFT, WIFALIGN_BOTTOM), cmd);
+			wiFont::Draw(inputArea, wiFontParams(10, canvas.GetLogicalHeight() - 10, WIFONTSIZE_DEFAULT, WIFALIGN_LEFT, WIFALIGN_BOTTOM), cmd);
 
 
 			font.SetText(getText());
@@ -105,7 +111,7 @@ namespace wiBackLog
 			{
 				refitscroll = false;
 				float textheight = font.textHeight();
-				float limit = wiRenderer::GetDevice()->GetScreenHeight() * 0.9f;
+				float limit = canvas.GetLogicalHeight() * 0.9f;
 				if (scroll + textheight > limit)
 				{
 					scroll = limit - textheight;
@@ -115,9 +121,9 @@ namespace wiBackLog
 			font.params.posY = pos + scroll;
 			Rect rect;
 			rect.left = 0;
-			rect.right = (int32_t)wiRenderer::GetDevice()->GetResolutionWidth();
+			rect.right = (int32_t)canvas.GetPhysicalWidth();
 			rect.top = 0;
-			rect.bottom = int32_t(wiRenderer::GetDevice()->GetResolutionHeight() * 0.9f);
+			rect.bottom = int32_t(canvas.GetPhysicalHeight() * 0.9f);
 			wiRenderer::GetDevice()->BindScissorRects(1, &rect, cmd);
 			font.Draw(cmd);
 			rect.left = -INT_MAX;
@@ -129,10 +135,10 @@ namespace wiBackLog
 	}
 
 
-	string getText() 
+	std::string getText()
 	{
 		logLock.lock();
-		string retval;
+		std::string retval;
 		for (auto& x : stream)
 		{
 			retval += x;
@@ -147,11 +153,28 @@ namespace wiBackLog
 		scroll = 0;
 		logLock.unlock();
 	}
-	void post(const char* input) 
+	void post(const std::string& input, LogLevel level)
 	{
+		if (logLevel < level)
+		{
+			return;
+		}
 		logLock.lock();
-		string str;
-		str = input;
+		std::string str;
+		switch (level)
+		{
+		default:
+		case LogLevel::Default:
+			str = "";
+			break;
+		case LogLevel::Warning:
+			str = "[Warning] ";
+			break;
+		case LogLevel::Error:
+			str = "[Error] ";
+			break;
+		}
+		str += input;
 		str += '\n';
 		stream.push_back(str);
 		if (stream.size() > deletefromline)
@@ -179,7 +202,14 @@ namespace wiBackLog
 		if (history.size() > deletefromline) {
 			history.pop_front();
 		}
-		wiLua::RunText(inputArea);
+		if (!blockLuaExec)
+		{
+			wiLua::RunText(inputArea);
+		}
+		else
+		{
+			wiBackLog::post("Lua execution is disabled", LogLevel::Error);
+		}
 		inputArea.clear();
 	}
 	void deletefromInput() 
@@ -222,4 +252,27 @@ namespace wiBackLog
 
 	bool isActive() { return enabled; }
 
+	void Lock()
+	{
+		locked = true;
+		enabled = false;
+	}
+	void Unlock()
+	{
+		locked = false;
+	}
+
+	void BlockLuaExecution()
+	{
+		blockLuaExec = true;
+	}
+	void UnblockLuaExecution()
+	{
+		blockLuaExec = false;
+	}
+
+	void SetLogLevel(LogLevel newLevel)
+	{
+		logLevel = newLevel;
+	}
 }

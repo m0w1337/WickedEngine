@@ -1,4 +1,5 @@
 #include "globals.hlsli"
+#include "emittedparticleHF.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 
 RWSTRUCTUREDBUFFER(particleBuffer, Particle, 0);
@@ -22,13 +23,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	{
 		// we can emit:
 
-		float2 uv = float2(g_xFrame_Time + xEmitterRandomness, (float)DTid.x / (float)THREADCOUNT_EMIT);
+		float2 uv = float2(g_xFrame.Time + xEmitterRandomness, (float)DTid.x / (float)THREADCOUNT_EMIT);
 		float seed = 0.12345;
 		
 #ifdef EMIT_FROM_MESH
 		// random triangle on emitter surface:
 		//	(Note that the usual rand() function is not used because that introduces unnatural clustering with high triangle count)
-		uint tri = (uint)((xEmitterMeshIndexCount / 3) * hash1(DTid.x));
+		uint tri = (uint)((xEmitterMeshIndexCount / 3) * hash1(DTid.x + g_xFrame.FrameCount));
 
 		// load indices of triangle from index buffer
 		uint i0 = meshIndexBuffer[tri * 3 + 0];
@@ -112,7 +113,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		color_modifier |= (uint)(255.0 * lerp(1, rand(seed, uv), xParticleRandomColorFactor)) << 0;
 		color_modifier |= (uint)(255.0 * lerp(1, rand(seed, uv), xParticleRandomColorFactor)) << 8;
 		color_modifier |= (uint)(255.0 * lerp(1, rand(seed, uv), xParticleRandomColorFactor)) << 16;
-		particle.color_mirror |= xParticleColor & color_modifier;
+		particle.color_mirror |= pack_rgba(float4(EmitterGetMaterial().baseColor.rgb, 1)) & color_modifier;
 
 
 		// new particle index retrieved from dead list (pop):

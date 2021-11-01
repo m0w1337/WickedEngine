@@ -4,9 +4,10 @@
 
 #include "Utility/stb_image.h"
 
+#include "meshoptimizer/meshoptimizer.h"
+
 #include <sstream>
 
-using namespace std;
 using namespace wiECS;
 using namespace wiScene;
 
@@ -76,7 +77,7 @@ struct TerraGen : public wiWindow
 void MeshWindow::Create(EditorComponent* editor)
 {
 	wiWindow::Create("Mesh Window");
-	SetSize(XMFLOAT2(580, 520));
+	SetSize(XMFLOAT2(580, 540));
 
 	float x = 150;
 	float y = 0;
@@ -205,7 +206,7 @@ void MeshWindow::Create(EditorComponent* editor)
 	});
 	AddWidget(&impostorDistanceSlider);
 
-	tessellationFactorSlider.Create(0, 16, 0, 10000, "Tessellation Factor: ");
+	tessellationFactorSlider.Create(0, 100, 0, 10000, "Tessellation Factor: ");
 	tessellationFactorSlider.SetTooltip("Set the dynamic tessellation amount. Tessellation should be enabled in the Renderer window and your GPU must support it!");
 	tessellationFactorSlider.SetSize(XMFLOAT2(100, hei));
 	tessellationFactorSlider.SetPos(XMFLOAT2(x, y += step));
@@ -301,6 +302,30 @@ void MeshWindow::Create(EditorComponent* editor)
 		}
 	});
 	AddWidget(&recenterToBottomButton);
+
+	optimizeButton.Create("Optimize");
+	optimizeButton.SetTooltip("Run the meshoptimizer library.");
+	optimizeButton.SetSize(XMFLOAT2(240, hei));
+	optimizeButton.SetPos(XMFLOAT2(x - 50, y += step));
+	optimizeButton.OnClick([&](wiEventArgs args) {
+		MeshComponent* mesh = wiScene::GetScene().meshes.GetComponent(entity);
+		if (mesh != nullptr)
+		{
+			// https://github.com/zeux/meshoptimizer#vertex-cache-optimization
+
+			size_t index_count = mesh->indices.size();
+			size_t vertex_count = mesh->vertex_positions.size();
+
+			std::vector<uint32_t> indices(index_count);
+			meshopt_optimizeVertexCache(indices.data(), mesh->indices.data(), index_count, vertex_count);
+
+			mesh->indices = indices;
+
+			mesh->CreateRenderData();
+			SetEntity(entity);
+		}
+		});
+	AddWidget(&optimizeButton);
 
 	x = 150;
 	y = 190;
@@ -509,12 +534,7 @@ void MeshWindow::Create(EditorComponent* editor)
 			wiHelper::FileDialogParams params;
 			params.type = wiHelper::FileDialogParams::OPEN;
 			params.description = "Texture";
-			params.extensions.push_back("dds");
-			params.extensions.push_back("png");
-			params.extensions.push_back("jpg");
-			params.extensions.push_back("jpeg");
-			params.extensions.push_back("tga");
-			params.extensions.push_back("bmp");
+			params.extensions = wiResourceManager::GetSupportedImageExtensions();
 			wiHelper::FileDialog(params, [=](std::string fileName) {
 				wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
 					if (terragen.rgb != nullptr)
@@ -562,7 +582,7 @@ void MeshWindow::Create(EditorComponent* editor)
 	});
 	AddWidget(&morphTargetSlider);
 
-	Translate(XMFLOAT3((float)wiRenderer::GetDevice()->GetScreenWidth() - 1000, 80, 0));
+	Translate(XMFLOAT3((float)editor->GetLogicalWidth() - 1000, 80, 0));
 	SetVisible(false);
 
 	SetEntity(INVALID_ENTITY);
@@ -586,12 +606,12 @@ void MeshWindow::SetEntity(Entity entity)
 	{
 		const NameComponent& name = *scene.names.GetComponent(entity);
 
-		stringstream ss("");
-		ss << "Mesh name: " << name.name << endl;
-		ss << "Vertex count: " << mesh->vertex_positions.size() << endl;
-		ss << "Index count: " << mesh->indices.size() << endl;
-		ss << "Subset count: " << mesh->subsets.size() << endl;
-		ss << endl << "Vertex buffers: ";
+		std::stringstream ss("");
+		ss << "Mesh name: " << name.name << std::endl;
+		ss << "Vertex count: " << mesh->vertex_positions.size() << std::endl;
+		ss << "Index count: " << mesh->indices.size() << std::endl;
+		ss << "Subset count: " << mesh->subsets.size() << std::endl;
+		ss << std::endl << "Vertex buffers: ";
 		if (mesh->vertexBuffer_POS.IsValid()) ss << "position; ";
 		if (mesh->vertexBuffer_UV0.IsValid()) ss << "uvset_0; ";
 		if (mesh->vertexBuffer_UV1.IsValid()) ss << "uvset_1; ";
@@ -602,7 +622,7 @@ void MeshWindow::SetEntity(Entity entity)
 		if (mesh->vertexBuffer_TAN.IsValid()) ss << "tangent; ";
 		if (mesh->streamoutBuffer_POS.IsValid()) ss << "streamout_position; ";
 		if (mesh->streamoutBuffer_TAN.IsValid()) ss << "streamout_tangents; ";
-		if (mesh->IsTerrain()) ss << endl << endl << "Terrain will use 4 blend materials and blend by vertex colors, the default one is always the subset material and uses RED vertex color channel mask, the other 3 are selectable below.";
+		if (mesh->IsTerrain()) ss << std::endl << std::endl << "Terrain will use 4 blend materials and blend by vertex colors, the default one is always the subset material and uses RED vertex color channel mask, the other 3 are selectable below.";
 		meshInfoLabel.SetText(ss.str());
 
 		terrainCheckBox.SetCheck(mesh->IsTerrain());

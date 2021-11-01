@@ -3,10 +3,10 @@
 
 #include <algorithm>
 
-#define saturate(x) std::min(std::max(x,0.0f),1.0f)
-
 namespace wiMath
 {
+	inline float saturate(float x) { return std::min(std::max(x, 0.0f), 1.0f); }
+
 	inline float Length(const XMFLOAT2& v)
 	{
 		return sqrtf(v.x*v.x + v.y*v.y);
@@ -151,6 +151,17 @@ namespace wiMath
 		x |= x >> 16;
 		return ++x;
 	}
+	inline constexpr uint64_t GetNextPowerOfTwo(uint64_t x)
+	{
+		--x;
+		x |= x >> 1;
+		x |= x >> 2;
+		x |= x >> 4;
+		x |= x >> 8;
+		x |= x >> 16;
+		x |= x >> 32u;
+		return ++x;
+	}
 
 	// A, B, C: trangle vertices
 	float TriangleArea(const XMVECTOR& A, const XMVECTOR& B, const XMVECTOR& C);
@@ -175,9 +186,52 @@ namespace wiMath
 	// Returns an element of a precomputed halton sequence. Specify which iteration to get with idx >= 0
 	const XMFLOAT4& GetHaltonSequence(int idx);
 
-	uint32_t CompressNormal(const XMFLOAT3& normal);
-	uint32_t CompressColor(const XMFLOAT3& color);
-	uint32_t CompressColor(const XMFLOAT4& color);
+	inline uint32_t CompressNormal(const XMFLOAT3& normal)
+	{
+		uint32_t retval = 0;
+
+		retval |= (uint32_t)((uint8_t)(normal.x * 127.5f + 127.5f) << 0);
+		retval |= (uint32_t)((uint8_t)(normal.y * 127.5f + 127.5f) << 8);
+		retval |= (uint32_t)((uint8_t)(normal.z * 127.5f + 127.5f) << 16);
+
+		return retval;
+	}
+	inline uint32_t CompressColor(const XMFLOAT3& color)
+	{
+		uint32_t retval = 0;
+
+		retval |= (uint32_t)((uint8_t)(saturate(color.x) * 255.0f) << 0);
+		retval |= (uint32_t)((uint8_t)(saturate(color.y) * 255.0f) << 8);
+		retval |= (uint32_t)((uint8_t)(saturate(color.z) * 255.0f) << 16);
+
+		return retval;
+	}
+	inline uint32_t CompressColor(const XMFLOAT4& color)
+	{
+		uint32_t retval = 0;
+
+		retval |= (uint32_t)((uint8_t)(saturate(color.x) * 255.0f) << 0);
+		retval |= (uint32_t)((uint8_t)(saturate(color.y) * 255.0f) << 8);
+		retval |= (uint32_t)((uint8_t)(saturate(color.z) * 255.0f) << 16);
+		retval |= (uint32_t)((uint8_t)(saturate(color.w) * 255.0f) << 24);
+
+		return retval;
+	}
+	inline XMFLOAT3 Unpack_R11G11B10_FLOAT(uint32_t value)
+	{
+		XMFLOAT3PK pk;
+		pk.v = value;
+		XMVECTOR V = XMLoadFloat3PK(&pk);
+		XMFLOAT3 result;
+		XMStoreFloat3(&result, V);
+		return result;
+	}
+	inline uint32_t Pack_R11G11B10_FLOAT(const XMFLOAT3& color)
+	{
+		XMFLOAT3PK pk;
+		XMStoreFloat3PK(&pk, XMLoadFloat3(&color));
+		return pk.v;
+	}
 
 
 

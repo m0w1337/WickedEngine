@@ -5,12 +5,12 @@
 #include "SamplerMapping.h"
 #include "ResourceMapping.h"
 
-
 #ifdef __cplusplus // not invoking shader compiler, but included in engine source
 
 // Application-side types:
 
 typedef XMMATRIX matrix;
+typedef XMFLOAT3X4 float3x4;
 typedef XMFLOAT4X4 float4x4;
 typedef XMFLOAT2 float2;
 typedef XMFLOAT3 float3;
@@ -23,12 +23,17 @@ typedef XMINT2 int2;
 typedef XMINT3 int3;
 typedef XMINT4 int4;
 
+#define column_major
+#define row_major
+
 #define CB_GETBINDSLOT(name) __CBUFFERBINDSLOT__##name##__
 #define CBUFFER(name, slot) static const int CB_GETBINDSLOT(name) = slot; struct alignas(16) name
-#define CONSTANTBUFFER(name, type, slot) CBUFFER(name, slot)
-#define ROOTCONSTANTS(name, type, slot) CBUFFER(name, slot)
+#define CONSTANTBUFFER(name, type, slot)
+#define PUSHCONSTANT(name, type)
 
 #else
+
+#include "PixelPacking_R11G11B10.hlsli"
 
 // Shader - side types:
 
@@ -87,6 +92,29 @@ typedef XMINT4 int4;
 #define WaveActiveBitOr(a) (a)
 #endif // DISABLE_WAVE_INTRINSICS
 
+struct IndirectDrawArgsInstanced
+{
+	uint VertexCountPerInstance;
+	uint InstanceCount;
+	uint StartVertexLocation;
+	uint StartInstanceLocation;
+};
+struct IndirectDrawArgsIndexedInstanced
+{
+	uint IndexCountPerInstance;
+	uint InstanceCount;
+	uint StartIndexLocation;
+	int BaseVertexLocation;
+	uint StartInstanceLocation;
+};
+struct IndirectDispatchArgs
+{
+	uint ThreadGroupCountX;
+	uint ThreadGroupCountY;
+	uint ThreadGroupCountZ;
+};
+
 #endif // __cplusplus
+
 
 #endif // WI_SHADERINTEROP_H

@@ -4,19 +4,19 @@
 
 float4 main(VertexToPixel input) : SV_TARGET
 {
-	ShaderEntity light = EntityArray[g_xFrame_LightArrayOffset + (uint)g_xColor.x];
+	ShaderEntity light = load_entity(g_xFrame.LightArrayOffset + (uint)g_xColor.x);
 
 	float2 ScreenCoord = input.pos2D.xy / input.pos2D.w * float2(0.5f, -0.5f) + 0.5f;
 	float depth = max(input.pos.z, texture_depth.SampleLevel(sampler_point_clamp, ScreenCoord, 2));
 	float3 P = reconstructPosition(ScreenCoord, depth);
-	float3 V = g_xCamera_CamPos - P;
+	float3 V = GetCamera().CamPos - P;
 	float cameraDistance = length(V);
 	V /= cameraDistance;
 
 	float marchedDistance = 0;
 	float3 accumulation = 0;
 
-	float3 rayEnd = g_xCamera_CamPos;
+	float3 rayEnd = GetCamera().CamPos;
 	if (length(rayEnd - light.position) > light.GetRange())
 	{
 		// if we are outside the light volume, then rayEnd will be the traced sphere frontface:
@@ -49,8 +49,9 @@ float4 main(VertexToPixel input) : SV_TARGET
 			attenuation *= shadowCube(light, L, Lunnormalized);
 		}
 
-		attenuation *= GetFogAmount(cameraDistance - marchedDistance);
-
+		// Evaluate sample height for height fog calculation, given 0 for V:
+		attenuation *= GetFogAmount(cameraDistance - marchedDistance, P, float3(0.0, 0.0, 0.0));
+		
 		accumulation += attenuation;
 
 		marchedDistance += stepSize;

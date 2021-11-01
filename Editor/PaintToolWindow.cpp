@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "Editor.h"
 #include "PaintToolWindow.h"
-#include "shaders/ShaderInterop_Paint.h"
+#include "shaders/ShaderInterop_Renderer.h"
 
 #include <sstream>
 #include <cmath>
@@ -196,7 +196,7 @@ void PaintToolWindow::Create(EditorComponent* editor)
 	colorPicker.SetPos(XMFLOAT2(10, y += step));
 	AddWidget(&colorPicker);
 
-	Translate(XMFLOAT3((float)wiRenderer::GetDevice()->GetScreenWidth() - 550, 50, 0));
+	Translate(XMFLOAT3((float)editor->GetLogicalWidth() - 550, 50, 0));
 	SetVisible(false);
 }
 
@@ -207,8 +207,8 @@ void PaintToolWindow::Update(float dt)
 	rot -= dt;
 	// by default, paint tool is on center of screen, this makes it easy to tweak radius with GUI:
 	XMFLOAT2 posNew;
-	posNew.x = wiRenderer::GetDevice()->GetScreenWidth() * 0.5f;
-	posNew.y = wiRenderer::GetDevice()->GetScreenHeight() * 0.5f;
+	posNew.x = editor->GetLogicalWidth() * 0.5f;
+	posNew.y = editor->GetLogicalHeight() * 0.5f;
 	if (editor->GetGUI().HasFocus() || wiBackLog::isActive() || entity == INVALID_ENTITY)
 	{
 		pos = posNew;
@@ -253,7 +253,7 @@ void PaintToolWindow::Update(float dt)
 	const XMMATRIX VP = camera.GetViewProjection();
 	const XMVECTOR MUL = XMVectorSet(0.5f, -0.5f, 1, 1);
 	const XMVECTOR ADD = XMVectorSet(0.5f, 0.5f, 0, 0);
-	const XMVECTOR SCREEN = XMVectorSet((float)wiRenderer::GetDevice()->GetScreenWidth(), (float)wiRenderer::GetDevice()->GetScreenHeight(), 1, 1);
+	const XMVECTOR SCREEN = XMVectorSet((float)editor->GetLogicalWidth(), (float)editor->GetLogicalHeight(), 1, 1);
 	const XMVECTOR F = camera.GetAt();
 
 	switch (mode)
@@ -305,22 +305,11 @@ void PaintToolWindow::Update(float dt)
 			// Need to requery this because RecordHistory might swap textures on material:
 			editTexture = GetEditTextureSlot(*material, &uvset);
 
-			static GPUBuffer cbuf;
-			if (!cbuf.IsValid())
-			{
-				GPUBufferDesc desc;
-				desc.BindFlags = BIND_CONSTANT_BUFFER;
-				desc.Usage = USAGE_DYNAMIC;
-				desc.CPUAccessFlags = CPU_ACCESS_WRITE;
-				desc.ByteWidth = sizeof(PaintTextureCB);
-				device->CreateBuffer(&desc, nullptr, &cbuf);
-			}
-
 			device->BindComputeShader(wiRenderer::GetShader(CSTYPE_PAINT_TEXTURE), cmd);
 
 			wiRenderer::BindCommonResources(cmd);
-			device->BindResource(CS, wiTextureHelper::getWhite(), TEXSLOT_ONDEMAND0, cmd);
-			device->BindUAV(CS, &editTexture, 0, cmd);
+			device->BindResource(wiTextureHelper::getWhite(), TEXSLOT_ONDEMAND0, cmd);
+			device->BindUAV(&editTexture, 0, cmd);
 
 			PaintTextureCB cb;
 			cb.xPaintBrushCenter = center;
@@ -328,8 +317,7 @@ void PaintToolWindow::Update(float dt)
 			cb.xPaintBrushAmount = amount;
 			cb.xPaintBrushFalloff = falloff;
 			cb.xPaintBrushColor = color.rgba;
-			device->UpdateBuffer(&cbuf, &cb, cmd);
-			device->BindConstantBuffer(CS, &cbuf, CB_GETBINDSLOT(PaintTextureCB), cmd);
+			device->PushConstants(&cb, sizeof(cb), cmd);
 
 			const uint diameter = cb.xPaintBrushRadius * 2;
 			const uint dispatch_dim = (diameter + PAINT_TEXTURE_BLOCKSIZE - 1) / PAINT_TEXTURE_BLOCKSIZE;
@@ -340,7 +328,6 @@ void PaintToolWindow::Update(float dt)
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 
-			device->UnbindUAVs(0, 1, cmd);
 
 			wiRenderer::GenerateMipChain(editTexture, wiRenderer::MIPGENFILTER::MIPGENFILTER_LINEAR, cmd);
 		}

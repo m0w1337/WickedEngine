@@ -6,6 +6,12 @@ else ()
 	set(TARGET_NAME WickedEngine)
 	find_package(Vulkan REQUIRED)
 	find_package(SDL2 REQUIRED)
+	find_package(OpenImageDenoise QUIET)
+	if(NOT ${OpenImageDenoise_FOUND})
+		message("OpenImageDenoise not found, it will be disabled.")
+	else()
+		message("OpenImageDenoise Found.")
+	endif()
 
 	if(NOT TARGET SDL2::SDL2)
 		# using old SDL2 cmake, lets create a SDL2 target ourselves
@@ -54,8 +60,6 @@ add_library(${TARGET_NAME} STATIC
 	wiFont.cpp
 	wiGPUBVH.cpp
 	wiGPUSortLib.cpp
-	wiGraphicsDevice.cpp
-	wiGraphicsDevice_DX11.cpp
 	wiGraphicsDevice_DX12.cpp
 	wiGraphicsDevice_Vulkan.cpp
 	wiGUI.cpp
@@ -97,7 +101,6 @@ add_library(${TARGET_NAME} STATIC
 	wiVersion.cpp
 	wiWidget.cpp
 	wiXInput.cpp
-	wiBlueNoise.cpp
 	wiShaderCompiler.cpp
 )
 
@@ -120,6 +123,8 @@ else ()
 	target_link_libraries(${TARGET_NAME} PUBLIC
 		Vulkan::Vulkan
 		SDL2::SDL2
+		$<$<BOOL:${OpenImageDenoise_FOUND}>:OpenImageDenoise> # links OpenImageDenoise only if it's found
+		FAudio
 	)
 
 	target_link_libraries(${TARGET_NAME} PRIVATE dl)

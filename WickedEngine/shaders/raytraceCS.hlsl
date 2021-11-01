@@ -4,7 +4,9 @@
 #include "raytracingHF.hlsli"
 #include "lightingHF.hlsli"
 
-RWTEXTURE2D(resultTexture, float4, 0);
+RWTEXTURE2D(output, float4, 0);
+RWTEXTURE2D(output_albedo, float4, 1);
+RWTEXTURE2D(output_normal, float4, 2);
 
 [numthreads(RAYTRACING_LAUNCH_BLOCKSIZE, RAYTRACING_LAUNCH_BLOCKSIZE, 1)]
 void main(uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
@@ -17,20 +19,24 @@ void main(uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 	float3 result = 0;
 	float3 energy = 1;
 
+	// for denoiser:
+	float3 primary_albedo = 0;
+	float3 primary_normal = 0;
+
 	// Compute screen coordinates:
 	float2 uv = float2((pixel + xTracePixelOffset) * xTraceResolution_rcp.xy * 2 - 1) * float2(1, -1);
-	float seed = xTraceRandomSeed;
+	float seed = xTraceAccumulationFactor;
 
 	// Create starting ray:
 	RayDesc ray = CreateCameraRay(uv);
 
 	// Depth of field setup:
-	float3 focal_point = ray.Origin + ray.Direction * g_xCamera_FocalLength;
-	float3 coc = float3(hemispherepoint_cos(rand(seed, pixel), rand(seed, pixel)).xy, 0);
-	coc.xy *= g_xCamera_ApertureShape.xy;
-	coc = mul(coc, float3x3(cross(g_xCamera_Up, g_xCamera_At), g_xCamera_Up, g_xCamera_At));
-	coc *= g_xCamera_FocalLength;
-	coc *= g_xCamera_ApertureSize;
+	float3 focal_point = ray.Origin + ray.Direction * GetCamera().FocalLength;
+	float3 coc = float3(hemispherepoint_cos(rand(seed, uv), rand(seed, uv)).xy, 0);
+	coc.xy *= GetCamera().ApertureShape.xy;
+	coc = mul(coc, float3x3(cross(GetCamera().Up, GetCamera().At), GetCamera().Up, GetCamera().At));
+	coc *= GetCamera().FocalLength;
+	coc *= GetCamera().ApertureSize;
 	coc *= 0.1f;
 	ray.Origin = ray.Origin + coc;
 	ray.Direction = focal_point - ray.Origin; // will be normalized before tracing!
@@ -50,15 +56,29 @@ void main(uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 #ifdef RAY_BACKFACE_CULLING
 			RAY_FLAG_CULL_BACK_FACING_TRIANGLES |
 #endif // RAY_BACKFACE_CULLING
-			RAY_FLAG_FORCE_OPAQUE |
 			0,								// uint RayFlags
 			0xFF,							// uint InstanceInclusionMask
 			ray								// RayDesc Ray
 		);
-		q.Proceed();
+		while (q.Proceed())
+		{
+			PrimitiveID prim;
+			prim.primitiveIndex = q.CandidatePrimitiveIndex();
+			prim.instanceIndex = q.CandidateInstanceID();
+			prim.subsetIndex = q.CandidateGeometryIndex();
+
+			Surface surface;
+			surface.load(prim, q.CandidateTriangleBarycentrics());
+
+			[branch]
+			if (surface.opacity - rand(seed, uv) >= 0)
+			{
+				q.CommitNonOpaqueTriangleHit();
+			}
+		}
 		if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
 #else
-		RayHit hit = TraceRay_Closest(ray, groupIndex);
+		RayHit hit = TraceRay_Closest(ray, seed, uv, groupIndex);
 
 		if (hit.distance >= FLT_MAX - 1)
 #endif // RTAPI
@@ -83,153 +103,57 @@ void main(uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 		}
 
 		Surface surface;
-		ShaderMaterial material;
 
 #ifdef RTAPI
 		// ray origin updated for next bounce:
 		ray.Origin = q.WorldRayOrigin() + q.WorldRayDirection() * q.CommittedRayT();
 
-		ShaderMesh mesh = bindless_buffers[q.CommittedInstanceID()].Load<ShaderMesh>(0);
-		ShaderMeshSubset subset = bindless_subsets[mesh.subsetbuffer][q.CommittedGeometryIndex()];
-		material = bindless_buffers[subset.material].Load<ShaderMaterial>(0);
+		PrimitiveID prim;
+		prim.primitiveIndex = q.CommittedPrimitiveIndex();
+		prim.instanceIndex = q.CommittedInstanceID();
+		prim.subsetIndex = q.CommittedGeometryIndex();
 
-		EvaluateObjectSurface(
-			mesh,
-			subset,
-			material,
-			q.CommittedPrimitiveIndex(),
-			q.CommittedTriangleBarycentrics(),
-			q.CommittedObjectToWorld3x4(),
-			surface
-		);
+		surface.is_frontface = q.CommittedTriangleFrontFace();
+		surface.load(prim, q.CommittedTriangleBarycentrics());
 
 #else
 		// ray origin updated for next bounce:
 		ray.Origin = ray.Origin + ray.Direction * hit.distance;
 
-		EvaluateObjectSurface(
-			hit,
-			material,
-			surface
-		);
+		surface.load(hit.primitiveID, hit.bary);
 
 #endif // RTAPI
 
 		surface.P = ray.Origin;
-		surface.V = normalize(g_xCamera_CamPos - surface.P);
+		surface.V = -ray.Direction;
 		surface.update();
 
-		float3 current_energy = energy;
-		result += max(0, current_energy * surface.emissiveColor.rgb * surface.emissiveColor.a);
 
+		result += max(0, energy * surface.emissiveColor);
 
-		float roulette;
-
-		const float blendChance = 1 - surface.opacity;
-		roulette = rand(seed, uv);
-		if (roulette < blendChance)
+		if (!surface.material.IsUnlit())
 		{
-			// Alpha blending
-
-			// Add a new bounce iteration, otherwise the transparent effect can disappear:
-			bounces++;
-
-			continue; // skip light sampling
-		}
-		else
-		{
-			const float refractChance = surface.transmission;
-			roulette = rand(seed, uv);
-			if (roulette < refractChance)
+			// Light sampling:
+			[loop]
+			for (uint iterator = 0; iterator < g_xFrame.LightArrayCount; iterator++)
 			{
-				// Refraction
-				const float3 R = refract(ray.Direction, surface.N, 1 - material.refraction);
-				ray.Direction = lerp(R, SampleHemisphere_cos(R, seed, uv), surface.roughnessBRDF);
-				energy *= surface.albedo;
+				ShaderEntity light = load_entity(g_xFrame.LightArrayOffset + iterator);
 
-				// Add a new bounce iteration, otherwise the transparent effect can disappear:
-				bounces++;
-			}
-			else
-			{
-				const float3 F = F_Schlick(surface.f0, saturate(dot(-ray.Direction, surface.N)));
-				const float specChance = dot(F, 0.333);
+				Lighting lighting;
+				lighting.create(0, 0, 0, 0);
 
-				roulette = rand(seed, uv);
-				if (roulette < specChance)
+				float3 L = 0;
+				float dist = 0;
+				float3 lightColor = 0;
+				SurfaceToLight surfaceToLight = (SurfaceToLight)0;
+
+				switch (light.GetType())
 				{
-					// Specular reflection
-					const float3 R = reflect(ray.Direction, surface.N);
-					ray.Direction = lerp(R, SampleHemisphere_cos(R, seed, uv), surface.roughnessBRDF);
-					energy *= F / specChance;
-				}
-				else
+				case ENTITY_TYPE_DIRECTIONALLIGHT:
 				{
-					// Diffuse reflection
-					ray.Direction = SampleHemisphere_cos(surface.N, seed, uv);
-					energy *= surface.albedo / (1 - specChance);
-				}
+					dist = FLT_MAX;
 
-				if (dot(ray.Direction, surface.facenormal) <= 0)
-				{
-					// Don't allow normal map to bend over the face normal more than 90 degrees to avoid light leaks
-					//	In this case, we will not allow more bounces,
-					//	but the current light sampling is still fine to avoid abrupt cutoff
-					energy = 0;
-				}
-			}
-		}
-
-		// Light sampling:
-		[loop]
-		for (uint iterator = 0; iterator < g_xFrame_LightArrayCount; iterator++)
-		{
-			ShaderEntity light = EntityArray[g_xFrame_LightArrayOffset + iterator];
-
-			Lighting lighting;
-			lighting.create(0, 0, 0, 0);
-
-			float3 L = 0;
-			float dist = 0;
-			float3 lightColor = 0;
-			SurfaceToLight surfaceToLight = (SurfaceToLight)0;
-
-			switch (light.GetType())
-			{
-			case ENTITY_TYPE_DIRECTIONALLIGHT:
-			{
-				dist = FLT_MAX;
-
-				L = light.GetDirection().xyz;
-
-				surfaceToLight.create(surface, L);
-
-				[branch]
-				if (surfaceToLight.NdotL > 0)
-				{
-					lightColor = light.GetColor().rgb * light.GetEnergy();
-
-					float3 atmosphereTransmittance = 1;
-					if (g_xFrame_Options & OPTION_BIT_REALISTIC_SKY)
-					{
-						AtmosphereParameters Atmosphere = GetAtmosphereParameters();
-						atmosphereTransmittance = GetAtmosphericLightTransmittance(Atmosphere, surface.P, L, texture_transmittancelut);
-					}
-					lightColor *= atmosphereTransmittance;
-				}
-			}
-			break;
-			case ENTITY_TYPE_POINTLIGHT:
-			{
-				L = light.position - surface.P;
-				const float dist2 = dot(L, L);
-				const float range2 = light.GetRange() * light.GetRange();
-
-				[branch]
-				if (dist2 < range2)
-				{
-					dist = sqrt(dist2);
-					L /= dist;
+					L = light.GetDirection().xyz;
 
 					surfaceToLight.create(surface, L);
 
@@ -238,118 +162,191 @@ void main(uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 					{
 						lightColor = light.GetColor().rgb * light.GetEnergy();
 
-						const float range2 = light.GetRange() * light.GetRange();
-						const float att = saturate(1 - (dist2 / range2));
-						const float attenuation = att * att;
-						lightColor *= attenuation;
+						float3 atmosphereTransmittance = 1;
+						if (g_xFrame.Options & OPTION_BIT_REALISTIC_SKY)
+						{
+							AtmosphereParameters Atmosphere = GetWeather().atmosphere;
+							atmosphereTransmittance = GetAtmosphericLightTransmittance(Atmosphere, surface.P, L, texture_transmittancelut);
+						}
+						lightColor *= atmosphereTransmittance;
 					}
 				}
-			}
-			break;
-			case ENTITY_TYPE_SPOTLIGHT:
-			{
-				L = light.position - surface.P;
-				const float dist2 = dot(L, L);
-				const float range2 = light.GetRange() * light.GetRange();
-
-				[branch]
-				if (dist2 < range2)
+				break;
+				case ENTITY_TYPE_POINTLIGHT:
 				{
-					dist = sqrt(dist2);
-					L /= dist;
-
-					surfaceToLight.create(surface, L);
+					L = light.position - surface.P;
+					const float dist2 = dot(L, L);
+					const float range2 = light.GetRange() * light.GetRange();
 
 					[branch]
-					if (surfaceToLight.NdotL > 0)
+					if (dist2 < range2)
 					{
-						const float SpotFactor = dot(L, light.GetDirection());
-						const float spotCutOff = light.GetConeAngleCos();
+						dist = sqrt(dist2);
+						L /= dist;
+
+						surfaceToLight.create(surface, L);
 
 						[branch]
-						if (SpotFactor > spotCutOff)
+						if (surfaceToLight.NdotL > 0)
 						{
 							lightColor = light.GetColor().rgb * light.GetEnergy();
 
 							const float range2 = light.GetRange() * light.GetRange();
 							const float att = saturate(1 - (dist2 / range2));
-							float attenuation = att * att;
-							attenuation *= saturate((1 - (1 - SpotFactor) * 1 / (1 - spotCutOff)));
+							const float attenuation = att * att;
 							lightColor *= attenuation;
 						}
 					}
 				}
-			}
-			break;
-			}
+				break;
+				case ENTITY_TYPE_SPOTLIGHT:
+				{
+					L = light.position - surface.P;
+					const float dist2 = dot(L, L);
+					const float range2 = light.GetRange() * light.GetRange();
 
-			if (surfaceToLight.NdotL > 0 && dist > 0)
-			{
-				float3 shadow = surfaceToLight.NdotL * current_energy;
+					[branch]
+					if (dist2 < range2)
+					{
+						dist = sqrt(dist2);
+						L /= dist;
 
-				float3 sampling_offset = float3(rand(seed, uv), rand(seed, uv), rand(seed, uv)) * 2 - 1; // todo: should be specific to light surface
+						surfaceToLight.create(surface, L);
 
-				RayDesc newRay;
-				newRay.Origin = surface.P;
-				newRay.Direction = normalize(L + sampling_offset * 0.025);
-				newRay.TMin = 0.001;
-				newRay.TMax = dist;
+						[branch]
+						if (surfaceToLight.NdotL > 0)
+						{
+							const float SpotFactor = dot(L, light.GetDirection());
+							const float spotCutOff = light.GetConeAngleCos();
+
+							[branch]
+							if (SpotFactor > spotCutOff)
+							{
+								lightColor = light.GetColor().rgb * light.GetEnergy();
+
+								const float range2 = light.GetRange() * light.GetRange();
+								const float att = saturate(1 - (dist2 / range2));
+								float attenuation = att * att;
+								attenuation *= saturate((1 - (1 - SpotFactor) * 1 / (1 - spotCutOff)));
+								lightColor *= attenuation;
+							}
+						}
+					}
+				}
+				break;
+				}
+
+				if (surfaceToLight.NdotL > 0 && dist > 0)
+				{
+					float3 shadow = surfaceToLight.NdotL * energy;
+
+					RayDesc newRay;
+					newRay.Origin = surface.P;
+					newRay.Direction = normalize(lerp(L, SampleHemisphere_cos(L, seed, uv), 0.025));
+					newRay.TMin = 0.001;
+					newRay.TMax = dist;
 #ifdef RTAPI
-				q.TraceRayInline(
-					scene_acceleration_structure,	// RaytracingAccelerationStructure AccelerationStructure
-					0,								// uint RayFlags
-					0xFF,							// uint InstanceInclusionMask
-					newRay							// RayDesc Ray
-				);
-				while (q.Proceed())
-				{
-					ShaderMesh mesh = bindless_buffers[q.CandidateInstanceID()].Load<ShaderMesh>(0);
-					ShaderMeshSubset subset = bindless_subsets[mesh.subsetbuffer][q.CandidateGeometryIndex()];
-					ShaderMaterial material = bindless_buffers[subset.material].Load<ShaderMaterial>(0);
-					[branch]
-					if (!material.IsCastingShadow())
-					{
-						continue;
-					}
-
-					Surface surface;
-					EvaluateObjectSurface(
-						mesh,
-						subset,
-						material,
-						q.CandidatePrimitiveIndex(),
-						q.CandidateTriangleBarycentrics(),
-						q.CandidateObjectToWorld3x4(),
-						surface
+					q.TraceRayInline(
+						scene_acceleration_structure,	// RaytracingAccelerationStructure AccelerationStructure
+						0,								// uint RayFlags
+						0xFF,							// uint InstanceInclusionMask
+						newRay							// RayDesc Ray
 					);
-
-					shadow *= lerp(1, surface.albedo * surface.transmission, surface.opacity);
-
-					[branch]
-					if (!any(shadow))
+					while (q.Proceed())
 					{
-						q.CommitNonOpaqueTriangleHit();
+						PrimitiveID prim;
+						prim.primitiveIndex = q.CandidatePrimitiveIndex();
+						prim.instanceIndex = q.CandidateInstanceID();
+						prim.subsetIndex = q.CandidateGeometryIndex();
+
+						Surface surface;
+						surface.load(prim, q.CandidateTriangleBarycentrics());
+
+						shadow *= lerp(1, surface.albedo * surface.transmission, surface.opacity);
+
+						[branch]
+						if (!any(shadow))
+						{
+							q.CommitNonOpaqueTriangleHit();
+						}
+					}
+					shadow = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0 : shadow;
+#else
+					shadow = TraceRay_Any(newRay, seed, uv, groupIndex) ? 0 : shadow;
+#endif // RTAPI
+					if (any(shadow))
+					{
+						lighting.direct.specular = lightColor * BRDF_GetSpecular(surface, surfaceToLight);
+						lighting.direct.diffuse = lightColor * BRDF_GetDiffuse(surface, surfaceToLight);
+						result += max(0, shadow * (surface.albedo * (1 - surface.transmission) * lighting.direct.diffuse + lighting.direct.specular)) * surface.opacity;
 					}
 				}
-				shadow = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0 : shadow;
-#else
-				shadow = TraceRay_Any(newRay, groupIndex) ? 0 : shadow;
-#endif // RTAPI
-				if (any(shadow))
-				{
-					lighting.direct.specular = lightColor * BRDF_GetSpecular(surface, surfaceToLight);
-					lighting.direct.diffuse = lightColor * BRDF_GetDiffuse(surface, surfaceToLight);
-					result += max(0, shadow * (surface.albedo * lighting.direct.diffuse + lighting.direct.specular));
-				}
+			}
+		}
+
+
+
+		if (bounce == 0)
+		{
+			primary_albedo = surface.albedo;
+			primary_normal = surface.N;
+		}
+
+		if (surface.material.IsUnlit())
+		{
+			result += surface.albedo * energy;
+			break;
+		}
+
+		const float refractChance = surface.transmission;
+		float roulette = rand(seed, uv);
+		if (roulette <= refractChance)
+		{
+			// Refraction
+			const float3 R = refract(ray.Direction, surface.N, 1 - surface.material.refraction);
+			ray.Direction = lerp(R, SampleHemisphere_cos(R, seed, uv), surface.roughnessBRDF);
+			energy *= surface.albedo;
+
+			// Add a new bounce iteration, otherwise the transparent effect can disappear:
+			bounces++;
+		}
+		else
+		{
+			const float specChance = dot(surface.F, 0.333);
+
+			roulette = rand(seed, uv);
+			if (roulette <= specChance)
+			{
+				// Specular reflection
+				const float3 R = reflect(ray.Direction, surface.N);
+				ray.Direction = lerp(R, SampleHemisphere_cos(R, seed, uv), surface.roughnessBRDF);
+				energy *= surface.F / max(0.00001, specChance);
+			}
+			else
+			{
+				// Diffuse reflection
+				ray.Direction = SampleHemisphere_cos(surface.N, seed, uv);
+				energy *= surface.albedo / max(0.00001, 1 - specChance);
+			}
+
+			if (dot(ray.Direction, surface.facenormal) <= 0)
+			{
+				// Don't allow normal map to bend over the face normal more than 90 degrees to avoid light leaks
+				//	In this case, the ray is pushed above the surface slightly to not go below
+				ray.Origin += surface.facenormal * 0.001;
 			}
 		}
 
 	}
 
 	// Pre-clear result texture for first bounce and first accumulation sample:
-	if (xTraceUserData.y == 0)
+	if (xTraceSampleIndex == 0)
 	{
-		resultTexture[pixel] = 0;
+		output[pixel] = 0;
+		output_albedo[pixel] = 0;
+		output_normal[pixel] = 0;
 	}
-	resultTexture[pixel] = lerp(resultTexture[pixel], float4(result, 1), xTraceAccumulationFactor);
+	output[pixel] = lerp(output[pixel], float4(result, 1), xTraceAccumulationFactor);
+	output_albedo[pixel] = lerp(output_albedo[pixel], float4(primary_albedo, 1), xTraceAccumulationFactor);
+	output_normal[pixel] = lerp(output_normal[pixel], float4(primary_normal, 1), xTraceAccumulationFactor);
 }

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2019-2020 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2019-2021 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -31,11 +31,14 @@
 
 #include <combaseapi.h>
 #include <mutex>
-#include <atomic>
 #include <algorithm>
 #include <utility>
 #include <cstdlib>
 #include <malloc.h> // for _aligned_malloc, _aligned_free
+
+#ifndef _WIN32
+    #include <shared_mutex>
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -82,9 +85,15 @@
     #define D3D12MA_DEBUG_GLOBAL_MUTEX (0)
 #endif
 
+/*
+Define this macro for debugging purposes only to force specific D3D12_RESOURCE_HEAP_TIER,
+especially to test compatibility with D3D12_RESOURCE_HEAP_TIER_1 on modern GPUs.
+*/
+//#define D3D12MA_FORCE_RESOURCE_HEAP_TIER D3D12_RESOURCE_HEAP_TIER_1
+
 #ifndef D3D12MA_DEFAULT_BLOCK_SIZE
    /// Default size of a block allocated as single ID3D12Heap.
-   #define D3D12MA_DEFAULT_BLOCK_SIZE (256ull * 1024 * 1024)
+   #define D3D12MA_DEFAULT_BLOCK_SIZE (64ull * 1024 * 1024)
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -95,6 +104,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+#define D3D12MA_IID_PPV_ARGS(ppType)   __uuidof(**(ppType)), reinterpret_cast<void**>(ppType)
 
 namespace D3D12MA
 {
@@ -104,11 +114,19 @@ namespace D3D12MA
 
 static void* DefaultAllocate(size_t Size, size_t Alignment, void* /*pUserData*/)
 {
+#ifdef _WIN32
     return _aligned_malloc(Size, Alignment);
+#else
+    return aligned_alloc(Alignment, Size);
+#endif
 }
 static void DefaultFree(void* pMemory, void* /*pUserData*/)
 {
+#ifdef _WIN32
     return _aligned_free(pMemory);
+#else
+    return free(pMemory);
+#endif
 }
 
 static void* Malloc(const ALLOCATION_CALLBACKS& allocs, size_t size, size_t alignment)
@@ -214,11 +232,14 @@ static inline void D3D12MA_SWAP(T& a, T& b)
     #define D3D12MA_MUTEX Mutex
 #endif
 
-#if !defined(_WIN32) || !defined(WINVER) || WINVER < 0x0600
-    #error Required at least WinAPI version supporting: client = Windows Vista, server = Windows Server 2008.
-#endif
+#ifdef _WIN32
+    #if !defined(WINVER) || WINVER < 0x0600
+        #error Required at least WinAPI version supporting: client = Windows Vista, server = Windows Server 2008.
+    #endif
+#endif // #ifdef _WIN32
 
 #ifndef D3D12MA_RW_MUTEX
+#ifdef _WIN32
     class RWMutex
     {
     public:
@@ -230,19 +251,21 @@ static inline void D3D12MA_SWAP(T& a, T& b)
     private:
         SRWLOCK m_Lock;
     };
+#else // #ifdef _WIN32
+    class RWMutex
+    {
+    public:
+        RWMutex() {}
+        void LockRead() { m_Mutex.lock_shared(); }
+        void UnlockRead() { m_Mutex.unlock_shared(); }
+        void LockWrite() { m_Mutex.lock(); }
+        void UnlockWrite() { m_Mutex.unlock(); }
+    private:
+        std::shared_timed_mutex m_Mutex;
+    };
+#endif // #ifdef _WIN32
     #define D3D12MA_RW_MUTEX RWMutex
-#endif
-
-/*
-If providing your own implementation, you need to implement a subset of std::atomic.
-*/
-#ifndef D3D12MA_ATOMIC_UINT32
-    #define D3D12MA_ATOMIC_UINT32 std::atomic<UINT>
-#endif
-
-#ifndef D3D12MA_ATOMIC_UINT64
-    #define D3D12MA_ATOMIC_UINT64 std::atomic<UINT64>
-#endif
+#endif // #ifndef D3D12MA_RW_MUTEX
 
 /*
 Returns true if given number is a power of two.
@@ -282,59 +305,6 @@ template <typename T>
 static inline T DivideRoudingUp(T x, T y)
 {
     return (x + y - 1) / y;
-}
-
-// Returns smallest power of 2 greater or equal to v.
-static inline UINT NextPow2(UINT v)
-{
-	v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v++;
-    return v;
-}
-static inline uint64_t NextPow2(uint64_t v)
-{
-	v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v |= v >> 32;
-    v++;
-    return v;
-}
-
-// Returns largest power of 2 less or equal to v.
-static inline UINT PrevPow2(UINT v)
-{
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v = v ^ (v >> 1);
-    return v;
-}
-static inline uint64_t PrevPow2(uint64_t v)
-{
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v |= v >> 32;
-    v = v ^ (v >> 1);
-    return v;
-}
-
-static inline bool StrIsEmpty(const char* pStr)
-{
-    return pStr == NULL || *pStr == '\0';
 }
 
 // Helper RAII class to lock a mutex in constructor and unlock it in destructor (at the end of scope).
@@ -471,14 +441,6 @@ IterT BinaryFindSorted(const IterT& beg, const IterT& end, const KeyT& value, co
     return end;
 }
 
-struct PointerLess
-{
-    bool operator()(const void* lhs, const void* rhs) const
-    {
-        return lhs < rhs;
-    }
-};
-
 static UINT HeapTypeToIndex(D3D12_HEAP_TYPE type)
 {
     switch(type)
@@ -486,6 +448,7 @@ static UINT HeapTypeToIndex(D3D12_HEAP_TYPE type)
     case D3D12_HEAP_TYPE_DEFAULT:  return 0;
     case D3D12_HEAP_TYPE_UPLOAD:   return 1;
     case D3D12_HEAP_TYPE_READBACK: return 2;
+    case D3D12_HEAP_TYPE_CUSTOM:   return 3;
     default: D3D12MA_ASSERT(0); return UINT_MAX;
     }
 }
@@ -494,6 +457,7 @@ static const WCHAR* const HeapTypeNames[] = {
     L"DEFAULT",
     L"UPLOAD",
     L"READBACK",
+    L"CUSTOM",
 };
 
 // Stat helper functions
@@ -687,6 +651,42 @@ static UINT GetBitsPerPixel(DXGI_FORMAT format)
     }
 }
 
+static const D3D12_HEAP_FLAGS RESOURCE_CLASS_HEAP_FLAGS =
+    D3D12_HEAP_FLAG_DENY_BUFFERS | D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES | D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES;
+
+enum class ResourceClass
+{
+    Unknown, Buffer, Non_RT_DS_Texture, RT_DS_Texture
+};
+
+template<typename D3D12_RESOURCE_DESC_T>
+static inline ResourceClass ResourceDescToResourceClass(const D3D12_RESOURCE_DESC_T& resDesc)
+{
+    if(resDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        return ResourceClass::Buffer;
+    // Else: it's surely a texture.
+    const bool isRenderTargetOrDepthStencil =
+        (resDesc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
+    return isRenderTargetOrDepthStencil ? ResourceClass::RT_DS_Texture : ResourceClass::Non_RT_DS_Texture;
+}
+
+static inline ResourceClass HeapFlagsToResourceClass(D3D12_HEAP_FLAGS heapFlags)
+{
+    const bool allowBuffers         = (heapFlags & D3D12_HEAP_FLAG_DENY_BUFFERS           ) == 0;
+    const bool allowRtDsTextures    = (heapFlags & D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES    ) == 0;
+    const bool allowNonRtDsTextures = (heapFlags & D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES) == 0;
+
+    const uint8_t allowedGroupCount = (allowBuffers ? 1 : 0) + (allowRtDsTextures ? 1 : 0) + (allowNonRtDsTextures ? 1 : 0);
+    if(allowedGroupCount != 1)
+        return ResourceClass::Unknown;
+    
+    if(allowRtDsTextures)
+        return ResourceClass::RT_DS_Texture;
+    if(allowNonRtDsTextures)
+        return ResourceClass::Non_RT_DS_Texture;
+    return ResourceClass::Buffer;
+}
+
 // This algorithm is overly conservative.
 template<typename D3D12_RESOURCE_DESC_T>
 static bool CanUseSmallAlignment(const D3D12_RESOURCE_DESC_T& resourceDesc)
@@ -728,18 +728,19 @@ static bool CanUseSmallAlignment(const D3D12_RESOURCE_DESC_T& resourceDesc)
     return tileCount <= 16;
 }
 
-static D3D12_HEAP_FLAGS GetExtraHeapFlagsToIgnore()
-{
-    D3D12_HEAP_FLAGS result =
-        D3D12_HEAP_FLAG_DENY_BUFFERS | D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES | D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES;
-    return result;
-}
-
-static inline bool IsHeapTypeValid(D3D12_HEAP_TYPE type)
+static inline bool IsHeapTypeStandard(D3D12_HEAP_TYPE type)
 {
     return type == D3D12_HEAP_TYPE_DEFAULT ||
         type == D3D12_HEAP_TYPE_UPLOAD ||
         type == D3D12_HEAP_TYPE_READBACK;
+}
+
+static inline D3D12_HEAP_PROPERTIES StandardHeapTypeToHeapProperties(D3D12_HEAP_TYPE type)
+{
+    D3D12MA_ASSERT(IsHeapTypeStandard(type));
+    D3D12_HEAP_PROPERTIES result = {};
+    result.Type = type;
+    return result;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -754,7 +755,7 @@ template<typename T>
 class Vector
 {
 public:
-    typedef T value_type;
+    using value_type = T;
 
     // allocationCallbacks externally owned, must outlive this object.
     Vector(const ALLOCATION_CALLBACKS& allocationCallbacks) :
@@ -942,7 +943,7 @@ public:
         remove(0);
     }
 
-    typedef T* iterator;
+    using iterator = T*;
 
     iterator begin() { return m_pArray; }
     iterator end() { return m_pArray + m_Count; }
@@ -1528,7 +1529,11 @@ public:
 
     // allocationCallbacks externally owned, must outlive this object.
     List(const ALLOCATION_CALLBACKS& allocationCallbacks);
-    ~List();
+
+    // Intentionally not calling Clear, because that would be unnecessary
+    // computations to return all items to m_ItemAllocator as free.
+    // ~List() {}
+    
     void Clear();
 
     size_t GetCount() const { return m_Count; }
@@ -1725,6 +1730,9 @@ public:
     const_iterator cbegin() const { return const_iterator(this, Front()); }
     const_iterator cend() const { return const_iterator(this, NULL); }
 
+    const_iterator begin() const { return cbegin(); }
+    const_iterator end() const { return cend(); }
+
     void clear() { Clear(); }
     void push_back(const T& value) { PushBack(value); }
     void erase(iterator it) { Remove(it.m_pItem); }
@@ -1746,13 +1754,6 @@ List<T>::List(const ALLOCATION_CALLBACKS& allocationCallbacks) :
     m_pBack(NULL),
     m_Count(0)
 {
-}
-
-template<typename T>
-List<T>::~List()
-{
-    // Intentionally not calling Clear, because that would be unnecessary
-    // computations to return all items to m_ItemAllocator as free.
 }
 
 template<typename T>
@@ -1964,6 +1965,222 @@ typename List<T>::Item* List<T>::InsertAfter(Item* pItem, const T& value)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Private class IntrusiveLinkedList
+
+/*
+Expected interface of ItemTypeTraits:
+struct MyItemTypeTraits
+{
+    using ItemType = MyItem;
+    static ItemType* GetPrev(const ItemType* item) { return item->myPrevPtr; }
+    static ItemType* GetNext(const ItemType* item) { return item->myNextPtr; }
+    static ItemType*& AccessPrev(ItemType* item) { return item->myPrevPtr; }
+    static ItemType*& AccessNext(ItemType* item) { return item->myNextPtr; }
+};
+*/
+template<typename ItemTypeTraits>
+class IntrusiveLinkedList
+{
+public:
+    using ItemType = typename ItemTypeTraits::ItemType;
+    static ItemType* GetPrev(const ItemType* item) { return ItemTypeTraits::GetPrev(item); }
+    static ItemType* GetNext(const ItemType* item) { return ItemTypeTraits::GetNext(item); }
+    // Movable, not copyable.
+    IntrusiveLinkedList() { }
+    IntrusiveLinkedList(const IntrusiveLinkedList<ItemTypeTraits>& src) = delete;
+    IntrusiveLinkedList(IntrusiveLinkedList<ItemTypeTraits>&& src) :
+        m_Front(src.m_Front), m_Back(src.m_Back), m_Count(src.m_Count)
+    {
+        src.m_Front = src.m_Back = NULL;
+        src.m_Count = 0;
+    }
+    ~IntrusiveLinkedList()
+    {
+        D3D12MA_HEAVY_ASSERT(IsEmpty());
+    }
+    IntrusiveLinkedList<ItemTypeTraits>& operator=(const IntrusiveLinkedList<ItemTypeTraits>& src) = delete;
+    IntrusiveLinkedList<ItemTypeTraits>& operator=(IntrusiveLinkedList<ItemTypeTraits>&& src)
+    {
+        if(&src != this)
+        {
+            D3D12MA_HEAVY_ASSERT(IsEmpty());
+            m_Front = src.m_Front;
+            m_Back = src.m_Back;
+            m_Count = src.m_Count;
+            src.m_Front = src.m_Back = NULL;
+            src.m_Count = 0;
+        }
+        return *this;
+    }
+    void RemoveAll()
+    {
+        if(!IsEmpty())
+        {
+            ItemType* item = m_Back;
+            while(item != NULL)
+            {
+                ItemType* const prevItem = ItemTypeTraits::AccessPrev(item);
+                ItemTypeTraits::AccessPrev(item) = NULL;
+                ItemTypeTraits::AccessNext(item) = NULL;
+                item = prevItem;
+            }
+            m_Front = NULL;
+            m_Back = NULL;
+            m_Count = 0;
+        }
+    }
+    size_t GetCount() const { return m_Count; }
+    bool IsEmpty() const { return m_Count == 0; }
+    ItemType* Front() { return m_Front; }
+    const ItemType* Front() const { return m_Front; }
+    ItemType* Back() { return m_Back; }
+    const ItemType* Back() const { return m_Back; }
+    void PushBack(ItemType* item)
+    {
+        D3D12MA_HEAVY_ASSERT(ItemTypeTraits::GetPrev(item) == NULL && ItemTypeTraits::GetNext(item) == NULL);
+        if(IsEmpty())
+        {
+            m_Front = item;
+            m_Back = item;
+            m_Count = 1;
+        }
+        else
+        {
+            ItemTypeTraits::AccessPrev(item) = m_Back;
+            ItemTypeTraits::AccessNext(m_Back) = item;
+            m_Back = item;
+            ++m_Count;
+        }
+    }
+    void PushFront(ItemType* item)
+    {
+        D3D12MA_HEAVY_ASSERT(ItemTypeTraits::GetPrev(item) == NULL && ItemTypeTraits::GetNext(item) == NULL);
+        if(IsEmpty())
+        {
+            m_Front = item;
+            m_Back = item;
+            m_Count = 1;
+        }
+        else
+        {
+            ItemTypeTraits::AccessNext(item) = m_Front;
+            ItemTypeTraits::AccessPrev(m_Front) = item;
+            m_Front = item;
+            ++m_Count;
+        }
+    }
+    ItemType* PopBack()
+    {
+        D3D12MA_HEAVY_ASSERT(m_Count > 0);
+        ItemType* const backItem = m_Back;
+        ItemType* const prevItem = ItemTypeTraits::GetPrev(backItem);
+        if(prevItem != NULL)
+        {
+            ItemTypeTraits::AccessNext(prevItem) = NULL;
+        }
+        m_Back = prevItem;
+        --m_Count;
+        ItemTypeTraits::AccessPrev(backItem) = NULL;
+        ItemTypeTraits::AccessNext(backItem) = NULL;
+        return backItem;
+    }
+    ItemType* PopFront()
+    {
+        D3D12MA_HEAVY_ASSERT(m_Count > 0);
+        ItemType* const frontItem = m_Front;
+        ItemType* const nextItem = ItemTypeTraits::GetNext(frontItem);
+        if(nextItem != NULL)
+        {
+            ItemTypeTraits::AccessPrev(nextItem) = NULL;
+        }
+        m_Front = nextItem;
+        --m_Count;
+        ItemTypeTraits::AccessPrev(frontItem) = NULL;
+        ItemTypeTraits::AccessNext(frontItem) = NULL;
+        return frontItem;
+    }
+
+    // MyItem can be null - it means PushBack.
+    void InsertBefore(ItemType* existingItem, ItemType* newItem)
+    {
+        D3D12MA_HEAVY_ASSERT(newItem != NULL && ItemTypeTraits::GetPrev(newItem) == NULL && ItemTypeTraits::GetNext(newItem) == NULL);
+        if(existingItem != NULL)
+        {
+            ItemType* const prevItem = ItemTypeTraits::GetPrev(existingItem);
+            ItemTypeTraits::AccessPrev(newItem) = prevItem;
+            ItemTypeTraits::AccessNext(newItem) = existingItem;
+            ItemTypeTraits::AccessPrev(existingItem) = newItem;
+            if(prevItem != NULL)
+            {
+                ItemTypeTraits::AccessNext(prevItem) = newItem;
+            }
+            else
+            {
+                D3D12MA_HEAVY_ASSERT(m_Front == existingItem);
+                m_Front = newItem;
+            }
+            ++m_Count;
+        }
+        else
+            PushBack(newItem);
+    }
+    // MyItem can be null - it means PushFront.
+    void InsertAfter(ItemType* existingItem, ItemType* newItem)
+    {
+        D3D12MA_HEAVY_ASSERT(newItem != NULL && ItemTypeTraits::GetPrev(newItem) == NULL && ItemTypeTraits::GetNext(newItem) == NULL);
+        if(existingItem != NULL)
+        {
+            ItemType* const nextItem = ItemTypeTraits::GetNext(existingItem);
+            ItemTypeTraits::AccessNext(newItem) = nextItem;
+            ItemTypeTraits::AccessPrev(newItem) = existingItem;
+            ItemTypeTraits::AccessNext(existingItem) = newItem;
+            if(nextItem != NULL)
+            {
+                ItemTypeTraits::AccessPrev(nextItem) = newItem;
+            }
+            else
+            {
+                D3D12MA_HEAVY_ASSERT(m_Back == existingItem);
+                m_Back = newItem;
+            }
+            ++m_Count;
+        }
+        else
+            return PushFront(newItem);
+    }
+    void Remove(ItemType* item)
+    {
+        D3D12MA_HEAVY_ASSERT(item != NULL && m_Count > 0);
+        if(ItemTypeTraits::GetPrev(item) != NULL)
+        {
+            ItemTypeTraits::AccessNext(ItemTypeTraits::AccessPrev(item)) = ItemTypeTraits::GetNext(item);
+        }
+        else
+        {
+            D3D12MA_HEAVY_ASSERT(m_Front == item);
+            m_Front = ItemTypeTraits::GetNext(item);
+        }
+
+        if(ItemTypeTraits::GetNext(item) != NULL)
+        {
+            ItemTypeTraits::AccessPrev(ItemTypeTraits::AccessNext(item)) = ItemTypeTraits::GetPrev(item);
+        }
+        else
+        {
+            D3D12MA_HEAVY_ASSERT(m_Back == item);
+            m_Back = ItemTypeTraits::GetPrev(item);
+        }
+        ItemTypeTraits::AccessPrev(item) = NULL;
+        ItemTypeTraits::AccessNext(item) = NULL;
+        --m_Count;
+    }
+private:
+    ItemType* m_Front = NULL;
+    ItemType* m_Back = NULL;
+    size_t m_Count = 0;
+};
+
+////////////////////////////////////////////////////////////////////////////////
 // Private class AllocationObjectAllocator definition
 
 /*
@@ -2020,7 +2237,7 @@ struct SuballocationOffsetGreater
     }
 };
 
-typedef List<Suballocation> SuballocationList;
+using SuballocationList = List<Suballocation>;
 
 struct SuballocationItemSizeLess
 {
@@ -2244,14 +2461,14 @@ class MemoryBlock
 public:
     MemoryBlock(
         AllocatorPimpl* allocator,
-        D3D12_HEAP_TYPE heapType,
+        const D3D12_HEAP_PROPERTIES& heapProps,
         D3D12_HEAP_FLAGS heapFlags,
         UINT64 size,
         UINT id);
     virtual ~MemoryBlock();
     // Creates the ID3D12Heap.
 
-    D3D12_HEAP_TYPE GetHeapType() const { return m_HeapType; }
+    const D3D12_HEAP_PROPERTIES& GetHeapProperties() const { return m_HeapProps; }
     D3D12_HEAP_FLAGS GetHeapFlags() const { return m_HeapFlags; }
     UINT64 GetSize() const { return m_Size; }
     UINT GetId() const { return m_Id; }
@@ -2259,7 +2476,7 @@ public:
 
 protected:
     AllocatorPimpl* const m_Allocator;
-    const D3D12_HEAP_TYPE m_HeapType;
+    const D3D12_HEAP_PROPERTIES m_HeapProps;
     const D3D12_HEAP_FLAGS m_HeapFlags;
     const UINT64 m_Size;
     const UINT m_Id;
@@ -2288,7 +2505,7 @@ public:
     NormalBlock(
         AllocatorPimpl* allocator,
         BlockVector* blockVector,
-        D3D12_HEAP_TYPE heapType,
+        const D3D12_HEAP_PROPERTIES& heapProps,
         D3D12_HEAP_FLAGS heapFlags,
         UINT64 size,
         UINT id);
@@ -2307,6 +2524,64 @@ private:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+// Private class CommittedAllocationList definition
+
+struct CommittedAllocationListItemTraits
+{
+    using ItemType = Allocation;
+    static ItemType* GetPrev(const ItemType* item)
+    {
+        D3D12MA_ASSERT(item->m_PackedData.GetType() == Allocation::TYPE_COMMITTED || item->m_PackedData.GetType() == Allocation::TYPE_HEAP);
+        return item->m_Committed.prev;
+    }
+    static ItemType* GetNext(const ItemType* item)
+    {
+        D3D12MA_ASSERT(item->m_PackedData.GetType() == Allocation::TYPE_COMMITTED || item->m_PackedData.GetType() == Allocation::TYPE_HEAP);
+        return item->m_Committed.next;
+    }
+    static ItemType*& AccessPrev(ItemType* item)
+    {
+        D3D12MA_ASSERT(item->m_PackedData.GetType() == Allocation::TYPE_COMMITTED || item->m_PackedData.GetType() == Allocation::TYPE_HEAP);
+        return item->m_Committed.prev;
+    }
+    static ItemType*& AccessNext(ItemType* item)
+    {
+        D3D12MA_ASSERT(item->m_PackedData.GetType() == Allocation::TYPE_COMMITTED || item->m_PackedData.GetType() == Allocation::TYPE_HEAP);
+        return item->m_Committed.next;
+    }
+};
+
+/*
+Stores linked list of Allocation objects that are of TYPE_COMMITTED or TYPE_HEAP.
+Thread-safe, synchronized internally.
+*/
+class CommittedAllocationList
+{
+public:
+    CommittedAllocationList();
+    void Init(bool useMutex, D3D12_HEAP_TYPE heapType, PoolPimpl* pool);
+    ~CommittedAllocationList();
+
+    D3D12_HEAP_TYPE GetHeapType() const { return m_HeapType; }
+    
+    void CalculateStats(StatInfo& outStats);
+    // Writes JSON array with the list of allocations.
+    void BuildStatsString(JsonWriter& json);
+
+    void Register(Allocation* alloc);
+    void Unregister(Allocation* alloc);
+
+private:
+    bool m_UseMutex = true;
+    D3D12_HEAP_TYPE m_HeapType = D3D12_HEAP_TYPE_CUSTOM;
+    PoolPimpl* m_Pool = NULL;
+
+    D3D12MA_RW_MUTEX m_Mutex;
+    using CommittedAllocationLinkedList = IntrusiveLinkedList<CommittedAllocationListItemTraits>;
+    CommittedAllocationLinkedList m_AllocationList;
+};
+
+////////////////////////////////////////////////////////////////////////////////
 // Private class BlockVector definition
 
 /*
@@ -2321,17 +2596,18 @@ class BlockVector
 public:
     BlockVector(
         AllocatorPimpl* hAllocator,
-        D3D12_HEAP_TYPE heapType,
+        const D3D12_HEAP_PROPERTIES& heapProps,
         D3D12_HEAP_FLAGS heapFlags,
         UINT64 preferredBlockSize,
         size_t minBlockCount,
         size_t maxBlockCount,
-        bool explicitBlockSize);
+        bool explicitBlockSize,
+        UINT64 minAllocationAlignment);
     ~BlockVector();
 
     HRESULT CreateMinBlocks();
 
-    UINT GetHeapType() const { return m_HeapType; }
+    const D3D12_HEAP_PROPERTIES& GetHeapProperties() const { return m_HeapProps; }
     UINT64 GetPreferredBlockSize() const { return m_PreferredBlockSize; }
 
     bool IsEmpty();
@@ -2371,8 +2647,6 @@ public:
         void** ppvResource);
 #endif // #ifdef __ID3D12Device8_INTERFACE_DEFINED__
 
-    HRESULT SetMinBytes(UINT64 minBytes);
-
     void AddStats(StatInfo& outStats);
     void AddStats(Stats& outStats);
 
@@ -2380,13 +2654,13 @@ public:
 
 private:
     AllocatorPimpl* const m_hAllocator;
-    const D3D12_HEAP_TYPE m_HeapType;
+    const D3D12_HEAP_PROPERTIES m_HeapProps;
     const D3D12_HEAP_FLAGS m_HeapFlags;
     const UINT64 m_PreferredBlockSize;
     const size_t m_MinBlockCount;
     const size_t m_MaxBlockCount;
     const bool m_ExplicitBlockSize;
-    UINT64 m_MinBytes;
+    const UINT64 m_MinAllocationAlignment;
     /* There can be at most one allocation that is completely empty - a
     hysteresis to avoid pessimistic case of alternating creation and destruction
     of a VkDeviceMemory. */
@@ -2425,6 +2699,7 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 // Private class AllocatorPimpl definition
 
+static const UINT STANDARD_HEAP_TYPE_COUNT = 3; // Only DEFAULT, UPLOAD, READBACK.
 static const UINT DEFAULT_POOL_MAX_COUNT = 9;
 
 struct CurrentBudgetData
@@ -2459,17 +2734,80 @@ struct CurrentBudgetData
         m_AllocationBytes[heapTypeIndex] += allocationSize;
         ++m_OperationsSinceBudgetFetch;
     }
-
     void RemoveAllocation(UINT heapTypeIndex, UINT64 allocationSize)
     {
         m_AllocationBytes[heapTypeIndex] -= allocationSize;
         ++m_OperationsSinceBudgetFetch;
     }
+    void AddCommittedAllocation(UINT heapTypeIndex, UINT64 allocationSize)
+    {
+        AddAllocation(heapTypeIndex, allocationSize);
+        m_BlockBytes[heapTypeIndex] += allocationSize;
+    }
+    void RemoveCommittedAllocation(UINT heapTypeIndex, UINT64 allocationSize)
+    {
+        m_BlockBytes[heapTypeIndex] -= allocationSize;
+        RemoveAllocation(heapTypeIndex, allocationSize);
+    }
+};
+
+class PoolPimpl
+{
+public:
+    PoolPimpl(AllocatorPimpl* allocator, const POOL_DESC& desc);
+    HRESULT Init();
+    ~PoolPimpl();
+
+    AllocatorPimpl* GetAllocator() const { return m_Allocator; }
+    const POOL_DESC& GetDesc() const { return m_Desc; }
+    bool SupportsCommittedAllocations() const { return m_Desc.BlockSize == 0; }
+
+    BlockVector* GetBlockVector() { return m_BlockVector; }
+    CommittedAllocationList* GetCommittedAllocationList() { return SupportsCommittedAllocations() ? &m_CommittedAllocations : NULL; }
+
+    void CalculateStats(StatInfo& outStats);
+    void AddStats(Stats& inoutStats);
+
+    void SetName(LPCWSTR Name);
+    LPCWSTR GetName() const { return m_Name; }
+
+private:
+    friend class Allocator;
+    friend struct PoolListItemTraits;
+
+    AllocatorPimpl* m_Allocator; // Externally owned object.
+    POOL_DESC m_Desc;
+    BlockVector* m_BlockVector; // Owned object.
+    CommittedAllocationList m_CommittedAllocations;
+    wchar_t* m_Name;
+    PoolPimpl* m_PrevPool = NULL;
+    PoolPimpl* m_NextPool = NULL;
+
+    void FreeName();
+};
+
+struct PoolListItemTraits
+{
+    using ItemType = PoolPimpl;
+    static ItemType* GetPrev(const ItemType* item) { return item->m_PrevPool; }
+    static ItemType* GetNext(const ItemType* item) { return item->m_NextPool; }
+    static ItemType*& AccessPrev(ItemType* item) { return item->m_PrevPool; }
+    static ItemType*& AccessNext(ItemType* item) { return item->m_NextPool; }
+};
+
+struct CommittedAllocationParameters
+{
+    CommittedAllocationList* m_List = NULL;
+    D3D12_HEAP_PROPERTIES m_HeapProperties = {};
+    D3D12_HEAP_FLAGS m_HeapFlags = D3D12_HEAP_FLAG_NONE;
+
+    bool IsValid() const { return m_List != NULL; }
 };
 
 class AllocatorPimpl
 {
 public:
+    std::atomic_uint32_t m_RefCount = 1;
     CurrentBudgetData m_Budget;
 
     AllocatorPimpl(const ALLOCATION_CALLBACKS& allocationCallbacks, const ALLOCATOR_DESC& desc);
@@ -2486,6 +2824,8 @@ public:
     // Shortcut for "Allocation Callbacks", because this function is called so often.
     const ALLOCATION_CALLBACKS& GetAllocs() const { return m_AllocationCallbacks; }
     const D3D12_FEATURE_DATA_D3D12_OPTIONS& GetD3D12Options() const { return m_D3D12Options; }
+    BOOL IsUMA() const { return m_D3D12Architecture.UMA; }
+    BOOL IsCacheCoherentUMA() const { return m_D3D12Architecture.CacheCoherentUMA; }
     bool SupportsResourceHeapTier2() const { return m_D3D12Options.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2; }
     bool UseMutex() const { return m_UseMutex; }
     AllocationObjectAllocator& GetAllocationObjectAllocator() { return m_AllocationObjectAllocator; }
@@ -2546,11 +2886,6 @@ public:
         REFIID riidResource,
         void** ppvResource);
 
-    HRESULT SetDefaultHeapMinBytes(
-        D3D12_HEAP_TYPE heapType,
-        D3D12_HEAP_FLAGS heapFlags,
-        UINT64 minBytes);
-
     // Unregisters allocation from the collection of dedicated allocations.
     // Allocation object must be deleted externally afterwards.
     void FreeCommittedMemory(Allocation* allocation);
@@ -2603,76 +2938,66 @@ private:
     D3D12MA_ATOMIC_UINT32 m_CurrentFrameIndex;
     DXGI_ADAPTER_DESC m_AdapterDesc;
     D3D12_FEATURE_DATA_D3D12_OPTIONS m_D3D12Options;
+    D3D12_FEATURE_DATA_ARCHITECTURE m_D3D12Architecture;
     AllocationObjectAllocator m_AllocationObjectAllocator;
 
-    typedef Vector<Allocation*> AllocationVectorType;
-    AllocationVectorType* m_pCommittedAllocations[HEAP_TYPE_COUNT];
-    D3D12MA_RW_MUTEX m_CommittedAllocationsMutex[HEAP_TYPE_COUNT];
-
-    typedef Vector<Pool*> PoolVectorType;
-    PoolVectorType* m_pPools[HEAP_TYPE_COUNT];
+    using PoolList = IntrusiveLinkedList<PoolListItemTraits>;
+    PoolList m_Pools[HEAP_TYPE_COUNT];
     D3D12MA_RW_MUTEX m_PoolsMutex[HEAP_TYPE_COUNT];
 
     // Default pools.
     BlockVector* m_BlockVectors[DEFAULT_POOL_MAX_COUNT];
 
-    // # Used only when ResourceHeapTier = 1
-    UINT64 m_DefaultPoolTier1MinBytes[DEFAULT_POOL_MAX_COUNT]; // Default 0
-    UINT64 m_DefaultPoolHeapTypeMinBytes[HEAP_TYPE_COUNT]; // Default UINT64_MAX, meaning not set
-    D3D12MA_RW_MUTEX m_DefaultPoolMinBytesMutex;
+    CommittedAllocationList m_CommittedAllocations[STANDARD_HEAP_TYPE_COUNT];
 
     // Allocates and registers new committed resource with implicit heap, as dedicated allocation.
-    // Creates and returns Allocation object.
+    // Creates and returns Allocation object and optionally D3D12 resource.
     HRESULT AllocateCommittedResource(
-        const ALLOCATION_DESC* pAllocDesc,
+        const CommittedAllocationParameters& committedAllocParams,
+        UINT64 resourceSize, bool withinBudget,
         const D3D12_RESOURCE_DESC* pResourceDesc,
-        const D3D12_RESOURCE_ALLOCATION_INFO& resAllocInfo,
-        D3D12_RESOURCE_STATES InitialResourceState,
-        const D3D12_CLEAR_VALUE *pOptimizedClearValue,
-        Allocation** ppAllocation,
-        REFIID riidResource,
-        void** ppvResource);
+        D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+        Allocation** ppAllocation, REFIID riidResource, void** ppvResource);
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
     HRESULT AllocateCommittedResource1(
-        const ALLOCATION_DESC* pAllocDesc,
+        const CommittedAllocationParameters& committedAllocParams,
+        UINT64 resourceSize, bool withinBudget,
         const D3D12_RESOURCE_DESC* pResourceDesc,
-        const D3D12_RESOURCE_ALLOCATION_INFO& resAllocInfo,
-        D3D12_RESOURCE_STATES InitialResourceState,
-        const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+        D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
         ID3D12ProtectedResourceSession *pProtectedSession,
-        Allocation** ppAllocation,
-        REFIID riidResource,
-        void** ppvResource);
+        Allocation** ppAllocation, REFIID riidResource, void** ppvResource);
 #endif // #ifdef __ID3D12Device4_INTERFACE_DEFINED__
 
 #ifdef __ID3D12Device8_INTERFACE_DEFINED__
     HRESULT AllocateCommittedResource2(
-        const ALLOCATION_DESC* pAllocDesc,
+        const CommittedAllocationParameters& committedAllocParams,
+        UINT64 resourceSize, bool withinBudget,
         const D3D12_RESOURCE_DESC1* pResourceDesc,
-        const D3D12_RESOURCE_ALLOCATION_INFO& resAllocInfo,
-        D3D12_RESOURCE_STATES InitialResourceState,
-        const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+        D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
         ID3D12ProtectedResourceSession *pProtectedSession,
-        Allocation** ppAllocation,
-        REFIID riidResource,
-        void** ppvResource);
+        Allocation** ppAllocation, REFIID riidResource, void** ppvResource);
 #endif // #ifdef __ID3D12Device8_INTERFACE_DEFINED__
 
     // Allocates and registers new heap without any resources placed in it, as dedicated allocation.
     // Creates and returns Allocation object.
     HRESULT AllocateHeap(
-        const ALLOCATION_DESC* pAllocDesc,
-        const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo,
+        const CommittedAllocationParameters& committedAllocParams,
+        const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo, bool withinBudget,
         Allocation** ppAllocation);
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
     HRESULT AllocateHeap1(
-        const ALLOCATION_DESC* pAllocDesc,
-        const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo,
+        const CommittedAllocationParameters& committedAllocParams,
+        const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo, bool withinBudget,
         ID3D12ProtectedResourceSession *pProtectedSession,
         Allocation** ppAllocation);
 #endif // #ifdef __ID3D12Device4_INTERFACE_DEFINED__
+
+    template<typename D3D12_RESOURCE_DESC_T>
+    HRESULT CalcAllocationParams(const ALLOCATION_DESC& allocDesc, UINT64 allocSize,
+        const D3D12_RESOURCE_DESC_T* resDesc, // Optional
+        BlockVector*& outBlockVector, CommittedAllocationParameters& outCommittedAllocationParams, bool& outPreferCommitted);
 
     /*
     If SupportsResourceHeapTier2():
@@ -2691,28 +3016,13 @@ private:
         8: D3D12_HEAP_TYPE_READBACK + texture RT or DS
     */
     UINT CalcDefaultPoolCount() const;
-    template<typename D3D12_RESOURCE_DESC_T>
-    UINT CalcDefaultPoolIndex(const ALLOCATION_DESC& allocDesc, const D3D12_RESOURCE_DESC_T& resourceDesc) const;
-    // This one returns UINT32_MAX if nonstandard heap flags are used and index cannot be calculcated.
-    static UINT CalcDefaultPoolIndex(D3D12_HEAP_TYPE heapType, D3D12_HEAP_FLAGS heapFlags, bool supportsResourceHeapTier2);
-    UINT CalcDefaultPoolIndex(D3D12_HEAP_TYPE heapType, D3D12_HEAP_FLAGS heapFlags) const
-    {
-        return CalcDefaultPoolIndex(heapType, heapFlags, SupportsResourceHeapTier2());
-    }
-    UINT CalcDefaultPoolIndex(const ALLOCATION_DESC& allocDesc) const
-    {
-        return CalcDefaultPoolIndex(allocDesc.HeapType, allocDesc.ExtraHeapFlags);
-    }
+    // Returns UINT32_MAX if index cannot be calculcated.
+    UINT CalcDefaultPoolIndex(const ALLOCATION_DESC& allocDesc, ResourceClass resourceClass) const;
     void CalcDefaultPoolParams(D3D12_HEAP_TYPE& outHeapType, D3D12_HEAP_FLAGS& outHeapFlags, UINT index) const;
 
-    // Registers Allocation object in m_pCommittedAllocations.
-    void RegisterCommittedAllocation(Allocation* alloc, D3D12_HEAP_TYPE heapType);
-    // Unregisters Allocation object from m_pCommittedAllocations.
-    void UnregisterCommittedAllocation(Allocation* alloc, D3D12_HEAP_TYPE heapType);
-
-    // Registers Pool object in m_pPools.
+    // Registers Pool object in m_Pools.
     void RegisterPool(Pool* pool, D3D12_HEAP_TYPE heapType);
-    // Unregisters Pool object from m_pPools.
+    // Unregisters Pool object from m_Pools.
     void UnregisterPool(Pool* pool, D3D12_HEAP_TYPE heapType);
 
     HRESULT UpdateD3D12Budget();
@@ -2796,12 +3106,8 @@ bool BlockMetadata_Generic::Validate() const
     // True if previous visited suballocation was free.
     bool prevFree = false;
 
-    for(SuballocationList::const_iterator suballocItem = m_Suballocations.cbegin();
-        suballocItem != m_Suballocations.cend();
-        ++suballocItem)
+    for(const auto& subAlloc : m_Suballocations)
     {
-        const Suballocation& subAlloc = *suballocItem;
-
         // Actual offset of this suballocation doesn't match expected one.
         D3D12MA_VALIDATE(subAlloc.offset == calculatedOffset);
 
@@ -2888,11 +3194,8 @@ bool BlockMetadata_Generic::IsEmpty() const
 
 void BlockMetadata_Generic::GetAllocationInfo(UINT64 offset, VIRTUAL_ALLOCATION_INFO& outInfo) const
 {
-    for(SuballocationList::const_iterator suballocItem = m_Suballocations.cbegin();
-        suballocItem != m_Suballocations.cend();
-        ++suballocItem)
+    for(const auto& suballoc : m_Suballocations)
     {
-        const Suballocation& suballoc = *suballocItem;
         if(suballoc.offset == offset)
         {
             outInfo.size = suballoc.size;
@@ -3245,11 +3548,8 @@ void BlockMetadata_Generic::UnregisterFreeSuballocation(SuballocationList::itera
 
 void BlockMetadata_Generic::SetAllocationUserData(UINT64 offset, void* userData)
 {
-    for(SuballocationList::iterator suballocItem = m_Suballocations.begin();
-        suballocItem != m_Suballocations.end();
-        ++suballocItem)
+    for(auto& suballoc : m_Suballocations)
     {
-        Suballocation& suballoc = *suballocItem;
         if(suballoc.offset == offset)
         {
             suballoc.userData = userData;
@@ -3275,11 +3575,8 @@ void BlockMetadata_Generic::CalcAllocationStatInfo(StatInfo& outInfo) const
     outInfo.UnusedRangeSizeMin = UINT64_MAX;
     outInfo.UnusedRangeSizeMax = 0;
 
-    for(SuballocationList::const_iterator suballocItem = m_Suballocations.cbegin();
-        suballocItem != m_Suballocations.cend();
-        ++suballocItem)
+    for(const auto& suballoc : m_Suballocations)
     {
-        const Suballocation& suballoc = *suballocItem;
         if(suballoc.type == SUBALLOCATION_TYPE_FREE)
         {
             outInfo.UnusedRangeSizeMin = D3D12MA_MIN(suballoc.size, outInfo.UnusedRangeSizeMin);
@@ -3306,11 +3603,8 @@ void BlockMetadata_Generic::WriteAllocationInfoToJson(JsonWriter& json) const
     json.WriteNumber(m_FreeCount);
     json.WriteString(L"Suballocations");
     json.BeginArray();
-    for(SuballocationList::const_iterator suballocItem = m_Suballocations.cbegin();
-        suballocItem != m_Suballocations.cend();
-        ++suballocItem)
+    for(const auto& suballoc : m_Suballocations)
     {
-        const Suballocation& suballoc = *suballocItem;
         json.BeginObject(true);
         json.WriteString(L"Offset");
         json.WriteNumber(suballoc.offset);
@@ -3351,11 +3645,11 @@ void BlockMetadata_Generic::WriteAllocationInfoToJson(JsonWriter& json) const
 NormalBlock::NormalBlock(
     AllocatorPimpl* allocator,
     BlockVector* blockVector,
-    D3D12_HEAP_TYPE heapType,
+    const D3D12_HEAP_PROPERTIES& heapProps,
     D3D12_HEAP_FLAGS heapFlags,
     UINT64 size,
     UINT id) :
-    MemoryBlock(allocator, heapType, heapFlags, size, id),
+    MemoryBlock(allocator, heapProps, heapFlags, size, id),
     m_pMetadata(NULL),
     m_BlockVector(blockVector)
 {
@@ -3401,12 +3695,12 @@ bool NormalBlock::Validate() const
 
 MemoryBlock::MemoryBlock(
     AllocatorPimpl* allocator,
-    D3D12_HEAP_TYPE heapType,
+    const D3D12_HEAP_PROPERTIES& heapProps,
     D3D12_HEAP_FLAGS heapFlags,
     UINT64 size,
     UINT id) :
     m_Allocator(allocator),
-    m_HeapType(heapType),
+    m_HeapProps(heapProps),
     m_HeapFlags(heapFlags),
     m_Size(size),
     m_Id(id)
@@ -3417,7 +3711,7 @@ MemoryBlock::~MemoryBlock()
 {
     if(m_Heap)
     {
-        m_Allocator->m_Budget.m_BlockBytes[HeapTypeToIndex(m_HeapType)] -= m_Size;
+        m_Allocator->m_Budget.m_BlockBytes[HeapTypeToIndex(m_HeapProps.Type)] -= m_Size;
         m_Heap->Release();
     }
 }
@@ -3428,16 +3722,87 @@ HRESULT MemoryBlock::Init()
 
     D3D12_HEAP_DESC heapDesc = {};
     heapDesc.SizeInBytes = m_Size;
-    heapDesc.Properties.Type = m_HeapType;
+    heapDesc.Properties = m_HeapProps;
     heapDesc.Alignment = HeapFlagsToAlignment(m_HeapFlags);
     heapDesc.Flags = m_HeapFlags;
 
-    HRESULT hr = m_Allocator->GetDevice()->CreateHeap(&heapDesc, __uuidof(*m_Heap), (void**)&m_Heap);
+    HRESULT hr = m_Allocator->GetDevice()->CreateHeap(&heapDesc, D3D12MA_IID_PPV_ARGS(&m_Heap));
     if(SUCCEEDED(hr))
     {
-        m_Allocator->m_Budget.m_BlockBytes[HeapTypeToIndex(m_HeapType)] += m_Size;
+        m_Allocator->m_Budget.m_BlockBytes[HeapTypeToIndex(m_HeapProps.Type)] += m_Size;
     }
     return hr;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Private class CommittedAllocationList implementation
+
+CommittedAllocationList::CommittedAllocationList()
+{
+}
+
+void CommittedAllocationList::Init(bool useMutex, D3D12_HEAP_TYPE heapType, PoolPimpl* pool)
+{
+    m_UseMutex = useMutex;
+    m_HeapType = heapType;
+    m_Pool = pool;
+}
+
+CommittedAllocationList::~CommittedAllocationList()
+{
+    if(!m_AllocationList.IsEmpty())
+    {
+        D3D12MA_ASSERT(0 && "Unfreed committed allocations found!");
+    }
+}
+
+void CommittedAllocationList::CalculateStats(StatInfo& outStats)
+{
+    ZeroMemory(&outStats, sizeof(outStats));
+    outStats.AllocationSizeMin = UINT64_MAX;
+    outStats.UnusedRangeSizeMin = UINT64_MAX;
+
+    MutexLockRead lock(m_Mutex, m_UseMutex);
+
+    for(Allocation* alloc = m_AllocationList.Front();
+        alloc != NULL; alloc = m_AllocationList.GetNext(alloc))
+    {
+        const UINT64 size = alloc->GetSize();
+        ++outStats.BlockCount;
+        ++outStats.AllocationCount;
+        outStats.UsedBytes += size;
+        if(size > outStats.AllocationSizeMax)
+            outStats.AllocationSizeMax = size;
+        if(size < outStats.AllocationSizeMin)
+            outStats.AllocationSizeMin = size;
+    }
+}
+
+void CommittedAllocationList::BuildStatsString(JsonWriter& json)
+{
+    MutexLockRead lock(m_Mutex, m_UseMutex);
+
+    json.BeginArray();
+    for(Allocation* alloc = m_AllocationList.Front();
+        alloc != NULL; alloc = m_AllocationList.GetNext(alloc))
+    {
+        json.BeginObject(true);
+        json.AddAllocationToObject(*alloc);
+        json.EndObject();
+    }
+    json.EndArray();
+}
+
+void CommittedAllocationList::Register(Allocation* alloc)
+{
+    MutexLockWrite lock(m_Mutex, m_UseMutex);
+    m_AllocationList.PushBack(alloc);
+}
+
+void CommittedAllocationList::Unregister(Allocation* alloc)
+{
+    MutexLockWrite lock(m_Mutex, m_UseMutex);
+    m_AllocationList.Remove(alloc);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3445,20 +3810,21 @@ HRESULT MemoryBlock::Init()
 
 BlockVector::BlockVector(
     AllocatorPimpl* hAllocator,
-    D3D12_HEAP_TYPE heapType,
+    const D3D12_HEAP_PROPERTIES& heapProps,
     D3D12_HEAP_FLAGS heapFlags,
     UINT64 preferredBlockSize,
     size_t minBlockCount,
     size_t maxBlockCount,
-    bool explicitBlockSize) :
+    bool explicitBlockSize,
+    UINT64 minAllocationAlignment) :
     m_hAllocator(hAllocator),
-    m_HeapType(heapType),
+    m_HeapProps(heapProps),
     m_HeapFlags(heapFlags),
     m_PreferredBlockSize(preferredBlockSize),
     m_MinBlockCount(minBlockCount),
     m_MaxBlockCount(maxBlockCount),
     m_ExplicitBlockSize(explicitBlockSize),
-    m_MinBytes(0),
+    m_MinAllocationAlignment(minAllocationAlignment),
     m_HasEmptyBlock(false),
     m_Blocks(hAllocator->GetAllocs()),
     m_NextBlockId(0)
@@ -3543,10 +3909,11 @@ HRESULT BlockVector::AllocatePage(
         return E_OUTOFMEMORY;
     }
 
-    UINT64 freeMemory;
+    UINT64 freeMemory = UINT64_MAX;
+    if(IsHeapTypeStandard(m_HeapProps.Type))
     {
         Budget budget = {};
-        m_hAllocator->GetBudgetForHeapType(budget, m_HeapType);
+        m_hAllocator->GetBudgetForHeapType(budget, m_HeapProps.Type);
         freeMemory = (budget.UsageBytes < budget.BudgetBytes) ? (budget.BudgetBytes - budget.UsageBytes) : 0;
     }
 
@@ -3658,9 +4025,10 @@ void BlockVector::Free(Allocation* hAllocation)
     NormalBlock* pBlockToDelete = NULL;
 
     bool budgetExceeded = false;
+    if(IsHeapTypeStandard(m_HeapProps.Type))
     {
         Budget budget = {};
-        m_hAllocator->GetBudgetForHeapType(budget, m_HeapType);
+        m_hAllocator->GetBudgetForHeapType(budget, m_HeapProps.Type);
         budgetExceeded = budget.UsageBytes >= budget.BudgetBytes;
     }
 
@@ -3674,14 +4042,12 @@ void BlockVector::Free(Allocation* hAllocation)
         D3D12MA_HEAVY_ASSERT(pBlock->Validate());
 
         const size_t blockCount = m_Blocks.size();
-        const UINT64 sumBlockSize = CalcSumBlockSize();
         // pBlock became empty after this deallocation.
         if(pBlock->m_pMetadata->IsEmpty())
         {
             // Already has empty Allocation. We don't want to have two, so delete this one.
             if((m_HasEmptyBlock || budgetExceeded) &&
-                blockCount > m_MinBlockCount &&
-                sumBlockSize - pBlock->m_pMetadata->GetSize() >= m_MinBytes)
+                blockCount > m_MinBlockCount)
             {
                 pBlockToDelete = pBlock;
                 Remove(pBlock);
@@ -3697,8 +4063,7 @@ void BlockVector::Free(Allocation* hAllocation)
         else if(m_HasEmptyBlock && blockCount > m_MinBlockCount)
         {
             NormalBlock* pLastBlock = m_Blocks.back();
-            if(pLastBlock->m_pMetadata->IsEmpty() &&
-                sumBlockSize - pLastBlock->m_pMetadata->GetSize() >= m_MinBytes)
+            if(pLastBlock->m_pMetadata->IsEmpty())
             {
                 pBlockToDelete = pLastBlock;
                 m_Blocks.pop_back();
@@ -3738,7 +4103,7 @@ HRESULT BlockVector::CreateResource(
             &resourceDesc,
             InitialResourceState,
             pOptimizedClearValue,
-            IID_PPV_ARGS(&res));
+            D3D12MA_IID_PPV_ARGS(&res));
         if(SUCCEEDED(hr))
         {
             if(ppvResource != NULL)
@@ -3794,7 +4159,7 @@ HRESULT BlockVector::CreateResource2(
             &resourceDesc,
             InitialResourceState,
             pOptimizedClearValue,
-            IID_PPV_ARGS(&res));
+            D3D12MA_IID_PPV_ARGS(&res));
         if(SUCCEEDED(hr))
         {
             if(ppvResource != NULL)
@@ -3877,6 +4242,8 @@ HRESULT BlockVector::AllocateFromBlock(
     ALLOCATION_FLAGS allocFlags,
     Allocation** pAllocation)
 {
+    alignment = D3D12MA_MAX(alignment, m_MinAllocationAlignment);
+
     AllocationRequest currRequest = {};
     if(pBlock->m_pMetadata->CreateAllocationRequest(
         size,
@@ -3893,7 +4260,7 @@ HRESULT BlockVector::AllocateFromBlock(
         pBlock->m_pMetadata->Alloc(currRequest, size, *pAllocation);
         (*pAllocation)->InitPlaced(currRequest.offset, alignment, pBlock);
         D3D12MA_HEAVY_ASSERT(pBlock->Validate());
-        m_hAllocator->m_Budget.AddAllocation(HeapTypeToIndex(m_HeapType), size);
+        m_hAllocator->m_Budget.AddAllocation(HeapTypeToIndex(m_HeapProps.Type), size);
         return S_OK;
     }
     return E_OUTOFMEMORY;
@@ -3904,7 +4271,7 @@ HRESULT BlockVector::CreateBlock(UINT64 blockSize, size_t* pNewBlockIndex)
     NormalBlock* const pBlock = D3D12MA_NEW(m_hAllocator->GetAllocs(), NormalBlock)(
         m_hAllocator,
         this,
-        m_HeapType,
+        m_HeapProps,
         m_HeapFlags,
         blockSize,
         m_NextBlockId++);
@@ -3921,89 +4288,6 @@ HRESULT BlockVector::CreateBlock(UINT64 blockSize, size_t* pNewBlockIndex)
         *pNewBlockIndex = m_Blocks.size() - 1;
     }
 
-    return hr;
-}
-
-HRESULT BlockVector::SetMinBytes(UINT64 minBytes)
-{
-    MutexLockWrite lock(m_Mutex, m_hAllocator->UseMutex());
-
-    if(minBytes == m_MinBytes)
-    {
-        return S_OK;
-    }
-
-    HRESULT hr = S_OK;
-    UINT64 sumBlockSize = CalcSumBlockSize();
-    size_t blockCount = m_Blocks.size();
-
-    // New minBytes is smaller - may be able to free some blocks.
-    if(minBytes < m_MinBytes)
-    {
-        m_HasEmptyBlock = false; // Will recalculate this value from scratch.
-        for(size_t blockIndex = blockCount; blockIndex--; )
-        {
-            NormalBlock* const block = m_Blocks[blockIndex];
-            const UINT64 size = block->m_pMetadata->GetSize();
-            const bool isEmpty = block->m_pMetadata->IsEmpty();
-            if(isEmpty &&
-                sumBlockSize - size >= minBytes &&
-                blockCount - 1 >= m_MinBlockCount)
-            {
-                D3D12MA_DELETE(m_hAllocator->GetAllocs(), block);
-                m_Blocks.remove(blockIndex);
-                sumBlockSize -= size;
-                --blockCount;
-            }
-            else
-            {
-                if(isEmpty)
-                {
-                    m_HasEmptyBlock = true;
-                }
-            }
-        }
-    }
-    // New minBytes is larger - may need to allocate some blocks.
-    else
-    {
-        const UINT64 minBlockSize = m_PreferredBlockSize >> NEW_BLOCK_SIZE_SHIFT_MAX;
-        while(SUCCEEDED(hr) && sumBlockSize < minBytes)
-        {
-            if(blockCount < m_MaxBlockCount)
-            {
-                UINT64 newBlockSize = m_PreferredBlockSize;
-                if(!m_ExplicitBlockSize)
-                {
-                    if(sumBlockSize + newBlockSize > minBytes)
-                    {
-                        newBlockSize = minBytes - sumBlockSize;
-                    }
-                    // Next one would be the last block to create and its size would be smaller than
-                    // the smallest block size we want to use here, so make this one smaller.
-                    else if(blockCount + 1 < m_MaxBlockCount &&
-                        sumBlockSize + newBlockSize + minBlockSize > minBytes)
-                    {
-                        newBlockSize -= minBlockSize + sumBlockSize + m_PreferredBlockSize - minBytes;
-                    }
-                }
-
-                hr = CreateBlock(newBlockSize, NULL);
-                if(SUCCEEDED(hr))
-                {
-                    m_HasEmptyBlock = true;
-                    sumBlockSize += newBlockSize;
-                    ++blockCount;
-                }
-            }
-            else
-            {
-                hr = E_INVALIDARG;
-            }
-        }
-    }
-
-    m_MinBytes = minBytes;
     return hr;
 }
 
@@ -4024,7 +4308,7 @@ void BlockVector::AddStats(StatInfo& outStats)
 
 void BlockVector::AddStats(Stats& outStats)
 {
-    const UINT heapTypeIndex = HeapTypeToIndex(m_HeapType);
+    const UINT heapTypeIndex = HeapTypeToIndex(m_HeapProps.Type);
     StatInfo* const pStatInfo = &outStats.HeapType[heapTypeIndex];
 
     MutexLockRead lock(m_Mutex, m_hAllocator->UseMutex());
@@ -4065,35 +4349,6 @@ void BlockVector::WriteBlockInfoToJson(JsonWriter& json)
 ////////////////////////////////////////////////////////////////////////////////
 // Private class PoolPimpl
 
-class PoolPimpl
-{
-public:
-    PoolPimpl(AllocatorPimpl* allocator, const POOL_DESC& desc);
-    HRESULT Init();
-    ~PoolPimpl();
-
-    AllocatorPimpl* GetAllocator() const { return m_Allocator; }
-    const POOL_DESC& GetDesc() const { return m_Desc; }
-    BlockVector* GetBlockVector() { return m_BlockVector; }
-    
-    HRESULT SetMinBytes(UINT64 minBytes) { return m_BlockVector->SetMinBytes(minBytes); }
-    
-    void CalculateStats(StatInfo& outStats);
-
-    void SetName(LPCWSTR Name);
-    LPCWSTR GetName() const { return m_Name; }
-
-private:
-    friend class Allocator;
-
-    AllocatorPimpl* m_Allocator; // Externally owned object.
-    POOL_DESC m_Desc;
-    BlockVector* m_BlockVector; // Owned object.
-    wchar_t* m_Name;
-
-    void FreeName();
-};
-
 PoolPimpl::PoolPimpl(AllocatorPimpl* allocator, const POOL_DESC& desc) :
     m_Allocator(allocator),
     m_Desc(desc),
@@ -4108,19 +4363,22 @@ PoolPimpl::PoolPimpl(AllocatorPimpl* allocator, const POOL_DESC& desc) :
     UINT maxBlockCount = desc.MaxBlockCount != 0 ? desc.MaxBlockCount : UINT_MAX;
 
     m_BlockVector = D3D12MA_NEW(allocator->GetAllocs(), BlockVector)(
-        allocator, desc.HeapType, heapFlags,
+        allocator, desc.HeapProperties, heapFlags,
         preferredBlockSize,
         desc.MinBlockCount, maxBlockCount,
-        explicitBlockSize);
+        explicitBlockSize,
+        D3D12MA_MAX(desc.MinAllocationAlignment, (UINT64)D3D12MA_DEBUG_ALIGNMENT));
 }
 
 HRESULT PoolPimpl::Init()
 {
+    m_CommittedAllocations.Init(m_Allocator->UseMutex(), m_Desc.HeapProperties.Type, this);
     return m_BlockVector->CreateMinBlocks();
 }
 
 PoolPimpl::~PoolPimpl()
 {
+    D3D12MA_ASSERT(m_PrevPool == NULL && m_NextPool == NULL);
     FreeName();
     D3D12MA_DELETE(m_Allocator->GetAllocs(), m_BlockVector);
 }
@@ -4133,7 +4391,22 @@ void PoolPimpl::CalculateStats(StatInfo& outStats)
 
     m_BlockVector->AddStats(outStats);
 
+    {
+        StatInfo committedStatInfo; // Uninitialized.
+        m_CommittedAllocations.CalculateStats(committedStatInfo);
+        AddStatInfo(outStats, committedStatInfo);
+    }
+
     PostProcessStatInfo(outStats);
+}
+
+void PoolPimpl::AddStats(Stats& inoutStats)
+{
+    StatInfo poolStatInfo = {};
+    CalculateStats(poolStatInfo);
+
+    AddStatInfo(inoutStats.Total, poolStatInfo);
+    AddStatInfo(inoutStats.HeapType[HeapTypeToIndex(m_Desc.HeapProperties.Type)], poolStatInfo);
 }
 
 void PoolPimpl::SetName(LPCWSTR Name)
@@ -4161,7 +4434,7 @@ void PoolPimpl::FreeName()
 ////////////////////////////////////////////////////////////////////////////////
 // Public class Pool implementation
 
-void Pool::Release()
+void Pool::ReleaseThis()
 {
     if(this == NULL)
     {
@@ -4176,11 +4449,6 @@ void Pool::Release()
 POOL_DESC Pool::GetDesc() const
 {
     return m_Pimpl->GetDesc();
-}
-
-HRESULT Pool::SetMinBytes(UINT64 minBytes)
-{
-    return m_Pimpl->SetMinBytes(minBytes);
 }
 
 void Pool::CalculateStats(StatInfo* pStats)
@@ -4208,7 +4476,7 @@ Pool::Pool(Allocator* allocator, const POOL_DESC &desc) :
 
 Pool::~Pool()
 {
-    m_Pimpl->GetAllocator()->UnregisterPool(this, m_Pimpl->GetDesc().HeapType);
+    m_Pimpl->GetAllocator()->UnregisterPool(this, m_Pimpl->GetDesc().HeapProperties.Type);
 
     D3D12MA_DELETE(m_Pimpl->GetAllocator()->GetAllocs(), m_Pimpl);
 }
@@ -4229,21 +4497,16 @@ AllocatorPimpl::AllocatorPimpl(const ALLOCATION_CALLBACKS& allocationCallbacks, 
 {
     // desc.pAllocationCallbacks intentionally ignored here, preprocessed by CreateAllocator.
     ZeroMemory(&m_D3D12Options, sizeof(m_D3D12Options));
+    ZeroMemory(&m_D3D12Architecture, sizeof(m_D3D12Architecture));
 
-    ZeroMemory(m_pCommittedAllocations, sizeof(m_pCommittedAllocations));
-    ZeroMemory(m_pPools, sizeof(m_pPools));
     ZeroMemory(m_BlockVectors, sizeof(m_BlockVectors));
-    ZeroMemory(m_DefaultPoolTier1MinBytes, sizeof(m_DefaultPoolTier1MinBytes));
 
-    for(UINT i = 0; i < HEAP_TYPE_COUNT; ++i)
+    for(UINT i = 0; i < STANDARD_HEAP_TYPE_COUNT; ++i)
     {
-        m_DefaultPoolHeapTypeMinBytes[i] = UINT64_MAX;
-    }
-
-    for(UINT heapTypeIndex = 0; heapTypeIndex < HEAP_TYPE_COUNT; ++heapTypeIndex)
-    {
-        m_pCommittedAllocations[heapTypeIndex] = D3D12MA_NEW(GetAllocs(), AllocationVectorType)(GetAllocs());
-        m_pPools[heapTypeIndex] = D3D12MA_NEW(GetAllocs(), PoolVectorType)(GetAllocs());
+        m_CommittedAllocations[i].Init(
+            m_UseMutex,
+            (D3D12_HEAP_TYPE)(D3D12_HEAP_TYPE_DEFAULT + i),
+            NULL); // pool
     }
 
     m_Device->AddRef();
@@ -4253,15 +4516,15 @@ AllocatorPimpl::AllocatorPimpl(const ALLOCATION_CALLBACKS& allocationCallbacks, 
 HRESULT AllocatorPimpl::Init(const ALLOCATOR_DESC& desc)
 {
 #if D3D12MA_DXGI_1_4
-    desc.pAdapter->QueryInterface<IDXGIAdapter3>(&m_Adapter3);
+    desc.pAdapter->QueryInterface(D3D12MA_IID_PPV_ARGS(&m_Adapter3));
 #endif
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
-    m_Device->QueryInterface<ID3D12Device4>(&m_Device4);
+    m_Device->QueryInterface(D3D12MA_IID_PPV_ARGS(&m_Device4));
 #endif
 
 #ifdef __ID3D12Device8_INTERFACE_DEFINED__
-    m_Device->QueryInterface<ID3D12Device8>(&m_Device8);
+    m_Device->QueryInterface(D3D12MA_IID_PPV_ARGS(&m_Device8));
 #endif
 
     HRESULT hr = m_Adapter->GetDesc(&m_AdapterDesc);
@@ -4275,22 +4538,33 @@ HRESULT AllocatorPimpl::Init(const ALLOCATOR_DESC& desc)
     {
         return hr;
     }
+#ifdef D3D12MA_FORCE_RESOURCE_HEAP_TIER
+    m_D3D12Options.ResourceHeapTier = (D3D12MA_FORCE_RESOURCE_HEAP_TIER);
+#endif
 
+    hr = m_Device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &m_D3D12Architecture, sizeof(m_D3D12Architecture));
+    if(FAILED(hr))
+    {
+        m_D3D12Architecture.UMA = FALSE;
+        m_D3D12Architecture.CacheCoherentUMA = FALSE;
+    }
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
     const UINT defaultPoolCount = CalcDefaultPoolCount();
     for(UINT i = 0; i < defaultPoolCount; ++i)
     {
-        D3D12_HEAP_TYPE heapType;
         D3D12_HEAP_FLAGS heapFlags;
-        CalcDefaultPoolParams(heapType, heapFlags, i);
+        CalcDefaultPoolParams(heapProps.Type, heapFlags, i);
 
         m_BlockVectors[i] = D3D12MA_NEW(GetAllocs(), BlockVector)(
             this, // hAllocator
-            heapType, // heapType
+            heapProps, // heapType
             heapFlags, // heapFlags
             m_PreferredBlockSize,
             0, // minBlockCount
             SIZE_MAX, // maxBlockCount
-            false); // explicitBlockSize
+            false, // explicitBlockSize
+            D3D12MA_DEBUG_ALIGNMENT); // minAllocationAlignment
         // No need to call m_pBlockVectors[i]->CreateMinBlocks here, becase minBlockCount is 0.
     }
 
@@ -4325,22 +4599,10 @@ AllocatorPimpl::~AllocatorPimpl()
 
     for(UINT i = HEAP_TYPE_COUNT; i--; )
     {
-        if(m_pPools[i] && !m_pPools[i]->empty())
+        if(!m_Pools[i].IsEmpty())
         {
             D3D12MA_ASSERT(0 && "Unfreed pools found!");
         }
-
-        D3D12MA_DELETE(GetAllocs(), m_pPools[i]);
-    }
-
-    for(UINT i = HEAP_TYPE_COUNT; i--; )
-    {
-        if(m_pCommittedAllocations[i] && !m_pCommittedAllocations[i]->empty())
-        {
-            D3D12MA_ASSERT(0 && "Unfreed committed allocations found!");
-        }
-
-        D3D12MA_DELETE(GetAllocs(), m_pCommittedAllocations[i]);
     }
 }
 
@@ -4369,117 +4631,58 @@ HRESULT AllocatorPimpl::CreateResource(
     REFIID riidResource,
     void** ppvResource)
 {
+    D3D12MA_ASSERT(pAllocDesc && pResourceDesc && ppAllocation);
+
     *ppAllocation = NULL;
     if(ppvResource)
     {
         *ppvResource = NULL;
     }
 
-    if(pAllocDesc->CustomPool == NULL && !IsHeapTypeValid(pAllocDesc->HeapType))
-    {
-        return E_INVALIDARG;
-    }
-
-    ALLOCATION_DESC finalAllocDesc = *pAllocDesc;
-
     D3D12_RESOURCE_DESC finalResourceDesc = *pResourceDesc;
     D3D12_RESOURCE_ALLOCATION_INFO resAllocInfo = GetResourceAllocationInfo(finalResourceDesc);
-    resAllocInfo.Alignment = D3D12MA_MAX<UINT64>(resAllocInfo.Alignment, D3D12MA_DEBUG_ALIGNMENT);
     D3D12MA_ASSERT(IsPow2(resAllocInfo.Alignment));
     D3D12MA_ASSERT(resAllocInfo.SizeInBytes > 0);
 
-    if(pAllocDesc->CustomPool != NULL)
+    BlockVector* blockVector = NULL;
+    CommittedAllocationParameters committedAllocationParams = {};
+    bool preferCommitted = false;
+    HRESULT hr = CalcAllocationParams<D3D12_RESOURCE_DESC>(*pAllocDesc, resAllocInfo.SizeInBytes,
+        pResourceDesc,
+        blockVector, committedAllocationParams, preferCommitted);
+    if(FAILED(hr))
+        return hr;
+
+    const bool withinBudget = (pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0;
+    hr = E_INVALIDARG;
+    if(committedAllocationParams.IsValid() && preferCommitted)
     {
-        if((finalAllocDesc.Flags & ALLOCATION_FLAG_COMMITTED) != 0)
-        {
-            return E_INVALIDARG;
-        }
-
-        BlockVector* blockVector = pAllocDesc->CustomPool->m_Pimpl->GetBlockVector();
-        D3D12MA_ASSERT(blockVector);
-        return blockVector->CreateResource(
-            resAllocInfo.SizeInBytes,
-            resAllocInfo.Alignment,
-            finalAllocDesc,
-            finalResourceDesc,
-            InitialResourceState,
-            pOptimizedClearValue,
-            ppAllocation,
-            riidResource,
-            ppvResource);
+        hr = AllocateCommittedResource(committedAllocationParams,
+            resAllocInfo.SizeInBytes, withinBudget, &finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue,
+            ppAllocation, riidResource, ppvResource);
+        if(SUCCEEDED(hr))
+            return hr;
     }
-    else
+    if(blockVector != NULL)
     {
-        const UINT defaultPoolIndex = CalcDefaultPoolIndex(*pAllocDesc, finalResourceDesc);
-        const bool requireCommittedMemory = defaultPoolIndex == UINT32_MAX;
-        if(requireCommittedMemory)
-        {
-            return AllocateCommittedResource(
-                &finalAllocDesc,
-                &finalResourceDesc,
-                resAllocInfo,
-                InitialResourceState,
-                pOptimizedClearValue,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-        }
-
-        BlockVector* const blockVector = m_BlockVectors[defaultPoolIndex];
-        D3D12MA_ASSERT(blockVector);
-
-        const UINT64 preferredBlockSize = blockVector->GetPreferredBlockSize();
-        bool preferCommittedMemory =
-            m_AlwaysCommitted ||
-            PrefersCommittedAllocation(finalResourceDesc) ||
-            // Heuristics: Allocate committed memory if requested size if greater than half of preferred block size.
-            resAllocInfo.SizeInBytes > preferredBlockSize / 2;
-        if(preferCommittedMemory &&
-            (finalAllocDesc.Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) == 0)
-        {
-            finalAllocDesc.Flags |= ALLOCATION_FLAG_COMMITTED;
-        }
-
-        if((finalAllocDesc.Flags & ALLOCATION_FLAG_COMMITTED) != 0)
-        {
-            return AllocateCommittedResource(
-                &finalAllocDesc,
-                &finalResourceDesc,
-                resAllocInfo,
-                InitialResourceState,
-                pOptimizedClearValue,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-        }
-        else
-        {
-            HRESULT hr = blockVector->CreateResource(
-                resAllocInfo.SizeInBytes,
-                resAllocInfo.Alignment,
-                finalAllocDesc,
-                finalResourceDesc,
-                InitialResourceState,
-                pOptimizedClearValue,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-            if(SUCCEEDED(hr))
-            {
-                return hr;
-            }
-
-            return AllocateCommittedResource(
-                &finalAllocDesc,
-                &finalResourceDesc,
-                resAllocInfo,
-                InitialResourceState,
-                pOptimizedClearValue,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-        }
+        hr = blockVector->CreateResource(resAllocInfo.SizeInBytes, resAllocInfo.Alignment,
+            *pAllocDesc, finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue,
+            ppAllocation, riidResource, ppvResource);
+        if(SUCCEEDED(hr))
+            return hr;
     }
+    if(committedAllocationParams.IsValid() && !preferCommitted)
+    {
+        hr = AllocateCommittedResource(committedAllocationParams,
+            resAllocInfo.SizeInBytes, withinBudget, &finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue,
+            ppAllocation, riidResource, ppvResource);
+        if(SUCCEEDED(hr))
+            return hr;
+    }
+    return hr;
 }
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
@@ -4505,29 +4708,31 @@ HRESULT AllocatorPimpl::CreateResource1(
         *ppvResource = NULL;
     }
 
-    // In current implementation it must always be allocated as committed.
-    if(pAllocDesc->CustomPool != NULL ||
-        (pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
-    {
-        return E_INVALIDARG;
-    }
-
     D3D12_RESOURCE_DESC finalResourceDesc = *pResourceDesc;
     D3D12_RESOURCE_ALLOCATION_INFO resAllocInfo = GetResourceAllocationInfo(finalResourceDesc);
-    resAllocInfo.Alignment = D3D12MA_MAX<UINT64>(resAllocInfo.Alignment, D3D12MA_DEBUG_ALIGNMENT);
     D3D12MA_ASSERT(IsPow2(resAllocInfo.Alignment));
     D3D12MA_ASSERT(resAllocInfo.SizeInBytes > 0);
 
-    return AllocateCommittedResource1(
-        pAllocDesc,
-        &finalResourceDesc,
-        resAllocInfo,
-        InitialResourceState,
-        pOptimizedClearValue,
-        pProtectedSession,
-        ppAllocation,
-        riidResource,
-        ppvResource);
+    BlockVector* blockVector = NULL;
+    CommittedAllocationParameters committedAllocationParams = {};
+    bool preferCommitted = false;
+    HRESULT hr = CalcAllocationParams<D3D12_RESOURCE_DESC>(*pAllocDesc, resAllocInfo.SizeInBytes,
+        pResourceDesc,
+        blockVector, committedAllocationParams, preferCommitted);
+    if(FAILED(hr))
+        return hr;
+
+    const bool withinBudget = (pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0;
+    // In current implementation it must always be allocated as committed.
+    if(committedAllocationParams.IsValid())
+    {
+        return AllocateCommittedResource1(committedAllocationParams,
+            resAllocInfo.SizeInBytes, withinBudget, &finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue,
+            pProtectedSession, ppAllocation, riidResource, ppvResource);
+    }
+    else
+        return E_INVALIDARG;
 }
 #endif // #ifdef __ID3D12Device4_INTERFACE_DEFINED__
 
@@ -4542,129 +4747,65 @@ HRESULT AllocatorPimpl::CreateResource2(
     REFIID riidResource,
     void** ppvResource)
 {
+    D3D12MA_ASSERT(pAllocDesc && pResourceDesc && ppAllocation);
+
     *ppAllocation = NULL;
     if(ppvResource)
     {
         *ppvResource = NULL;
     }
-
     if(m_Device8 == NULL)
     {
         return E_NOINTERFACE;
     }
 
-    if(pAllocDesc->CustomPool == NULL && !IsHeapTypeValid(pAllocDesc->HeapType))
-    {
-        return E_INVALIDARG;
-    }
-
-    ALLOCATION_DESC finalAllocDesc = *pAllocDesc;
-
     D3D12_RESOURCE_DESC1 finalResourceDesc = *pResourceDesc;
     D3D12_RESOURCE_ALLOCATION_INFO resAllocInfo = GetResourceAllocationInfo(finalResourceDesc);
-    resAllocInfo.Alignment = D3D12MA_MAX<UINT64>(resAllocInfo.Alignment, D3D12MA_DEBUG_ALIGNMENT);
     D3D12MA_ASSERT(IsPow2(resAllocInfo.Alignment));
     D3D12MA_ASSERT(resAllocInfo.SizeInBytes > 0);
 
-    bool requireCommittedMemory = pProtectedSession != NULL || (finalAllocDesc.Flags & ALLOCATION_FLAG_COMMITTED) != 0;
+    BlockVector* blockVector = NULL;
+    CommittedAllocationParameters committedAllocationParams = {};
+    bool preferCommitted = false;
+    HRESULT hr = CalcAllocationParams<D3D12_RESOURCE_DESC1>(*pAllocDesc, resAllocInfo.SizeInBytes,
+        pResourceDesc,
+        blockVector, committedAllocationParams, preferCommitted);
+    if(FAILED(hr))
+        return hr;
+    
+    if(pProtectedSession != NULL)
+        blockVector = NULL; // Must be committed allocation.
 
-    if(pAllocDesc->CustomPool != NULL)
+    const bool withinBudget = (pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0;
+    hr = E_INVALIDARG;
+    if(committedAllocationParams.IsValid() && preferCommitted)
     {
-        if(requireCommittedMemory)
-        {
-            return E_INVALIDARG;
-        }
-
-        BlockVector* blockVector = pAllocDesc->CustomPool->m_Pimpl->GetBlockVector();
-        D3D12MA_ASSERT(blockVector);
-        return blockVector->CreateResource2(
-            resAllocInfo.SizeInBytes,
-            resAllocInfo.Alignment,
-            finalAllocDesc,
-            finalResourceDesc,
-            InitialResourceState,
-            pOptimizedClearValue,
-            pProtectedSession,
-            ppAllocation,
-            riidResource,
-            ppvResource);
+        hr = AllocateCommittedResource2(committedAllocationParams,
+            resAllocInfo.SizeInBytes, withinBudget,&finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue, pProtectedSession,
+            ppAllocation, riidResource, ppvResource);
+        if(SUCCEEDED(hr))
+            return hr;
     }
-    else
+    if(blockVector != NULL)
     {
-        const UINT defaultPoolIndex = CalcDefaultPoolIndex(*pAllocDesc, finalResourceDesc);
-        requireCommittedMemory = requireCommittedMemory || defaultPoolIndex == UINT32_MAX;
-        if(requireCommittedMemory)
-        {
-            return AllocateCommittedResource2(
-                &finalAllocDesc,
-                &finalResourceDesc,
-                resAllocInfo,
-                InitialResourceState,
-                pOptimizedClearValue,
-                pProtectedSession,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-        }
-
-        BlockVector* const blockVector = m_BlockVectors[defaultPoolIndex];
-        D3D12MA_ASSERT(blockVector);
-
-        const UINT64 preferredBlockSize = blockVector->GetPreferredBlockSize();
-        bool preferCommittedMemory =
-            m_AlwaysCommitted ||
-            PrefersCommittedAllocation(finalResourceDesc) ||
-            // Heuristics: Allocate committed memory if requested size if greater than half of preferred block size.
-            resAllocInfo.SizeInBytes > preferredBlockSize / 2;
-        if(preferCommittedMemory &&
-            (finalAllocDesc.Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) == 0)
-        {
-            finalAllocDesc.Flags |= ALLOCATION_FLAG_COMMITTED;
-        }
-
-        if((finalAllocDesc.Flags & ALLOCATION_FLAG_COMMITTED) != 0)
-        {
-            return AllocateCommittedResource2(
-                &finalAllocDesc,
-                &finalResourceDesc,
-                resAllocInfo,
-                InitialResourceState,
-                pOptimizedClearValue,
-                pProtectedSession,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-        }
-        else
-        {
-            HRESULT hr = blockVector->CreateResource2(
-                resAllocInfo.SizeInBytes,
-                resAllocInfo.Alignment,
-                finalAllocDesc,
-                finalResourceDesc,
-                InitialResourceState,
-                pOptimizedClearValue,
-                pProtectedSession,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-            if(SUCCEEDED(hr))
-            {
-                return hr;
-            }
-
-            return AllocateCommittedResource2(
-                &finalAllocDesc,
-                &finalResourceDesc,
-                resAllocInfo,
-                InitialResourceState,
-                pOptimizedClearValue,
-                pProtectedSession,
-                ppAllocation,
-                riidResource,
-                ppvResource);
-        }
+        hr = blockVector->CreateResource2(resAllocInfo.SizeInBytes, resAllocInfo.Alignment,
+            *pAllocDesc, finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue, pProtectedSession,
+            ppAllocation, riidResource, ppvResource);
+        if(SUCCEEDED(hr))
+            return hr;
     }
+    if(committedAllocationParams.IsValid() && !preferCommitted)
+    {
+        hr = AllocateCommittedResource2(committedAllocationParams,
+            resAllocInfo.SizeInBytes, withinBudget,&finalResourceDesc,
+            InitialResourceState, pOptimizedClearValue, pProtectedSession,
+            ppAllocation, riidResource, ppvResource);
+        if(SUCCEEDED(hr))
+            return hr;
+    }
+    return hr;
 }
 #endif // #ifdef __ID3D12Device8_INTERFACE_DEFINED__
 
@@ -4675,67 +4816,37 @@ HRESULT AllocatorPimpl::AllocateMemory(
 {
     *ppAllocation = NULL;
 
-    if(pAllocDesc->CustomPool != NULL)
+    BlockVector* blockVector = NULL;
+    CommittedAllocationParameters committedAllocationParams = {};
+    bool preferCommitted = false;
+    HRESULT hr = CalcAllocationParams<D3D12_RESOURCE_DESC>(*pAllocDesc, pAllocInfo->SizeInBytes,
+        NULL, // pResDesc
+        blockVector, committedAllocationParams, preferCommitted);
+    if(FAILED(hr))
+        return hr;
+    
+    const bool withinBudget = (pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0;
+    hr = E_INVALIDARG;
+    if(committedAllocationParams.IsValid() && preferCommitted)
     {
-        BlockVector* const blockVector = pAllocDesc->CustomPool->m_Pimpl->GetBlockVector();
-        D3D12MA_ASSERT(blockVector);
-        return blockVector->Allocate(
-            pAllocInfo->SizeInBytes,
-            pAllocInfo->Alignment,
-            *pAllocDesc,
-            1,
-            (Allocation**)ppAllocation);
+        hr = AllocateHeap(committedAllocationParams, *pAllocInfo, withinBudget, ppAllocation);
+        if(SUCCEEDED(hr))
+            return hr;
     }
-    else
+    if(blockVector != NULL)
     {
-        if(!IsHeapTypeValid(pAllocDesc->HeapType))
-        {
-            return E_INVALIDARG;
-        }
-
-        ALLOCATION_DESC finalAllocDesc = *pAllocDesc;
-
-        const UINT defaultPoolIndex = CalcDefaultPoolIndex(*pAllocDesc);
-        bool requireCommittedMemory = (defaultPoolIndex == UINT32_MAX);
-        if(requireCommittedMemory)
-        {
-            return AllocateHeap(&finalAllocDesc, *pAllocInfo, ppAllocation);
-        }
-
-        BlockVector* blockVector = m_BlockVectors[defaultPoolIndex];
-        D3D12MA_ASSERT(blockVector);
-
-        const UINT64 preferredBlockSize = blockVector->GetPreferredBlockSize();
-        const bool preferCommittedMemory =
-            m_AlwaysCommitted ||
-            // Heuristics: Allocate committed memory if requested size if greater than half of preferred block size.
-            pAllocInfo->SizeInBytes > preferredBlockSize / 2;
-        if(preferCommittedMemory &&
-            (finalAllocDesc.Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) == 0)
-        {
-            finalAllocDesc.Flags |= ALLOCATION_FLAG_COMMITTED;
-        }
-
-        if((finalAllocDesc.Flags & ALLOCATION_FLAG_COMMITTED) != 0)
-        {
-            return AllocateHeap(&finalAllocDesc, *pAllocInfo, ppAllocation);
-        }
-        else
-        {
-            HRESULT hr = blockVector->Allocate(
-                pAllocInfo->SizeInBytes,
-                pAllocInfo->Alignment,
-                finalAllocDesc,
-                1,
-                (Allocation**)ppAllocation);
-            if(SUCCEEDED(hr))
-            {
-                return hr;
-            }
-
-            return AllocateHeap(&finalAllocDesc, *pAllocInfo, ppAllocation);
-        }
+        hr = blockVector->Allocate(pAllocInfo->SizeInBytes, pAllocInfo->Alignment,
+            *pAllocDesc, 1, (Allocation**)ppAllocation);
+        if(SUCCEEDED(hr))
+            return hr;
     }
+    if(committedAllocationParams.IsValid() && !preferCommitted)
+    {
+        hr = AllocateHeap(committedAllocationParams, *pAllocInfo, withinBudget, ppAllocation);
+        if(SUCCEEDED(hr))
+            return hr;
+    }
+    return hr;
 }
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
@@ -4753,19 +4864,24 @@ HRESULT AllocatorPimpl::AllocateMemory1(
 
     *ppAllocation = NULL;
 
+    BlockVector* blockVector = NULL;
+    CommittedAllocationParameters committedAllocationParams = {};
+    bool preferCommitted = false;
+    HRESULT hr = CalcAllocationParams<D3D12_RESOURCE_DESC>(*pAllocDesc, pAllocInfo->SizeInBytes,
+        NULL, // pResDesc
+        blockVector, committedAllocationParams, preferCommitted);
+    if(FAILED(hr))
+        return hr;
+
+    const bool withinBudget = (pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0;
     // In current implementation it must always be allocated as separate CreateHeap1.
-    if(pAllocDesc->CustomPool != NULL ||
-        (pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    if(committedAllocationParams.IsValid())
     {
-        return E_INVALIDARG;
+        return AllocateHeap1(committedAllocationParams,
+            *pAllocInfo, withinBudget, pProtectedSession, ppAllocation);
     }
-
-    if(!IsHeapTypeValid(pAllocDesc->HeapType))
-    {
+    else
         return E_INVALIDARG;
-    }
-
-    return AllocateHeap1(pAllocDesc, *pAllocInfo, pProtectedSession, ppAllocation);
 }
 #endif // #ifdef __ID3D12Device4_INTERFACE_DEFINED__
 
@@ -4782,7 +4898,6 @@ HRESULT AllocatorPimpl::CreateAliasingResource(
 
     D3D12_RESOURCE_DESC resourceDesc2 = *pResourceDesc;
     D3D12_RESOURCE_ALLOCATION_INFO resAllocInfo = GetResourceAllocationInfo(resourceDesc2);
-    resAllocInfo.Alignment = D3D12MA_MAX<UINT64>(resAllocInfo.Alignment, D3D12MA_DEBUG_ALIGNMENT);
     D3D12MA_ASSERT(IsPow2(resAllocInfo.Alignment));
     D3D12MA_ASSERT(resAllocInfo.SizeInBytes > 0);
 
@@ -4808,71 +4923,6 @@ HRESULT AllocatorPimpl::CreateAliasingResource(
         ppvResource);
 }
 
-HRESULT AllocatorPimpl::SetDefaultHeapMinBytes(
-    D3D12_HEAP_TYPE heapType,
-    D3D12_HEAP_FLAGS heapFlags,
-    UINT64 minBytes)
-{
-    if(!IsHeapTypeValid(heapType))
-    {
-        D3D12MA_ASSERT(0 && "Allocator::SetDefaultHeapMinBytes: Invalid heapType passed.");
-        return E_INVALIDARG;
-    }
-
-    if(SupportsResourceHeapTier2())
-    {
-        if(heapFlags != D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES &&
-            heapFlags != D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS &&
-            heapFlags != D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES &&
-            heapFlags != D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES)
-        {
-            D3D12MA_ASSERT(0 && "Allocator::SetDefaultHeapMinBytes: Invalid heapFlags passed.");
-            return E_INVALIDARG;
-        }
-
-        UINT64 newMinBytes = UINT64_MAX;
-
-        {
-            MutexLockWrite lock(m_DefaultPoolMinBytesMutex, m_UseMutex);
-
-            if(heapFlags == D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES)
-            {
-                m_DefaultPoolHeapTypeMinBytes[HeapTypeToIndex(heapType)] = minBytes;
-                newMinBytes = minBytes;
-            }
-            else
-            {
-                const UINT defaultPoolTier1Index = CalcDefaultPoolIndex(heapType, heapFlags, false);
-                m_DefaultPoolTier1MinBytes[defaultPoolTier1Index] = minBytes;
-
-                newMinBytes = m_DefaultPoolHeapTypeMinBytes[HeapTypeToIndex(heapType)];
-                if(newMinBytes == UINT64_MAX)
-                {
-                    newMinBytes = m_DefaultPoolTier1MinBytes[CalcDefaultPoolIndex(heapType, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS, false)] +
-                        m_DefaultPoolTier1MinBytes[CalcDefaultPoolIndex(heapType, D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES, false)] +
-                        m_DefaultPoolTier1MinBytes[CalcDefaultPoolIndex(heapType, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES, false)];
-                }
-            }
-        }
-
-        const UINT defaultPoolIndex = CalcDefaultPoolIndex(heapType, D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES);
-        return m_BlockVectors[defaultPoolIndex]->SetMinBytes(newMinBytes);
-    }
-    else
-    {
-        if(heapFlags != D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS &&
-            heapFlags != D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES &&
-            heapFlags != D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES)
-        {
-            D3D12MA_ASSERT(0 && "Allocator::SetDefaultHeapMinBytes: Invalid heapFlags passed.");
-            return E_INVALIDARG;
-        }
-        
-        const UINT defaultPoolIndex = CalcDefaultPoolIndex(heapType, heapFlags);
-        return m_BlockVectors[defaultPoolIndex]->SetMinBytes(minBytes);
-    }
-}
-
 template<typename D3D12_RESOURCE_DESC_T>
 bool AllocatorPimpl::PrefersCommittedAllocation(const D3D12_RESOURCE_DESC_T& resourceDesc)
 {
@@ -4881,35 +4931,26 @@ bool AllocatorPimpl::PrefersCommittedAllocation(const D3D12_RESOURCE_DESC_T& res
 }
 
 HRESULT AllocatorPimpl::AllocateCommittedResource(
-    const ALLOCATION_DESC* pAllocDesc,
+    const CommittedAllocationParameters& committedAllocParams,
+    UINT64 resourceSize, bool withinBudget,
     const D3D12_RESOURCE_DESC* pResourceDesc,
-    const D3D12_RESOURCE_ALLOCATION_INFO& resAllocInfo,
-    D3D12_RESOURCE_STATES InitialResourceState,
-    const D3D12_CLEAR_VALUE *pOptimizedClearValue,
-    Allocation** ppAllocation,
-    REFIID riidResource,
-    void** ppvResource)
+    D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+    Allocation** ppAllocation, REFIID riidResource, void** ppvResource)
 {
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    D3D12MA_ASSERT(committedAllocParams.IsValid());
+
+    if(withinBudget &&
+        !NewAllocationWithinBudget(committedAllocParams.m_HeapProperties.Type, resourceSize))
     {
         return E_OUTOFMEMORY;
     }
-
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0 &&
-        !NewAllocationWithinBudget(pAllocDesc->HeapType, resAllocInfo.SizeInBytes))
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = pAllocDesc->HeapType;
-
-    const D3D12_HEAP_FLAGS heapFlags = pAllocDesc->ExtraHeapFlags;
 
     ID3D12Resource* res = NULL;
     HRESULT hr = m_Device->CreateCommittedResource(
-        &heapProps, heapFlags, pResourceDesc, InitialResourceState,
-        pOptimizedClearValue, IID_PPV_ARGS(&res));
+        &committedAllocParams.m_HeapProperties,
+        committedAllocParams.m_HeapFlags & ~RESOURCE_CLASS_HEAP_FLAGS, // D3D12 ERROR: ID3D12Device::CreateCommittedResource: When creating a committed resource, D3D12_HEAP_FLAGS must not have either D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES, D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES, nor D3D12_HEAP_FLAG_DENY_BUFFERS set. These flags will be set automatically to correspond with the committed resource type. [ STATE_CREATION ERROR #640: CREATERESOURCEANDHEAP_INVALIDHEAPMISCFLAGS]
+        pResourceDesc, InitialResourceState,
+        pOptimizedClearValue, D3D12MA_IID_PPV_ARGS(&res));
     if(SUCCEEDED(hr))
     {
         if(ppvResource != NULL)
@@ -4919,17 +4960,16 @@ HRESULT AllocatorPimpl::AllocateCommittedResource(
         if(SUCCEEDED(hr))
         {
             const BOOL wasZeroInitialized = TRUE;
-            Allocation* alloc = m_AllocationObjectAllocator.Allocate(this, resAllocInfo.SizeInBytes, wasZeroInitialized);
-            alloc->InitCommitted(pAllocDesc->HeapType);
+            Allocation* alloc = m_AllocationObjectAllocator.Allocate(this, resourceSize, wasZeroInitialized);
+            alloc->InitCommitted(committedAllocParams.m_List);
             alloc->SetResource(res, pResourceDesc);
 
             *ppAllocation = alloc;
 
-            RegisterCommittedAllocation(*ppAllocation, pAllocDesc->HeapType);
+            committedAllocParams.m_List->Register(alloc);
 
-            const UINT heapTypeIndex = HeapTypeToIndex(pAllocDesc->HeapType);
-            m_Budget.AddAllocation(heapTypeIndex, resAllocInfo.SizeInBytes);
-            m_Budget.m_BlockBytes[heapTypeIndex] += resAllocInfo.SizeInBytes;
+            const UINT heapTypeIndex = HeapTypeToIndex(committedAllocParams.m_HeapProperties.Type);
+            m_Budget.AddCommittedAllocation(heapTypeIndex, resourceSize);
         }
         else
         {
@@ -4941,41 +4981,32 @@ HRESULT AllocatorPimpl::AllocateCommittedResource(
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
 HRESULT AllocatorPimpl::AllocateCommittedResource1(
-    const ALLOCATION_DESC* pAllocDesc,
+    const CommittedAllocationParameters& committedAllocParams,
+    UINT64 resourceSize, bool withinBudget,
     const D3D12_RESOURCE_DESC* pResourceDesc,
-    const D3D12_RESOURCE_ALLOCATION_INFO& resAllocInfo,
-    D3D12_RESOURCE_STATES InitialResourceState,
-    const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+    D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
     ID3D12ProtectedResourceSession *pProtectedSession,
-    Allocation** ppAllocation,
-    REFIID riidResource,
-    void** ppvResource)
+    Allocation** ppAllocation, REFIID riidResource, void** ppvResource)
 {
+    D3D12MA_ASSERT(committedAllocParams.IsValid());
+
     if(m_Device4 == NULL)
     {
         return E_NOINTERFACE;
     }
 
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    if(withinBudget &&
+        !NewAllocationWithinBudget(committedAllocParams.m_HeapProperties.Type, resourceSize))
     {
         return E_OUTOFMEMORY;
     }
-
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0 &&
-        !NewAllocationWithinBudget(pAllocDesc->HeapType, resAllocInfo.SizeInBytes))
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = pAllocDesc->HeapType;
-
-    const D3D12_HEAP_FLAGS heapFlags = pAllocDesc->ExtraHeapFlags;
 
     ID3D12Resource* res = NULL;
     HRESULT hr = m_Device4->CreateCommittedResource1(
-        &heapProps, heapFlags, pResourceDesc, InitialResourceState,
-        pOptimizedClearValue, pProtectedSession, IID_PPV_ARGS(&res));
+        &committedAllocParams.m_HeapProperties,
+        committedAllocParams.m_HeapFlags & ~RESOURCE_CLASS_HEAP_FLAGS, // D3D12 ERROR: ID3D12Device::CreateCommittedResource: When creating a committed resource, D3D12_HEAP_FLAGS must not have either D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES, D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES, nor D3D12_HEAP_FLAG_DENY_BUFFERS set. These flags will be set automatically to correspond with the committed resource type. [ STATE_CREATION ERROR #640: CREATERESOURCEANDHEAP_INVALIDHEAPMISCFLAGS]
+        pResourceDesc, InitialResourceState,
+        pOptimizedClearValue, pProtectedSession, D3D12MA_IID_PPV_ARGS(&res));
     if(SUCCEEDED(hr))
     {
         if(ppvResource != NULL)
@@ -4985,17 +5016,16 @@ HRESULT AllocatorPimpl::AllocateCommittedResource1(
         if(SUCCEEDED(hr))
         {
             const BOOL wasZeroInitialized = TRUE;
-            Allocation* alloc = m_AllocationObjectAllocator.Allocate(this, resAllocInfo.SizeInBytes, wasZeroInitialized);
-            alloc->InitCommitted(pAllocDesc->HeapType);
+            Allocation* alloc = m_AllocationObjectAllocator.Allocate(this, resourceSize, wasZeroInitialized);
+            alloc->InitCommitted(committedAllocParams.m_List);
             alloc->SetResource(res, pResourceDesc);
 
             *ppAllocation = alloc;
 
-            RegisterCommittedAllocation(*ppAllocation, pAllocDesc->HeapType);
+            committedAllocParams.m_List->Register(alloc);
 
-            const UINT heapTypeIndex = HeapTypeToIndex(pAllocDesc->HeapType);
-            m_Budget.AddAllocation(heapTypeIndex, resAllocInfo.SizeInBytes);
-            m_Budget.m_BlockBytes[heapTypeIndex] += resAllocInfo.SizeInBytes;
+            const UINT heapTypeIndex = HeapTypeToIndex(committedAllocParams.m_HeapProperties.Type);
+            m_Budget.AddCommittedAllocation(heapTypeIndex, resourceSize);
         }
         else
         {
@@ -5008,41 +5038,32 @@ HRESULT AllocatorPimpl::AllocateCommittedResource1(
 
 #ifdef __ID3D12Device8_INTERFACE_DEFINED__
 HRESULT AllocatorPimpl::AllocateCommittedResource2(
-    const ALLOCATION_DESC* pAllocDesc,
+    const CommittedAllocationParameters& committedAllocParams,
+    UINT64 resourceSize, bool withinBudget,
     const D3D12_RESOURCE_DESC1* pResourceDesc,
-    const D3D12_RESOURCE_ALLOCATION_INFO& resAllocInfo,
-    D3D12_RESOURCE_STATES InitialResourceState,
-    const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+    D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
     ID3D12ProtectedResourceSession *pProtectedSession,
-    Allocation** ppAllocation,
-    REFIID riidResource,
-    void** ppvResource)
+    Allocation** ppAllocation, REFIID riidResource, void** ppvResource)
 {
+    D3D12MA_ASSERT(committedAllocParams.IsValid());
+    
     if(m_Device8 == NULL)
     {
         return E_NOINTERFACE;
     }
 
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    if(withinBudget &&
+        !NewAllocationWithinBudget(committedAllocParams.m_HeapProperties.Type, resourceSize))
     {
         return E_OUTOFMEMORY;
     }
-
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0 &&
-        !NewAllocationWithinBudget(pAllocDesc->HeapType, resAllocInfo.SizeInBytes))
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = pAllocDesc->HeapType;
-
-    const D3D12_HEAP_FLAGS heapFlags = pAllocDesc->ExtraHeapFlags;
 
     ID3D12Resource* res = NULL;
     HRESULT hr = m_Device8->CreateCommittedResource2(
-        &heapProps, heapFlags, pResourceDesc, InitialResourceState,
-        pOptimizedClearValue, pProtectedSession, IID_PPV_ARGS(&res));
+        &committedAllocParams.m_HeapProperties,
+        committedAllocParams.m_HeapFlags & ~RESOURCE_CLASS_HEAP_FLAGS, // D3D12 ERROR: ID3D12Device::CreateCommittedResource: When creating a committed resource, D3D12_HEAP_FLAGS must not have either D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES, D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES, nor D3D12_HEAP_FLAG_DENY_BUFFERS set. These flags will be set automatically to correspond with the committed resource type. [ STATE_CREATION ERROR #640: CREATERESOURCEANDHEAP_INVALIDHEAPMISCFLAGS]
+        pResourceDesc, InitialResourceState,
+        pOptimizedClearValue, pProtectedSession, D3D12MA_IID_PPV_ARGS(&res));
     if(SUCCEEDED(hr))
     {
         if(ppvResource != NULL)
@@ -5052,17 +5073,16 @@ HRESULT AllocatorPimpl::AllocateCommittedResource2(
         if(SUCCEEDED(hr))
         {
             const BOOL wasZeroInitialized = TRUE;
-            Allocation* alloc = m_AllocationObjectAllocator.Allocate(this, resAllocInfo.SizeInBytes, wasZeroInitialized);
-            alloc->InitCommitted(pAllocDesc->HeapType);
+            Allocation* alloc = m_AllocationObjectAllocator.Allocate(this, resourceSize, wasZeroInitialized);
+            alloc->InitCommitted(committedAllocParams.m_List);
             alloc->SetResource(res, pResourceDesc);
 
             *ppAllocation = alloc;
 
-            RegisterCommittedAllocation(*ppAllocation, pAllocDesc->HeapType);
+            committedAllocParams.m_List->Register(alloc);
 
-            const UINT heapTypeIndex = HeapTypeToIndex(pAllocDesc->HeapType);
-            m_Budget.AddAllocation(heapTypeIndex, resAllocInfo.SizeInBytes);
-            m_Budget.m_BlockBytes[heapTypeIndex] += resAllocInfo.SizeInBytes;
+            const UINT heapTypeIndex = HeapTypeToIndex(committedAllocParams.m_HeapProperties.Type);
+            m_Budget.AddCommittedAllocation(heapTypeIndex, resourceSize);
         }
         else
         {
@@ -5074,54 +5094,50 @@ HRESULT AllocatorPimpl::AllocateCommittedResource2(
 #endif // #ifdef __ID3D12Device8_INTERFACE_DEFINED__
 
 HRESULT AllocatorPimpl::AllocateHeap(
-    const ALLOCATION_DESC* pAllocDesc,
-    const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo,
+    const CommittedAllocationParameters& committedAllocParams,
+    const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo, bool withinBudget,
     Allocation** ppAllocation)
 {
+    D3D12MA_ASSERT(committedAllocParams.IsValid());
+
     *ppAllocation = nullptr;
 
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    if(withinBudget &&
+        !NewAllocationWithinBudget(committedAllocParams.m_HeapProperties.Type, allocInfo.SizeInBytes))
     {
         return E_OUTOFMEMORY;
     }
-
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0 &&
-        !NewAllocationWithinBudget(pAllocDesc->HeapType, allocInfo.SizeInBytes))
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    D3D12_HEAP_FLAGS heapFlags = pAllocDesc->ExtraHeapFlags;
 
     D3D12_HEAP_DESC heapDesc = {};
     heapDesc.SizeInBytes = allocInfo.SizeInBytes;
-    heapDesc.Properties.Type = pAllocDesc->HeapType;
+    heapDesc.Properties = committedAllocParams.m_HeapProperties;
     heapDesc.Alignment = allocInfo.Alignment;
-    heapDesc.Flags = heapFlags;
+    heapDesc.Flags = committedAllocParams.m_HeapFlags;
 
     ID3D12Heap* heap = nullptr;
-    HRESULT hr = m_Device->CreateHeap(&heapDesc, __uuidof(*heap), (void**)&heap);
+    HRESULT hr = m_Device->CreateHeap(&heapDesc, D3D12MA_IID_PPV_ARGS(&heap));
     if(SUCCEEDED(hr))
     {
         const BOOL wasZeroInitialized = TRUE;
         (*ppAllocation) = m_AllocationObjectAllocator.Allocate(this, allocInfo.SizeInBytes, wasZeroInitialized);
-        (*ppAllocation)->InitHeap(pAllocDesc->HeapType, heap);
-        RegisterCommittedAllocation(*ppAllocation, pAllocDesc->HeapType);
+        (*ppAllocation)->InitHeap(committedAllocParams.m_List, heap);
+        committedAllocParams.m_List->Register(*ppAllocation);
 
-        const UINT heapTypeIndex = HeapTypeToIndex(pAllocDesc->HeapType);
-        m_Budget.AddAllocation(heapTypeIndex, allocInfo.SizeInBytes);
-        m_Budget.m_BlockBytes[heapTypeIndex] += allocInfo.SizeInBytes;
+        const UINT heapTypeIndex = HeapTypeToIndex(committedAllocParams.m_HeapProperties.Type);
+        m_Budget.AddCommittedAllocation(heapTypeIndex, allocInfo.SizeInBytes);
     }
     return hr;
 }
 
 #ifdef __ID3D12Device4_INTERFACE_DEFINED__
 HRESULT AllocatorPimpl::AllocateHeap1(
-    const ALLOCATION_DESC* pAllocDesc,
-    const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo,
+    const CommittedAllocationParameters& committedAllocParams,
+    const D3D12_RESOURCE_ALLOCATION_INFO& allocInfo, bool withinBudget,
     ID3D12ProtectedResourceSession *pProtectedSession,
     Allocation** ppAllocation)
 {
+    D3D12MA_ASSERT(committedAllocParams.IsValid());
+
     *ppAllocation = nullptr;
 
     if(m_Device4 == NULL)
@@ -5129,41 +5145,106 @@ HRESULT AllocatorPimpl::AllocateHeap1(
         return E_NOINTERFACE;
     }
 
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    if(withinBudget &&
+        !NewAllocationWithinBudget(committedAllocParams.m_HeapProperties.Type, allocInfo.SizeInBytes))
     {
         return E_OUTOFMEMORY;
     }
-
-    if((pAllocDesc->Flags & ALLOCATION_FLAG_WITHIN_BUDGET) != 0 &&
-        !NewAllocationWithinBudget(pAllocDesc->HeapType, allocInfo.SizeInBytes))
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    D3D12_HEAP_FLAGS heapFlags = pAllocDesc->ExtraHeapFlags;
 
     D3D12_HEAP_DESC heapDesc = {};
     heapDesc.SizeInBytes = allocInfo.SizeInBytes;
-    heapDesc.Properties.Type = pAllocDesc->HeapType;
+    heapDesc.Properties = committedAllocParams.m_HeapProperties;
     heapDesc.Alignment = allocInfo.Alignment;
-    heapDesc.Flags = heapFlags;
+    heapDesc.Flags = committedAllocParams.m_HeapFlags;
 
     ID3D12Heap* heap = nullptr;
-    HRESULT hr = m_Device4->CreateHeap1(&heapDesc, pProtectedSession, __uuidof(*heap), (void**)&heap);
+    HRESULT hr = m_Device4->CreateHeap1(&heapDesc, pProtectedSession, D3D12MA_IID_PPV_ARGS(&heap));
     if(SUCCEEDED(hr))
     {
         const BOOL wasZeroInitialized = TRUE;
         (*ppAllocation) = m_AllocationObjectAllocator.Allocate(this, allocInfo.SizeInBytes, wasZeroInitialized);
-        (*ppAllocation)->InitHeap(pAllocDesc->HeapType, heap);
-        RegisterCommittedAllocation(*ppAllocation, pAllocDesc->HeapType);
+        (*ppAllocation)->InitHeap(committedAllocParams.m_List, heap);
+        committedAllocParams.m_List->Register(*ppAllocation);
 
-        const UINT heapTypeIndex = HeapTypeToIndex(pAllocDesc->HeapType);
-        m_Budget.AddAllocation(heapTypeIndex, allocInfo.SizeInBytes);
-        m_Budget.m_BlockBytes[heapTypeIndex] += allocInfo.SizeInBytes;
+        const UINT heapTypeIndex = HeapTypeToIndex(committedAllocParams.m_HeapProperties.Type);
+        m_Budget.AddCommittedAllocation(heapTypeIndex, allocInfo.SizeInBytes);
     }
     return hr;
 }
 #endif // #ifdef __ID3D12Device4_INTERFACE_DEFINED__
+
+template<typename D3D12_RESOURCE_DESC_T>
+HRESULT AllocatorPimpl::CalcAllocationParams(const ALLOCATION_DESC& allocDesc, UINT64 allocSize,
+    const D3D12_RESOURCE_DESC_T* resDesc,
+    BlockVector*& outBlockVector, CommittedAllocationParameters& outCommittedAllocationParams, bool& outPreferCommitted)
+{
+    outBlockVector = NULL;
+    outCommittedAllocationParams = CommittedAllocationParameters();
+    outPreferCommitted = false;
+
+    if(allocDesc.CustomPool != NULL)
+    {
+        PoolPimpl* const pool = allocDesc.CustomPool->m_Pimpl;
+
+        outBlockVector = pool->GetBlockVector();
+
+        outCommittedAllocationParams.m_HeapProperties = pool->GetDesc().HeapProperties;
+        outCommittedAllocationParams.m_HeapFlags = pool->GetDesc().HeapFlags;
+        outCommittedAllocationParams.m_List = pool->GetCommittedAllocationList();
+    }
+    else
+    {
+        if(!IsHeapTypeStandard(allocDesc.HeapType))
+        {
+            return E_INVALIDARG;
+        }
+
+        outCommittedAllocationParams.m_HeapProperties = StandardHeapTypeToHeapProperties(allocDesc.HeapType);
+        outCommittedAllocationParams.m_HeapFlags = allocDesc.ExtraHeapFlags;
+        outCommittedAllocationParams.m_List = &m_CommittedAllocations[HeapTypeToIndex(allocDesc.HeapType)];
+        
+        const ResourceClass resourceClass = (resDesc != NULL) ?
+            ResourceDescToResourceClass(*resDesc) : HeapFlagsToResourceClass(allocDesc.ExtraHeapFlags);
+        const UINT defaultPoolIndex = CalcDefaultPoolIndex(allocDesc, resourceClass);
+        if(defaultPoolIndex != UINT32_MAX)
+        {
+            outBlockVector = m_BlockVectors[defaultPoolIndex];
+            const UINT64 preferredBlockSize = outBlockVector->GetPreferredBlockSize();
+            if(allocSize > preferredBlockSize)
+            {
+                outBlockVector = NULL;
+            }
+            else if(allocSize > preferredBlockSize / 2)
+            {
+                // Heuristics: Allocate committed memory if requested size if greater than half of preferred block size.
+                outPreferCommitted = true;
+            }
+        }
+        
+        const D3D12_HEAP_FLAGS extraHeapFlags = allocDesc.ExtraHeapFlags & ~RESOURCE_CLASS_HEAP_FLAGS;
+        if(outBlockVector != NULL && extraHeapFlags != 0)
+        {
+            outBlockVector = NULL;
+        }
+    }
+
+    if((allocDesc.Flags & ALLOCATION_FLAG_COMMITTED) != 0 ||
+        m_AlwaysCommitted)
+    {
+        outBlockVector = NULL;
+    }
+    if((allocDesc.Flags & ALLOCATION_FLAG_NEVER_ALLOCATE) != 0)
+    {
+        outCommittedAllocationParams.m_List = NULL;
+    }
+
+    if(resDesc != NULL && !outPreferCommitted && PrefersCommittedAllocation(*resDesc))
+    {
+        outPreferCommitted = true;
+    }
+
+    return (outBlockVector != NULL || outCommittedAllocationParams.m_List != NULL) ? S_OK : E_INVALIDARG;
+}
 
 UINT AllocatorPimpl::CalcDefaultPoolCount() const
 {
@@ -5177,10 +5258,9 @@ UINT AllocatorPimpl::CalcDefaultPoolCount() const
     }
 }
 
-template<typename D3D12_RESOURCE_DESC_T>
-UINT AllocatorPimpl::CalcDefaultPoolIndex(const ALLOCATION_DESC& allocDesc, const D3D12_RESOURCE_DESC_T& resourceDesc) const
+UINT AllocatorPimpl::CalcDefaultPoolIndex(const ALLOCATION_DESC& allocDesc, ResourceClass resourceClass) const
 {
-    const D3D12_HEAP_FLAGS extraHeapFlags = allocDesc.ExtraHeapFlags & ~GetExtraHeapFlagsToIgnore();
+    const D3D12_HEAP_FLAGS extraHeapFlags = allocDesc.ExtraHeapFlags & ~RESOURCE_CLASS_HEAP_FLAGS;
     if(extraHeapFlags != 0)
     {
         return UINT32_MAX;
@@ -5195,66 +5275,22 @@ UINT AllocatorPimpl::CalcDefaultPoolIndex(const ALLOCATION_DESC& allocDesc, cons
     default: D3D12MA_ASSERT(0);
     }
 
-    if(!SupportsResourceHeapTier2())
+    if(SupportsResourceHeapTier2())
+        return poolIndex;
+    else
     {
-        poolIndex *= 3;
-        if(resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        switch(resourceClass)
         {
-            ++poolIndex;
-            const bool isRenderTargetOrDepthStencil =
-                (resourceDesc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
-            if(isRenderTargetOrDepthStencil)
-            {
-                ++poolIndex;
-            }
-        }
-    }
-
-    return poolIndex;
-}
-
-UINT AllocatorPimpl::CalcDefaultPoolIndex(D3D12_HEAP_TYPE heapType, D3D12_HEAP_FLAGS heapFlags, bool supportsResourceHeapTier2)
-{
-    const D3D12_HEAP_FLAGS extraHeapFlags = heapFlags & ~GetExtraHeapFlagsToIgnore();
-    if(extraHeapFlags != 0)
-    {
-        return UINT32_MAX;
-    }
-
-    UINT poolIndex = UINT_MAX;
-    switch(heapType)
-    {
-    case D3D12_HEAP_TYPE_DEFAULT:  poolIndex = 0; break;
-    case D3D12_HEAP_TYPE_UPLOAD:   poolIndex = 1; break;
-    case D3D12_HEAP_TYPE_READBACK: poolIndex = 2; break;
-    default: D3D12MA_ASSERT(0);
-    }
-
-    if(!supportsResourceHeapTier2)
-    {
-        poolIndex *= 3;
-
-        const bool allowBuffers = (heapFlags & D3D12_HEAP_FLAG_DENY_BUFFERS) == 0;
-        const bool allowRtDsTextures = (heapFlags & D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES) == 0;
-        const bool allowNonRtDsTextures = (heapFlags & D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES) == 0;
-
-        const uint8_t allowedGroupCount = (allowBuffers ? 1 : 0) + (allowRtDsTextures ? 1 : 0) + (allowNonRtDsTextures ? 1 : 0);
-        if(allowedGroupCount != 1)
-        {
+        case ResourceClass::Buffer:
+            return poolIndex * 3;
+        case ResourceClass::Non_RT_DS_Texture:
+            return poolIndex * 3 + 1;
+        case ResourceClass::RT_DS_Texture:
+            return poolIndex * 3 + 2;
+        default:
             return UINT32_MAX;
         }
-
-        if(!allowBuffers)
-        {
-            ++poolIndex;
-            if(allowRtDsTextures)
-            {
-                ++poolIndex;
-            }
-        }
     }
-
-    return poolIndex;
 }
 
 void AllocatorPimpl::CalcDefaultPoolParams(D3D12_HEAP_TYPE& outHeapType, D3D12_HEAP_FLAGS& outHeapFlags, UINT index) const
@@ -5296,35 +5332,12 @@ void AllocatorPimpl::CalcDefaultPoolParams(D3D12_HEAP_TYPE& outHeapType, D3D12_H
     }
 }
 
-void AllocatorPimpl::RegisterCommittedAllocation(Allocation* alloc, D3D12_HEAP_TYPE heapType)
-{
-    const UINT heapTypeIndex = HeapTypeToIndex(heapType);
-
-    MutexLockWrite lock(m_CommittedAllocationsMutex[heapTypeIndex], m_UseMutex);
-    AllocationVectorType* const committedAllocations = m_pCommittedAllocations[heapTypeIndex];
-    D3D12MA_ASSERT(committedAllocations);
-    committedAllocations->InsertSorted(alloc, PointerLess());
-}
-
-void AllocatorPimpl::UnregisterCommittedAllocation(Allocation* alloc, D3D12_HEAP_TYPE heapType)
-{
-    const UINT heapTypeIndex = HeapTypeToIndex(heapType);
-    
-    MutexLockWrite lock(m_CommittedAllocationsMutex[heapTypeIndex], m_UseMutex);
-    AllocationVectorType* const committedAllocations = m_pCommittedAllocations[heapTypeIndex];
-    D3D12MA_ASSERT(committedAllocations);
-    bool success = committedAllocations->RemoveSorted(alloc, PointerLess());
-    D3D12MA_ASSERT(success);
-}
-
 void AllocatorPimpl::RegisterPool(Pool* pool, D3D12_HEAP_TYPE heapType)
 {
     const UINT heapTypeIndex = HeapTypeToIndex(heapType);
 
     MutexLockWrite lock(m_PoolsMutex[heapTypeIndex], m_UseMutex);
-    PoolVectorType* const pools = m_pPools[heapTypeIndex];
-    D3D12MA_ASSERT(pools);
-    pools->InsertSorted(pool, PointerLess());
+    m_Pools[heapTypeIndex].PushBack(pool->m_Pimpl);
 }
 
 void AllocatorPimpl::UnregisterPool(Pool* pool, D3D12_HEAP_TYPE heapType)
@@ -5332,21 +5345,19 @@ void AllocatorPimpl::UnregisterPool(Pool* pool, D3D12_HEAP_TYPE heapType)
     const UINT heapTypeIndex = HeapTypeToIndex(heapType);
 
     MutexLockWrite lock(m_PoolsMutex[heapTypeIndex], m_UseMutex);
-    PoolVectorType* const pools = m_pPools[heapTypeIndex];
-    D3D12MA_ASSERT(pools);
-    bool success = pools->RemoveSorted(pool, PointerLess());
-    D3D12MA_ASSERT(success);
+    m_Pools[heapTypeIndex].Remove(pool->m_Pimpl);
 }
 
 void AllocatorPimpl::FreeCommittedMemory(Allocation* allocation)
 {
     D3D12MA_ASSERT(allocation && allocation->m_PackedData.GetType() == Allocation::TYPE_COMMITTED);
-    UnregisterCommittedAllocation(allocation, allocation->m_Committed.heapType);
+
+    CommittedAllocationList* const allocList = allocation->m_Committed.list;
+    allocList->Unregister(allocation);
 
     const UINT64 allocationSize = allocation->GetSize();
-    const UINT heapTypeIndex = HeapTypeToIndex(allocation->m_Committed.heapType);
-    m_Budget.RemoveAllocation(heapTypeIndex, allocationSize);
-    m_Budget.m_BlockBytes[heapTypeIndex] -= allocationSize;
+    const UINT heapTypeIndex = HeapTypeToIndex(allocList->GetHeapType());
+    m_Budget.RemoveCommittedAllocation(heapTypeIndex, allocationSize);
 }
 
 void AllocatorPimpl::FreePlacedMemory(Allocation* allocation)
@@ -5357,20 +5368,21 @@ void AllocatorPimpl::FreePlacedMemory(Allocation* allocation)
     D3D12MA_ASSERT(block);
     BlockVector* const blockVector = block->GetBlockVector();
     D3D12MA_ASSERT(blockVector);
-    m_Budget.RemoveAllocation(HeapTypeToIndex(block->GetHeapType()), allocation->GetSize());
+    m_Budget.RemoveAllocation(HeapTypeToIndex(block->GetHeapProperties().Type), allocation->GetSize());
     blockVector->Free(allocation);
 }
 
 void AllocatorPimpl::FreeHeapMemory(Allocation* allocation)
 {
     D3D12MA_ASSERT(allocation && allocation->m_PackedData.GetType() == Allocation::TYPE_HEAP);
-    UnregisterCommittedAllocation(allocation, allocation->m_Heap.heapType);
+
+    CommittedAllocationList* const allocList = allocation->m_Committed.list;
+    allocList->Unregister(allocation);
     SAFE_RELEASE(allocation->m_Heap.heap);
 
-    const UINT heapTypeIndex = HeapTypeToIndex(allocation->m_Heap.heapType);
+    const UINT heapTypeIndex = HeapTypeToIndex(allocList->GetHeapType());
     const UINT64 allocationSize = allocation->GetSize();
-    m_Budget.m_BlockBytes[heapTypeIndex] -= allocationSize;
-    m_Budget.RemoveAllocation(heapTypeIndex, allocationSize);
+    m_Budget.RemoveCommittedAllocation(heapTypeIndex, allocationSize);
 }
 
 void AllocatorPimpl::SetCurrentFrameIndex(UINT frameIndex)
@@ -5398,49 +5410,46 @@ void AllocatorPimpl::CalculateStats(Stats& outStats)
     }
 
     // Process deafult pools.
-    for(size_t i = 0; i < HEAP_TYPE_COUNT; ++i)
+    if(SupportsResourceHeapTier2())
     {
-        BlockVector* const pBlockVector = m_BlockVectors[i];
-        D3D12MA_ASSERT(pBlockVector);
-        pBlockVector->AddStats(outStats);
+        for(size_t heapTypeIndex = 0; heapTypeIndex < STANDARD_HEAP_TYPE_COUNT; ++heapTypeIndex)
+        {
+            BlockVector* const pBlockVector = m_BlockVectors[heapTypeIndex];
+            D3D12MA_ASSERT(pBlockVector);
+            pBlockVector->AddStats(outStats);
+        }
+    }
+    else
+    {
+        for(size_t heapTypeIndex = 0; heapTypeIndex < STANDARD_HEAP_TYPE_COUNT; ++heapTypeIndex)
+        {
+            for(size_t heapSubType = 0; heapSubType < 3; ++heapSubType)
+            {
+                BlockVector* const pBlockVector = m_BlockVectors[heapTypeIndex * 3 + heapSubType];
+                D3D12MA_ASSERT(pBlockVector);
+                pBlockVector->AddStats(outStats);
+            }
+        }
     }
 
     // Process custom pools
     for(size_t heapTypeIndex = 0; heapTypeIndex < HEAP_TYPE_COUNT; ++heapTypeIndex)
     {
         MutexLockRead lock(m_PoolsMutex[heapTypeIndex], m_UseMutex);
-        const PoolVectorType* const poolVector = m_pPools[heapTypeIndex];
-        D3D12MA_ASSERT(poolVector);
-        for(size_t poolIndex = 0, count = poolVector->size(); poolIndex < count; ++poolIndex)
+        PoolList& poolList = m_Pools[heapTypeIndex];
+        for(PoolPimpl* pool = poolList.Front(); pool != NULL; pool = poolList.GetNext(pool))
         {
-            Pool* pool = (*poolVector)[poolIndex];
-            pool->m_Pimpl->GetBlockVector()->AddStats(outStats);
+            pool->AddStats(outStats);
         }
     }
 
     // Process committed allocations.
-    for(size_t heapTypeIndex = 0; heapTypeIndex < HEAP_TYPE_COUNT; ++heapTypeIndex)
+    for(size_t heapTypeIndex = 0; heapTypeIndex < STANDARD_HEAP_TYPE_COUNT; ++heapTypeIndex)
     {
-        StatInfo& heapStatInfo = outStats.HeapType[heapTypeIndex];
-        MutexLockRead lock(m_CommittedAllocationsMutex[heapTypeIndex], m_UseMutex);
-        const AllocationVectorType* const allocationVector = m_pCommittedAllocations[heapTypeIndex];
-        D3D12MA_ASSERT(allocationVector);
-        for(size_t allocIndex = 0, count = allocationVector->size(); allocIndex < count; ++allocIndex)
-        {
-            UINT64 size = (*allocationVector)[allocIndex]->GetSize();
-            StatInfo statInfo = {};
-            statInfo.BlockCount = 1;
-            statInfo.AllocationCount = 1;
-            statInfo.UnusedRangeCount = 0;
-            statInfo.UsedBytes = size;
-            statInfo.UnusedBytes = 0;
-            statInfo.AllocationSizeMin = size;
-            statInfo.AllocationSizeMax = size;
-            statInfo.UnusedRangeSizeMin = UINT64_MAX;
-            statInfo.UnusedRangeSizeMax = 0;
-            AddStatInfo(outStats.Total, statInfo);
-            AddStatInfo(heapStatInfo, statInfo);
-        }
+        StatInfo statInfo; // Uninitialized.
+        m_CommittedAllocations[heapTypeIndex].CalculateStats(statInfo);
+        AddStatInfo(outStats.Total, statInfo);
+        AddStatInfo(outStats.HeapType[heapTypeIndex], statInfo);
     }
 
     // Post process
@@ -5463,6 +5472,7 @@ void AllocatorPimpl::GetBudget(Budget* outGpuBudget, Budget* outCpuBudget)
         outCpuBudget->BlockBytes = m_Budget.m_BlockBytes[1] + m_Budget.m_BlockBytes[2];
         outCpuBudget->AllocationBytes = m_Budget.m_AllocationBytes[1] + m_Budget.m_AllocationBytes[2];
     }
+    // TODO: What to do with CUSTOM?
 
 #if D3D12MA_DXGI_1_4
     if(m_Adapter3)
@@ -5616,7 +5626,7 @@ void AllocatorPimpl::BuildStatsString(WCHAR** ppStatsString, BOOL DetailedMap)
 
             if (SupportsResourceHeapTier2())
             {
-                for (size_t heapType = 0; heapType < HEAP_TYPE_COUNT; ++heapType)
+                for (size_t heapType = 0; heapType < STANDARD_HEAP_TYPE_COUNT; ++heapType)
                 {
                     json.WriteString(HeapTypeNames[heapType]);
                     json.BeginObject();
@@ -5632,7 +5642,7 @@ void AllocatorPimpl::BuildStatsString(WCHAR** ppStatsString, BOOL DetailedMap)
             }
             else
             {
-                for (size_t heapType = 0; heapType < HEAP_TYPE_COUNT; ++heapType)
+                for (size_t heapType = 0; heapType < STANDARD_HEAP_TYPE_COUNT; ++heapType)
                 {
                     for (size_t heapSubType = 0; heapSubType < 3; ++heapSubType)
                     {
@@ -5663,24 +5673,10 @@ void AllocatorPimpl::BuildStatsString(WCHAR** ppStatsString, BOOL DetailedMap)
             json.WriteString(L"CommittedAllocations");
             json.BeginObject();
 
-            for (size_t heapType = 0; heapType < HEAP_TYPE_COUNT; ++heapType)
+            for (size_t heapTypeIndex = 0; heapTypeIndex < STANDARD_HEAP_TYPE_COUNT; ++heapTypeIndex)
             {
-                json.WriteString(HeapTypeNames[heapType]);
-                MutexLockRead lock(m_CommittedAllocationsMutex[heapType], m_UseMutex);
-
-                json.BeginArray();
-                const AllocationVectorType* const allocationVector = m_pCommittedAllocations[heapType];
-                D3D12MA_ASSERT(allocationVector);
-                for (size_t i = 0, count = allocationVector->size(); i < count; ++i)
-                {
-                    Allocation* alloc = (*allocationVector)[i];
-                    D3D12MA_ASSERT(alloc);
-
-                    json.BeginObject(true);
-                    json.AddAllocationToObject(*alloc);
-                    json.EndObject();
-                }
-                json.EndArray();
+                json.WriteString(HeapTypeNames[heapTypeIndex]);
+                m_CommittedAllocations[heapTypeIndex].BuildStatsString(json);
             }
 
             json.EndObject(); // CommittedAllocations
@@ -5828,6 +5824,38 @@ void AllocatorPimpl::WriteBudgetToJson(JsonWriter& json, const Budget& budget)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Public but internal class IUnknownImpl implementation
+
+HRESULT STDMETHODCALLTYPE IUnknownImpl::QueryInterface(REFIID riid, void** ppvObject)
+{
+    if(ppvObject == NULL)
+        return E_POINTER;
+    if(riid == IID_IUnknown)
+    {
+        ++m_RefCount;
+        *ppvObject = this;
+        return S_OK;
+    }
+    *ppvObject = NULL;
+    return E_NOINTERFACE;
+}
+
+ULONG STDMETHODCALLTYPE IUnknownImpl::AddRef()
+{
+    return ++m_RefCount;
+}
+
+ULONG STDMETHODCALLTYPE IUnknownImpl::Release()
+{
+    D3D12MA_DEBUG_GLOBAL_MUTEX_LOCK
+
+    const uint32_t newRefCount = --m_RefCount;
+    if(newRefCount == 0)
+        ReleaseThis();
+    return newRefCount;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Public class Allocation implementation
 
 void Allocation::PackedData::SetType(Type type)
@@ -5858,7 +5886,7 @@ void Allocation::PackedData::SetTextureLayout(D3D12_TEXTURE_LAYOUT textureLayout
     m_TextureLayout = u;
 }
 
-void Allocation::Release()
+void Allocation::ReleaseThis()
 {
     if(this == NULL)
     {
@@ -5946,15 +5974,12 @@ Allocation::Allocation(AllocatorPimpl* allocator, UINT64 size, BOOL wasZeroIniti
     m_PackedData.SetWasZeroInitialized(wasZeroInitialized);
 }
 
-Allocation::~Allocation()
-{
-    // Nothing here, everything already done in Release.
-}
-
-void Allocation::InitCommitted(D3D12_HEAP_TYPE heapType)
+void Allocation::InitCommitted(CommittedAllocationList* list)
 {
     m_PackedData.SetType(TYPE_COMMITTED);
-    m_Committed.heapType = heapType;
+    m_Committed.list = list;
+    m_Committed.prev = NULL;
+    m_Committed.next = NULL;
 }
 
 void Allocation::InitPlaced(UINT64 offset, UINT64 alignment, NormalBlock* block)
@@ -5964,10 +5989,12 @@ void Allocation::InitPlaced(UINT64 offset, UINT64 alignment, NormalBlock* block)
     m_Placed.block = block;
 }
 
-void Allocation::InitHeap(D3D12_HEAP_TYPE heapType, ID3D12Heap* heap)
+void Allocation::InitHeap(CommittedAllocationList* list, ID3D12Heap* heap)
 {
     m_PackedData.SetType(TYPE_HEAP);
-    m_Heap.heapType = heapType;
+    m_Heap.list = list;
+    m_Committed.prev = NULL;
+    m_Committed.next = NULL;
     m_Heap.heap = heap;
 }
 
@@ -6024,7 +6051,7 @@ Allocator::~Allocator()
     D3D12MA_DELETE(m_Pimpl->GetAllocs(), m_Pimpl);
 }
 
-void Allocator::Release()
+void Allocator::ReleaseThis()
 {
     D3D12MA_DEBUG_GLOBAL_MUTEX_LOCK
 
@@ -6033,11 +6060,17 @@ void Allocator::Release()
     D3D12MA_DELETE(allocationCallbacksCopy, this);
 }
 
-
-
 const D3D12_FEATURE_DATA_D3D12_OPTIONS& Allocator::GetD3D12Options() const
 {
     return m_Pimpl->GetD3D12Options();
+}
+BOOL Allocator::IsUMA() const
+{
+    return m_Pimpl->IsUMA();
+}
+BOOL Allocator::IsCacheCoherentUMA() const
+{
+    return m_Pimpl->IsCacheCoherentUMA();
 }
 
 HRESULT Allocator::CreateResource(
@@ -6169,8 +6202,8 @@ HRESULT Allocator::CreatePool(
     Pool** ppPool)
 {
     if(!pPoolDesc || !ppPool ||
-        !IsHeapTypeValid(pPoolDesc->HeapType) ||
-        (pPoolDesc->MaxBlockCount > 0 && pPoolDesc->MaxBlockCount < pPoolDesc->MinBlockCount))
+        (pPoolDesc->MaxBlockCount > 0 && pPoolDesc->MaxBlockCount < pPoolDesc->MinBlockCount) ||
+        (pPoolDesc->MinAllocationAlignment > 0 && !IsPow2(pPoolDesc->MinAllocationAlignment)))
     {
         D3D12MA_ASSERT(0 && "Invalid arguments passed to Allocator::CreatePool.");
         return E_INVALIDARG;
@@ -6185,7 +6218,7 @@ HRESULT Allocator::CreatePool(
     HRESULT hr = (*ppPool)->m_Pimpl->Init();
     if(SUCCEEDED(hr))
     {
-        m_Pimpl->RegisterPool(*ppPool, pPoolDesc->HeapType);
+        m_Pimpl->RegisterPool(*ppPool, pPoolDesc->HeapProperties.Type);
     }
     else
     {
@@ -6193,15 +6226,6 @@ HRESULT Allocator::CreatePool(
         *ppPool = NULL;
     }
     return hr;
-}
-
-HRESULT Allocator::SetDefaultHeapMinBytes(
-    D3D12_HEAP_TYPE heapType,
-    D3D12_HEAP_FLAGS heapFlags,
-    UINT64 minBytes)
-{
-    D3D12MA_DEBUG_GLOBAL_MUTEX_LOCK
-    return m_Pimpl->SetDefaultHeapMinBytes(heapType, heapFlags, minBytes);
 }
 
 void Allocator::SetCurrentFrameIndex(UINT frameIndex)
@@ -6254,7 +6278,6 @@ public:
     BlockMetadata_Generic m_Metadata;
 
     VirtualBlockPimpl(const ALLOCATION_CALLBACKS& allocationCallbacks, UINT64 size);
-    ~VirtualBlockPimpl();
 };
 
 VirtualBlockPimpl::VirtualBlockPimpl(const ALLOCATION_CALLBACKS& allocationCallbacks, UINT64 size) :
@@ -6264,10 +6287,6 @@ VirtualBlockPimpl::VirtualBlockPimpl(const ALLOCATION_CALLBACKS& allocationCallb
         true) // isVirtual
 {
     m_Metadata.Init(m_Size);
-}
-
-VirtualBlockPimpl::~VirtualBlockPimpl()
-{
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -6287,7 +6306,7 @@ VirtualBlock::~VirtualBlock()
     D3D12MA_DELETE(m_Pimpl->m_AllocationCallbacks, m_Pimpl);
 }
 
-void VirtualBlock::Release()
+void VirtualBlock::ReleaseThis()
 {
     D3D12MA_DEBUG_GLOBAL_MUTEX_LOCK
 

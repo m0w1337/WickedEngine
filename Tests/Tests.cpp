@@ -19,6 +19,7 @@ void Tests::Initialize()
 	infoDisplay.resolution = true;
 	infoDisplay.heap_allocation_counter = true;
 
+	renderer.init(canvas);
 	renderer.Load();
 
 	ActivatePath(&renderer);
@@ -28,8 +29,8 @@ void TestsRenderer::ResizeLayout()
 {
     RenderPath3D::ResizeLayout();
 
-	float screenW = wiRenderer::GetDevice()->GetScreenWidth();
-	float screenH = wiRenderer::GetDevice()->GetScreenHeight();
+	float screenW = GetLogicalWidth();
+	float screenH = GetLogicalHeight();
 	label.SetPos(XMFLOAT2(screenW / 2.f - label.scale.x / 2.f, screenH * 0.95f));
 }
 void TestsRenderer::Load()
@@ -123,7 +124,7 @@ void TestsRenderer::Load()
 	testSelector.OnSelect([=](wiEventArgs args) {
 
 		// Reset all state that tests might have modified:
-		wiRenderer::GetDevice()->SetVSyncEnabled(true);
+		wiEvent::SetVSync(true);
 		wiRenderer::SetToDrawGridHelper(false);
 		wiRenderer::SetTemporalAAEnabled(false);
 		wiRenderer::ClearWorld(wiScene::GetScene());
@@ -140,8 +141,8 @@ void TestsRenderer::Load()
 		transform.UpdateTransform();
 		wiScene::GetCamera().TransformCamera(transform);
 
-		float screenW = wiRenderer::GetDevice()->GetScreenWidth();
-		float screenH = wiRenderer::GetDevice()->GetScreenHeight();
+		float screenW = GetLogicalWidth();
+		float screenH = GetLogicalHeight();
 
 		// Based on combobox selection, start the appropriate test:
 		switch (args.iValue)
@@ -210,7 +211,7 @@ void TestsRenderer::Load()
 			RunSpriteTest();
 			break;
 		case 14:
-			wiRenderer::GetDevice()->SetVSyncEnabled(false); // turn off vsync if we can to accelerate the baking
+			wiEvent::SetVSync(false); // turn off vsync if we can to accelerate the baking
 			wiRenderer::SetTemporalAAEnabled(true);
 			wiScene::LoadModel("../Content/models/lightmap_bake_test.wiscene", XMMatrixTranslation(0, 0, 4));
 			break;
@@ -269,24 +270,26 @@ void TestsRenderer::Load()
 
 		case 18:
 		{
-			wiScene::LoadModel("../Content/models/suzanne.wiscene");
+			wiScene::LoadModel("../Content/models/cube.wiscene");
 			wiProfiler::SetEnabled(true);
 			Scene& scene = wiScene::GetScene();
 			scene.Entity_CreateLight("testlight", XMFLOAT3(0, 2, -4), XMFLOAT3(1, 1, 1), 4, 10);
-			Entity suzanne = scene.Entity_FindByName("Suzanne");
-			const float scale = 0.05f;
-			int count = 256;
-			for (int i = 0; i < count; ++i)
+			Entity cubeentity = scene.Entity_FindByName("Cube");
+			const float scale = 0.06f;
+			for (int x = 0; x < 32; ++x)
 			{
-				for (int j = 0; j < count; ++j)
+				for (int y = 0; y < 32; ++y)
 				{
-					Entity entity = scene.Entity_Duplicate(suzanne);
-					TransformComponent* transform = scene.transforms.GetComponent(entity);
-					transform->Scale(XMFLOAT3(scale, scale, scale));
-					transform->Translate(XMFLOAT3(-5.5f + 11 * float(i) / float(count), -0.5f + 5 * float(j) / float(count), 0));
+					for (int z = 0; z < 64; ++z)
+					{
+						Entity entity = scene.Entity_Duplicate(cubeentity);
+						TransformComponent* transform = scene.transforms.GetComponent(entity);
+						transform->Scale(XMFLOAT3(scale, scale, scale));
+						transform->Translate(XMFLOAT3(-5.5f + 11 * float(x) / 32.f, -0.5f + 5 * y / 32.f, float(z) * 0.5f));
+					}
 				}
 			}
-			scene.Entity_Remove(suzanne);
+			scene.Entity_Remove(cubeentity);
 		}
 		break;
 
@@ -340,7 +343,7 @@ void TestsRenderer::Update(float dt)
 			TransformComponent& target = *scene.transforms.GetComponent(ik.target);
 
 			// place ik target on a plane intersected by mouse ray:
-			RAY ray = wiRenderer::GetPickRay((long)wiInput::GetPointer().x, (long)wiInput::GetPointer().y);
+			RAY ray = wiRenderer::GetPickRay((long)wiInput::GetPointer().x, (long)wiInput::GetPointer().y, *this);
 			XMVECTOR plane = XMVectorSet(0, 0, 1, 0.2f);
 			XMVECTOR I = XMPlaneIntersectLine(plane, XMLoadFloat3(&ray.origin), XMLoadFloat3(&ray.origin) + XMLoadFloat3(&ray.direction) * 10000);
 			target.ClearTransform();
@@ -363,6 +366,29 @@ void TestsRenderer::Update(float dt)
 		}
 	}
 	break;
+
+	case 18:
+	{
+		static wiTimer timer;
+		float sec = (float)timer.elapsed_seconds();
+		wiJobSystem::context ctx;
+		wiJobSystem::Dispatch(ctx, (uint32_t)scene->transforms.GetCount(), 1024, [&](wiJobArgs args) {
+			TransformComponent& transform = scene->transforms[args.jobIndex];
+			XMStoreFloat4x4(
+				&transform.world,
+				transform.GetLocalMatrix() * XMMatrixTranslation(0, std::sin(sec + 20 * (float)args.jobIndex / (float)scene->transforms.GetCount()) * 0.1f, 0)
+			);
+		});
+		scene->materials[0].SetEmissiveColor(XMFLOAT4(1, 1, 1, 1));
+		wiJobSystem::Dispatch(ctx, (uint32_t)scene->objects.GetCount(), 1024, [&](wiJobArgs args) {
+			ObjectComponent& object = scene->objects[args.jobIndex];
+			float f = std::pow(std::sin(-sec * 2 + 4 * (float)args.jobIndex / (float)scene->objects.GetCount()) * 0.5f + 0.5f, 32.0f);
+			object.emissiveColor = XMFLOAT4(0, 0.25f, 1, f * 3);
+		});
+		wiJobSystem::Wait(ctx);
+	}
+	break;
+
 	}
 
     RenderPath3D::Update(dt);
@@ -436,8 +462,8 @@ void TestsRenderer::RunJobSystemTest()
 
 	static wiSpriteFont font;
 	font = wiSpriteFont(ss.str());
-	font.params.posX = wiRenderer::GetDevice()->GetScreenWidth() / 2;
-	font.params.posY = wiRenderer::GetDevice()->GetScreenHeight() / 2;
+	font.params.posX = GetLogicalWidth() / 2;
+	font.params.posY = GetLogicalHeight() / 2;
 	font.params.h_align = WIFALIGN_CENTER;
 	font.params.v_align = WIFALIGN_CENTER;
 	font.params.size = 24;
@@ -451,8 +477,8 @@ void TestsRenderer::RunFontTest()
 	font.SetText("This is Arial, size 32 wiFont");
 	font_upscaled.SetText("This is Arial, size 14 wiFont, but upscaled to 32");
 
-	font.params.posX = wiRenderer::GetDevice()->GetScreenWidth() / 2.0f;
-	font.params.posY = wiRenderer::GetDevice()->GetScreenHeight() / 6.0f;
+	font.params.posX = GetLogicalWidth() / 2.0f;
+	font.params.posY = GetLogicalHeight() / 6.0f;
 	font.params.size = 32;
 
 	font_upscaled.params = font.params;
@@ -509,7 +535,7 @@ void TestsRenderer::RunFontTest()
 	font_colored.params.h_align = WIFALIGN_CENTER;
 	font_colored.params.v_align = WIFALIGN_TOP;
 	font_colored.params.size = 26;
-	font_colored.params.posX = wiRenderer::GetDevice()->GetScreenWidth() / 2;
+	font_colored.params.posX = GetLogicalWidth() / 2;
 	font_colored.params.posY = font_japanese.params.posY + font_japanese.textHeight();
 	font_colored.SetText("Colored font");
 	AddFont(&font_colored);
@@ -517,8 +543,8 @@ void TestsRenderer::RunFontTest()
 void TestsRenderer::RunSpriteTest()
 {
 	const float step = 30;
-	const float screenW = wiRenderer::GetDevice()->GetScreenWidth();
-	const float screenH = wiRenderer::GetDevice()->GetScreenHeight();
+	const float screenW = GetLogicalWidth();
+	const float screenH = GetLogicalHeight();
 	const XMFLOAT3 startPos = XMFLOAT3(screenW * 0.3f, screenH * 0.2f, 0);
 	wiImageParams params;
 	params.pos = startPos;
@@ -893,8 +919,8 @@ void TestsRenderer::RunNetworkTest()
 	sender.join();
 	receiver.join();
 
-	font.params.posX = wiRenderer::GetDevice()->GetScreenWidth() / 2;
-	font.params.posY = wiRenderer::GetDevice()->GetScreenHeight() / 2;
+	font.params.posX = GetLogicalWidth() / 2;
+	font.params.posY = GetLogicalHeight() / 2;
 	font.params.h_align = WIFALIGN_CENTER;
 	font.params.v_align = WIFALIGN_CENTER;
 	font.params.size = 24;

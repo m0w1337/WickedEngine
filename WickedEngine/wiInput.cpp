@@ -7,6 +7,7 @@
 #include "wiBackLog.h"
 #include "wiProfiler.h"
 #include "wiColor.h"
+#include "wiTimer.h"
 
 #include <algorithm>
 #include <map>
@@ -23,10 +24,9 @@
 #include <winrt/Windows.Devices.Input.h>
 #endif // PLATFORM_UWP
 
-using namespace std;
-
 namespace wiInput
 {
+	wiPlatform::window_type window = nullptr;
 
 #ifdef _WIN32
 #ifndef PLATFORM_UWP
@@ -71,6 +71,7 @@ namespace wiInput
 			DISCONNECTED,
 			XINPUT,
 			RAWINPUT,
+			SDLINPUT,
 		};
 		DeviceType deviceType;
 		int deviceIndex;
@@ -81,15 +82,18 @@ namespace wiInput
 
 	void Initialize()
 	{
+		wiTimer timer;
+
 		wiRawInput::Initialize();
 		wiSDLInput::Initialize();
 
-		wiBackLog::post("wiInput Initialized");
+		wiBackLog::post("wiInput Initialized (" + std::to_string((int)std::round(timer.elapsed())) + " ms)");
 		initialized.store(true);
 	}
 
-	void Update()
+	void Update(wiPlatform::window_type _window)
 	{
+		window = _window;
 		if (!initialized.load())
 		{
 			return;
@@ -115,7 +119,7 @@ namespace wiInput
 
 #ifndef PLATFORM_UWP
 		// Since raw input doesn't contain absolute mouse position, we get it with regular winapi:
-		HWND hWnd = GetActiveWindow();
+		HWND hWnd = window;
 		POINT p;
 		GetCursorPos(&p);
 		ScreenToClient(hWnd, &p);
@@ -269,18 +273,52 @@ namespace wiInput
 			}
 		}
 
+		// Check if low-level SDLINPUT controller is not registered for playerindex slot and register:
+		for (int i = 0; i < wiSDLInput::GetMaxControllerCount(); ++i)
+		{
+			if (wiSDLInput::GetControllerState(nullptr, i))
+			{
+				int slot = -1;
+				for (int j = 0; j < (int)controllers.size(); ++j)
+				{
+					if (slot < 0 && controllers[j].deviceType == Controller::DISCONNECTED)
+					{
+						// take the first disconnected slot
+						slot = j;
+					}
+					if (controllers[j].deviceType == Controller::SDLINPUT && controllers[j].deviceIndex == i)
+					{
+						// it is already registered to this slot
+						slot = j;
+						break;
+					}
+				}
+				if (slot == -1)
+				{
+					// no disconnected slot was found, and it was not registered
+					slot = (int)controllers.size();
+					controllers.emplace_back();
+				}
+				controllers[slot].deviceType = Controller::SDLINPUT;
+				controllers[slot].deviceIndex = i;
+			}
+		}
+
 		// Read low-level controllers:
 		for (auto& controller : controllers)
 		{
 			bool connected = false;
 			switch (controller.deviceType)
 			{
-			case Controller::XINPUT:
-				connected = wiXInput::GetControllerState(&controller.state, controller.deviceIndex);
-				break;
-			case Controller::RAWINPUT:
-				connected = wiRawInput::GetControllerState(&controller.state, controller.deviceIndex);
-				break;
+				case Controller::XINPUT:
+					connected = wiXInput::GetControllerState(&controller.state, controller.deviceIndex);
+					break;
+				case Controller::RAWINPUT:
+					connected = wiRawInput::GetControllerState(&controller.state, controller.deviceIndex);
+					break;
+				case Controller::SDLINPUT:
+					connected = wiSDLInput::GetControllerState(&controller.state, controller.deviceIndex);
+					break;
 			}
 
 			if (!connected)
@@ -685,7 +723,7 @@ namespace wiInput
 		auto iter = inputs.find(input);
 		if (iter == inputs.end())
 		{
-			inputs.insert(make_pair(input, 0));
+			inputs.insert(std::make_pair(input, 0));
 			return true;
 		}
 		if (iter->second == 0)
@@ -705,7 +743,7 @@ namespace wiInput
 		auto iter = inputs.find(input);
 		if (iter == inputs.end())
 		{
-			inputs.insert(make_pair(input, 0));
+			inputs.insert(std::make_pair(input, 0));
 			return false;
 		}
 		else if ((!continuous && iter->second == frames) || (continuous && iter->second >= frames))
@@ -722,7 +760,7 @@ namespace wiInput
 	{
 #ifdef _WIN32
 #ifndef PLATFORM_UWP
-		HWND hWnd = GetActiveWindow();
+		HWND hWnd = window;
 		const float dpiscaling = (float)GetDpiForWindow(hWnd) / 96.0f;
 		POINT p;
 		p.x = (LONG)(props.x * dpiscaling);

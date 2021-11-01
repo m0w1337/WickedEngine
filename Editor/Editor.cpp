@@ -10,7 +10,6 @@
 #include <cmath>
 #include <filesystem>
 
-using namespace std;
 using namespace wiGraphics;
 using namespace wiRectPacker;
 using namespace wiScene;
@@ -56,8 +55,8 @@ winrt::fire_and_forget uwp_copy_assets()
 	// Objects3D/WickedEngine
 	auto destfolder = co_await location.CreateFolderAsync(L"WickedEngine", CreationCollisionOption::OpenIfExists);
 
-	string rootdir = std::filesystem::current_path().string() + "\\";
-	wstring wstr;
+	std::string rootdir = std::filesystem::current_path().string() + "\\";
+	std::wstring wstr;
 
 	// scripts:
 	{
@@ -116,7 +115,6 @@ void Editor::Initialize()
 	infoDisplay.resolution = true;
 	infoDisplay.heap_allocation_counter = true;
 
-	wiRenderer::GetDevice()->SetVSyncEnabled(true);
 	wiRenderer::SetOcclusionCullingEnabled(true);
 
 	loader.Load();
@@ -131,14 +129,13 @@ void Editor::Initialize()
 
 void EditorLoadingScreen::Load()
 {
-	font = wiSpriteFont("Loading...", wiFontParams(wiRenderer::GetDevice()->GetScreenWidth()*0.5f, wiRenderer::GetDevice()->GetScreenHeight()*0.5f, 36,
+	font = wiSpriteFont("Loading...", wiFontParams(0, 0, 36,
 		WIFALIGN_CENTER, WIFALIGN_CENTER));
 	AddFont(&font);
 
 	sprite = wiSprite("images/logo_small.png");
 	sprite.anim.opa = 1;
 	sprite.anim.repeatable = true;
-	sprite.params.pos = XMFLOAT3(wiRenderer::GetDevice()->GetScreenWidth()*0.5f, wiRenderer::GetDevice()->GetScreenHeight()*0.5f - font.textHeight(), 0);
 	sprite.params.siz = XMFLOAT2(128, 128);
 	sprite.params.pivot = XMFLOAT2(0.5f, 1.0f);
 	sprite.params.quality = QUALITY_LINEAR;
@@ -149,9 +146,9 @@ void EditorLoadingScreen::Load()
 }
 void EditorLoadingScreen::Update(float dt)
 {
-	font.params.posX = wiRenderer::GetDevice()->GetScreenWidth()*0.5f;
-	font.params.posY = wiRenderer::GetDevice()->GetScreenHeight()*0.5f;
-	sprite.params.pos = XMFLOAT3(wiRenderer::GetDevice()->GetScreenWidth()*0.5f, wiRenderer::GetDevice()->GetScreenHeight()*0.5f - font.textHeight(), 0);
+	font.params.posX = GetLogicalWidth()*0.5f;
+	font.params.posY = GetLogicalHeight()*0.5f;
+	sprite.params.pos = XMFLOAT3(GetLogicalWidth()*0.5f, GetLogicalHeight()*0.5f - font.textHeight(), 0);
 
 	LoadingScreen::Update(dt);
 }
@@ -163,9 +160,13 @@ void EditorComponent::ChangeRenderPath(RENDERPATH path)
 	{
 	case EditorComponent::RENDERPATH_DEFAULT:
 		renderPath = std::make_unique<RenderPath3D>();
+		pathTraceTargetSlider.SetVisible(false);
+		pathTraceStatisticsLabel.SetVisible(false);
 		break;
 	case EditorComponent::RENDERPATH_PATHTRACING:
 		renderPath = std::make_unique<RenderPath3D_PathTracing>();
+		pathTraceTargetSlider.SetVisible(true);
+		pathTraceStatisticsLabel.SetVisible(true);
 		break;
 	default:
 		assert(0);
@@ -189,22 +190,26 @@ void EditorComponent::ChangeRenderPath(RENDERPATH path)
 	postprocessWnd = PostprocessWindow();
 	postprocessWnd.Create(this);
 	gui.AddWidget(&postprocessWnd);
-
-	ResizeBuffers();
 }
 
 void EditorComponent::ResizeBuffers()
 {
+	init(main->canvas);
 	RenderPath2D::ResizeBuffers();
 
 	GraphicsDevice* device = wiRenderer::GetDevice();
 	bool hr;
 
-	if(renderPath != nullptr && renderPath->GetDepthStencil() != nullptr)
+	renderPath->init(*this);
+	renderPath->ResizeBuffers();
+
+	if(renderPath->GetDepthStencil() != nullptr)
 	{
+		XMUINT2 internalResolution = GetInternalResolution();
+
 		TextureDesc desc;
-		desc.Width = GetInternalResolution().x;
-		desc.Height = GetInternalResolution().y;
+		desc.Width = internalResolution.x;
+		desc.Height = internalResolution.y;
 
 		desc.Format = FORMAT_R8_UNORM;
 		desc.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
@@ -233,9 +238,9 @@ void EditorComponent::ResizeBuffers()
 					renderPath->GetDepthStencil(),
 					RenderPassAttachment::LOADOP_LOAD,
 					RenderPassAttachment::STOREOP_STORE,
-					IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,
-					IMAGE_LAYOUT_DEPTHSTENCIL_READONLY,
-					IMAGE_LAYOUT_DEPTHSTENCIL_READONLY
+					RESOURCE_STATE_DEPTHSTENCIL_READONLY,
+					RESOURCE_STATE_DEPTHSTENCIL_READONLY,
+					RESOURCE_STATE_DEPTHSTENCIL_READONLY
 				)
 			);
 			hr = device->CreateRenderPass(&desc, &renderpass_selectionOutline[0]);
@@ -261,8 +266,8 @@ void EditorComponent::ResizeLayout()
 
 	// GUI elements scaling:
 
-	float screenW = wiRenderer::GetDevice()->GetScreenWidth();
-	float screenH = wiRenderer::GetDevice()->GetScreenHeight();
+	float screenW = GetLogicalWidth();
+	float screenH = GetLogicalHeight();
 
 	XMFLOAT2 option_size = XMFLOAT2(100, 34);
 	float x = screenW - option_size.x;
@@ -389,6 +394,12 @@ void EditorComponent::ResizeLayout()
 
 	saveModeComboBox.SetSize(XMFLOAT2(120, 20));
 	saveModeComboBox.SetPos(XMFLOAT2(screenW - 140, 70));
+
+	pathTraceTargetSlider.SetSize(XMFLOAT2(200, 20));
+	pathTraceTargetSlider.SetPos(XMFLOAT2(screenW - 240, 100));
+
+	pathTraceStatisticsLabel.SetSize(XMFLOAT2(240, 60));
+	pathTraceStatisticsLabel.SetPos(XMFLOAT2(screenW - 240, 125));
 
 	sceneGraphView.SetSize(XMFLOAT2(260, 300));
 	sceneGraphView.SetPos(XMFLOAT2(0, screenH - sceneGraphView.scale_local.y));
@@ -711,8 +722,11 @@ void EditorComponent::Load()
 		params.extensions.push_back("glb");
 		wiHelper::FileDialog(params, [&](std::string fileName) {
 			wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
+
+				size_t camera_count_prev = wiScene::GetScene().cameras.GetCount();
+
 				main->loader.addLoadingFunction([=](wiJobArgs args) {
-					string extension = wiHelper::toUpper(wiHelper::GetExtensionFromFileName(fileName));
+					std::string extension = wiHelper::toUpper(wiHelper::GetExtensionFromFileName(fileName));
 
 					if (!extension.compare("WISCENE")) // engine-serialized
 					{
@@ -738,6 +752,31 @@ void EditorComponent::Load()
 					}
 					});
 				main->loader.onFinished([=] {
+
+					// Detect when the new scene contains a new camera, and snap the camera onto it:
+					size_t camera_count = wiScene::GetScene().cameras.GetCount();
+					if (camera_count > 0 && camera_count > camera_count_prev)
+					{
+						Entity entity = wiScene::GetScene().cameras.GetEntity(camera_count_prev);
+						if (entity != INVALID_ENTITY)
+						{
+							TransformComponent* camera_transform = wiScene::GetScene().transforms.GetComponent(entity);
+							if (camera_transform != nullptr)
+							{
+								cameraWnd.camera_transform = *camera_transform;
+							}
+
+							CameraComponent* cam = wiScene::GetScene().cameras.GetComponent(entity);
+							if (cam != nullptr)
+							{
+								wiScene::GetCamera() = *cam;
+								// camera aspect should be always for the current screen
+								wiScene::GetCamera().width = (float)renderPath->GetInternalResolution().x;
+								wiScene::GetCamera().height = (float)renderPath->GetInternalResolution().y;
+							}
+						}
+					}
+
 					main->ActivatePath(this, 0.2f, wiColor::Black());
 					weatherWnd.Update();
 					RefreshSceneGraphView();
@@ -808,33 +847,33 @@ void EditorComponent::Load()
 	GetGUI().AddWidget(&helpButton);
 
 	{
-		stringstream ss("");
-		ss << "Help:" << endl;
-		ss << "Move camera: WASD, or Contoller left stick or D-pad" << endl;
-		ss << "Look: Middle mouse button / arrow keys / controller right stick" << endl;
-		ss << "Select: Right mouse button" << endl;
-		ss << "Place decal, interact with water: Left mouse button when nothing is selected" << endl;
-		ss << "Camera speed: SHIFT button or controller R2/RT" << endl;
-		ss << "Camera up: E, down: Q" << endl;
-		ss << "Duplicate entity: Ctrl + D" << endl;
-		ss << "Select All: Ctrl + A" << endl;
-		ss << "Undo: Ctrl + Z" << endl;
-		ss << "Redo: Ctrl + Y" << endl;
-		ss << "Copy: Ctrl + C" << endl;
-		ss << "Paste: Ctrl + V" << endl;
-		ss << "Delete: DELETE button" << endl;
-		ss << "Place Instances: Ctrl + Shift + Left mouse click (place clipboard onto clicked surface)" << endl;
-		ss << "Script Console / backlog: HOME button" << endl;
-		ss << endl;
-		ss << "You can find sample scenes in the models directory. Try to load one." << endl;
-		ss << "You can also import models from .OBJ, .GLTF, .GLB files." << endl;
-		ss << "You can find a program configuration file at Editor/config.ini" << endl;
-		ss << "You can find sample LUA scripts in the scripts directory. Try to load one." << endl;
-		ss << "You can find a startup script at Editor/startup.lua (this will be executed on program start)" << endl;
-		ss << endl << "For questions, bug reports, feedback, requests, please open an issue at:" << endl;
-		ss << "https://github.com/turanszkij/WickedEngine" << endl;
-		ss << endl << "Devblog: https://wickedengine.net/" << endl;
-		ss << "Discord: https://discord.gg/CFjRYmE" << endl;
+		std::stringstream ss("");
+		ss << "Help:" << std::endl;
+		ss << "Move camera: WASD, or Contoller left stick or D-pad" << std::endl;
+		ss << "Look: Middle mouse button / arrow keys / controller right stick" << std::endl;
+		ss << "Select: Right mouse button" << std::endl;
+		ss << "Interact with water: Left mouse button when nothing is selected" << std::endl;
+		ss << "Camera speed: SHIFT button or controller R2/RT" << std::endl;
+		ss << "Camera up: E, down: Q" << std::endl;
+		ss << "Duplicate entity: Ctrl + D" << std::endl;
+		ss << "Select All: Ctrl + A" << std::endl;
+		ss << "Undo: Ctrl + Z" << std::endl;
+		ss << "Redo: Ctrl + Y" << std::endl;
+		ss << "Copy: Ctrl + C" << std::endl;
+		ss << "Paste: Ctrl + V" << std::endl;
+		ss << "Delete: DELETE button" << std::endl;
+		ss << "Place Instances: Ctrl + Shift + Left mouse click (place clipboard onto clicked surface)" << std::endl;
+		ss << "Script Console / backlog: HOME button" << std::endl;
+		ss << std::endl;
+		ss << "You can find sample scenes in the models directory. Try to load one." << std::endl;
+		ss << "You can also import models from .OBJ, .GLTF, .GLB files." << std::endl;
+		ss << "You can find a program configuration file at Editor/config.ini" << std::endl;
+		ss << "You can find sample LUA scripts in the scripts directory. Try to load one." << std::endl;
+		ss << "You can find a startup script at Editor/startup.lua (this will be executed on program start)" << std::endl;
+		ss << std::endl << "For questions, bug reports, feedback, requests, please open an issue at:" << std::endl;
+		ss << "https://github.com/turanszkij/WickedEngine" << std::endl;
+		ss << std::endl << "Devblog: https://wickedengine.net/" << std::endl;
+		ss << "Discord: https://discord.gg/CFjRYmE" << std::endl;
 
 		helpLabel.Create("HelpLabel");
 		helpLabel.SetText(ss.str());
@@ -924,6 +963,13 @@ void EditorComponent::Load()
 	GetGUI().AddWidget(&saveModeComboBox);
 
 
+	pathTraceTargetSlider.Create(1, 2048, 1024, 2047, "Path tracing sample count: ");
+	pathTraceTargetSlider.SetTooltip("The path tracing will perform this many samples per pixel.");
+	GetGUI().AddWidget(&pathTraceTargetSlider);
+
+	pathTraceStatisticsLabel.Create("Path tracing statistics");
+	GetGUI().AddWidget(&pathTraceStatisticsLabel);
+
 	// Renderer and Postprocess windows are created in ChangeRenderPath(), because they deal with
 	//	RenderPath related information as well, so it's easier to reset them when changing
 
@@ -997,12 +1043,14 @@ void EditorComponent::Update(float dt)
 	Scene& scene = wiScene::GetScene();
 	CameraComponent& camera = wiScene::GetCamera();
 
+	cameraWnd.Update();
 	animWnd.Update();
 	weatherWnd.Update();
 	paintToolWnd.Update(dt);
 
 	selectionOutlineTimer += dt;
 
+	bool clear_selected = false;
 	if (wiInput::Press(wiInput::KEYBOARD_BUTTON_ESCAPE))
 	{
 		if (cinemaModeCheckBox.GetCheck())
@@ -1019,13 +1067,13 @@ void EditorComponent::Update(float dt)
 		}
 		else
 		{
-			ClearSelected();
+			clear_selected = true;
 		}
 	}
 
 	// Camera control:
 	XMFLOAT4 currentMouse = wiInput::GetPointer();
-	if (!wiBackLog::isActive())
+	if (!wiBackLog::isActive() && !GetGUI().HasFocus())
 	{
 		static XMFLOAT4 originalMouse = XMFLOAT4(0, 0, 0, 0);
 		static bool camControlStart = true;
@@ -1092,10 +1140,10 @@ void EditorComponent::Update(float dt)
 		if (cameraWnd.fpsCheckBox.GetCheck())
 		{
 			// FPS Camera
-			const float clampedDT = min(dt, 0.1f); // if dt > 100 millisec, don't allow the camera to jump too far...
+			const float clampedDT = std::min(dt, 0.1f); // if dt > 100 millisec, don't allow the camera to jump too far...
 
 			const float speed = ((wiInput::Down(wiInput::KEYBOARD_BUTTON_LSHIFT) ? 10.0f : 1.0f) + rightTrigger.x * 10.0f) * cameraWnd.movespeedSlider.GetValue() * clampedDT;
-			static XMVECTOR move = XMVectorSet(0, 0, 0, 0);
+			XMVECTOR move = XMLoadFloat3(&cameraWnd.move);
 			XMVECTOR moveNew = XMVectorSet(leftStick.x, 0, leftStick.y, 0);
 
 			if (!wiInput::Down(wiInput::KEYBOARD_BUTTON_LCONTROL))
@@ -1111,7 +1159,7 @@ void EditorComponent::Update(float dt)
 			}
 			moveNew *= speed;
 
-			move = XMVectorLerp(move, moveNew, 0.18f * clampedDT / 0.0166f); // smooth the movement a bit
+			move = XMVectorLerp(move, moveNew, cameraWnd.accelerationSlider.GetValue() * clampedDT / 0.0166f); // smooth the movement a bit
 			float moveLength = XMVectorGetX(XMVector3Length(move));
 
 			if (moveLength < 0.0001f)
@@ -1131,6 +1179,7 @@ void EditorComponent::Update(float dt)
 			}
 
 			cameraWnd.camera_transform.UpdateTransform();
+			XMStoreFloat3(&cameraWnd.move, move);
 		}
 		else
 		{
@@ -1158,21 +1207,12 @@ void EditorComponent::Update(float dt)
 			cameraWnd.camera_target.UpdateTransform();
 			cameraWnd.camera_transform.UpdateTransform_Parented(cameraWnd.camera_target);
 		}
-}
 
-	if (!wiBackLog::isActive() && !GetGUI().HasFocus())
-	{
 		// Begin picking:
 		unsigned int pickMask = rendererWnd.GetPickType();
-		RAY pickRay = wiRenderer::GetPickRay((long)currentMouse.x, (long)currentMouse.y);
+		RAY pickRay = wiRenderer::GetPickRay((long)currentMouse.x, (long)currentMouse.y, *this);
 		{
 			hovered = wiScene::PickResult();
-
-			// Try to pick objects-meshes:
-			if (pickMask & PICK_OBJECT)
-			{
-				hovered = wiScene::Pick(pickRay, pickMask);
-			}
 
 			if (pickMask & PICK_LIGHT)
 			{
@@ -1183,7 +1223,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1200,7 +1240,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1217,7 +1257,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1234,7 +1274,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1251,7 +1291,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1288,7 +1328,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1305,7 +1345,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1322,7 +1362,7 @@ void EditorComponent::Update(float dt)
 
 					XMVECTOR disV = XMVector3LinePointDistance(XMLoadFloat3(&pickRay.origin), XMLoadFloat3(&pickRay.origin) + XMLoadFloat3(&pickRay.direction), transform.GetPositionV());
 					float dis = XMVectorGetX(disV);
-					if (dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
+					if (dis > 0.01f && dis < wiMath::Distance(transform.GetPosition(), pickRay.origin) * 0.05f && dis < hovered.distance)
 					{
 						hovered = wiScene::PickResult();
 						hovered.entity = entity;
@@ -1331,6 +1371,18 @@ void EditorComponent::Update(float dt)
 				}
 			}
 
+			if (pickMask & PICK_OBJECT && hovered.entity == INVALID_ENTITY)
+			{
+				// Object picking only when mouse button down, because it can be slow with high polycount
+				if (
+					wiInput::Down(wiInput::MOUSE_BUTTON_LEFT) ||
+					wiInput::Down(wiInput::MOUSE_BUTTON_RIGHT) ||
+					paintToolWnd.GetMode() != PaintToolWindow::MODE_DISABLED
+					)
+				{
+					hovered = wiScene::Pick(pickRay, pickMask);
+				}
+			}
 		}
 
 		// Interactions only when paint tool is disabled:
@@ -1371,7 +1423,7 @@ void EditorComponent::Update(float dt)
 
 		// Select...
 		static bool selectAll = false;
-		if (wiInput::Press(wiInput::MOUSE_BUTTON_RIGHT) || selectAll)
+		if (wiInput::Press(wiInput::MOUSE_BUTTON_RIGHT) || selectAll || clear_selected)
 		{
 
 			wiArchive& archive = AdvanceHistory();
@@ -1391,17 +1443,16 @@ void EditorComponent::Update(float dt)
 			{
 				// Add everything to selection:
 				selectAll = false;
+				ClearSelected();
 
 				for (size_t i = 0; i < scene.transforms.GetCount(); ++i)
 				{
 					Entity entity = scene.transforms.GetEntity(i);
-
 					if (scene.hierarchy.Contains(entity))
 					{
-						// Parented animated objects don't work properly when attached to translator in bulk
+						// Parented objects won't be attached, but only the parents instead. Otherwise it would cause "double translation"
 						continue;
 					}
-
 					wiScene::PickResult picked;
 					picked.entity = entity;
 					AddSelected(picked);
@@ -1414,7 +1465,7 @@ void EditorComponent::Update(float dt)
 				if (!translator.selected.empty() && wiInput::Down(wiInput::KEYBOARD_BUTTON_LSHIFT))
 				{
 					// Union selection:
-					list<wiScene::PickResult> saved = translator.selected;
+					std::vector<wiScene::PickResult> saved = translator.selected;
 					translator.selected.clear(); 
 					for (const wiScene::PickResult& picked : saved)
 					{
@@ -1431,9 +1482,14 @@ void EditorComponent::Update(float dt)
 			}
 			else
 			{
-				// Clear selection:
-				translator.selected.clear();
+				clear_selected = true;
 			}
+
+			if (clear_selected)
+			{
+				ClearSelected();
+			}
+
 
 			// record NEW selection state...
 			archive << translator.selected.size();
@@ -1484,6 +1540,8 @@ void EditorComponent::Update(float dt)
 					picked.entity = scene.Entity_Serialize(clipboard);
 					AddSelected(picked);
 				}
+
+				RefreshSceneGraphView();
 			}
 			// Duplicate Instances
 			if (wiInput::Press((wiInput::BUTTON)'D'))
@@ -1502,10 +1560,6 @@ void EditorComponent::Update(float dt)
 			// Put Instances
 			if (clipboard.IsOpen() && hovered.subsetIndex >= 0 && wiInput::Down(wiInput::KEYBOARD_BUTTON_LSHIFT) && wiInput::Press(wiInput::MOUSE_BUTTON_LEFT))
 			{
-				TransformComponent parent_transform;
-				parent_transform.MatrixTransform(hovered.orientation);
-				parent_transform.UpdateTransform();
-
 				clipboard.SetReadModeAndResetPos(true);
 				size_t count;
 				clipboard >> count;
@@ -1515,7 +1569,9 @@ void EditorComponent::Update(float dt)
 					TransformComponent* transform = scene.transforms.GetComponent(entity);
 					if (transform != nullptr)
 					{
-						transform->UpdateTransform_Parented(parent_transform);
+						transform->translation_local = {};
+						//transform->MatrixTransform(hovered.orientation);
+						transform->Translate(hovered.position);
 					}
 				}
 
@@ -1525,11 +1581,15 @@ void EditorComponent::Update(float dt)
 			if (wiInput::Press((wiInput::BUTTON)'Z'))
 			{
 				ConsumeHistoryOperation(true);
+
+				RefreshSceneGraphView();
 			}
 			// Redo
 			if (wiInput::Press((wiInput::BUTTON)'Y'))
 			{
 				ConsumeHistoryOperation(false);
+
+				RefreshSceneGraphView();
 			}
 		}
 
@@ -1665,7 +1725,7 @@ void EditorComponent::Update(float dt)
 		}
 	}
 
-	translator.Update();
+	translator.Update(*this);
 
 	if (translator.IsDragEnded())
 	{
@@ -1690,6 +1750,28 @@ void EditorComponent::Update(float dt)
 
 	camera.TransformCamera(cameraWnd.camera_transform);
 	camera.UpdateCamera();
+
+	RenderPath3D_PathTracing* pathtracer = dynamic_cast<RenderPath3D_PathTracing*>(renderPath.get());
+	if (pathtracer != nullptr)
+	{
+		pathtracer->setTargetSampleCount((int)pathTraceTargetSlider.GetValue());
+
+		std::stringstream ss;
+		ss << "Sample count: " << pathtracer->getCurrentSampleCount() << std::endl;
+		ss << "Trace progress: " << int(pathtracer->getProgress() * 100) << "%" << std::endl;
+		if (pathtracer->isDenoiserAvailable())
+		{
+			if (pathtracer->getDenoiserProgress() > 0)
+			{
+				ss << "Denoiser progress: " << int(pathtracer->getDenoiserProgress() * 100) << "%" << std::endl;
+			}
+		}
+		else
+		{
+			ss << "Denoiser not available" << std::endl;
+		}
+		pathTraceStatisticsLabel.SetText(ss.str());
+	}
 
 	wiProfiler::EndRange(profrange);
 
@@ -1865,7 +1947,6 @@ void EditorComponent::Render() const
 
 		// Objects outline:
 		{
-			device->UnbindResources(TEXSLOT_ONDEMAND0, 1, cmd);
 			device->RenderPassBegin(&renderpass_selectionOutline[1], cmd);
 
 			// Draw solid blocks of selected objects
@@ -2312,25 +2393,31 @@ void EditorComponent::ClearSelected()
 {
 	translator.selected.clear();
 }
-void EditorComponent::AddSelected(wiECS::Entity entity)
+void EditorComponent::AddSelected(Entity entity)
 {
 	wiScene::PickResult res;
 	res.entity = entity;
 	AddSelected(res);
 }
-void EditorComponent::AddSelected(const wiScene::PickResult& picked)
+void EditorComponent::AddSelected(const PickResult& picked)
 {
-	for (auto it = translator.selected.begin(); it != translator.selected.end(); ++it)
+	bool removal = false;
+	for (size_t i = 0; i < translator.selected.size(); ++i)
 	{
-		if ((*it) == picked)
+		if(translator.selected[i] == picked)
 		{
 			// If already selected, it will be deselected now:
-			translator.selected.erase(it);
-			return;
+			translator.selected[i] = translator.selected.back();
+			translator.selected.pop_back();
+			removal = true;
+			break;
 		}
 	}
 
-	translator.selected.push_back(picked);
+	if (!removal)
+	{
+		translator.selected.push_back(picked);
+	}
 }
 bool EditorComponent::IsSelected(Entity entity) const
 {
@@ -2404,7 +2491,7 @@ void EditorComponent::ConsumeHistoryOperation(bool undo)
 			{
 				size_t count;
 				archive >> count;
-				vector<Entity> deletedEntities(count);
+				std::vector<Entity> deletedEntities(count);
 				for (size_t i = 0; i < count; ++i)
 				{
 					archive >> deletedEntities[i];
@@ -2431,7 +2518,7 @@ void EditorComponent::ConsumeHistoryOperation(bool undo)
 			{
 				// Read selections states from archive:
 
-				list<wiScene::PickResult> selectedBEFORE;
+			std::vector<wiScene::PickResult> selectedBEFORE;
 				size_t selectionCountBEFORE;
 				archive >> selectionCountBEFORE;
 				for (size_t i = 0; i < selectionCountBEFORE; ++i)
@@ -2446,7 +2533,7 @@ void EditorComponent::ConsumeHistoryOperation(bool undo)
 					selectedBEFORE.push_back(sel);
 				}
 
-				list<wiScene::PickResult> selectedAFTER;
+				std::vector<wiScene::PickResult> selectedAFTER;
 				size_t selectionCountAFTER;
 				archive >> selectionCountAFTER;
 				for (size_t i = 0; i < selectionCountAFTER; ++i)
