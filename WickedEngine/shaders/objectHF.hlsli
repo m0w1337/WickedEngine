@@ -624,11 +624,20 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		float2 uv_dx = ddx_coarse(uv);
 		float2 uv_dy = ddy_coarse(uv);
 
+		half parallax_strength = material.GetParallaxOcclusionMapping();
+		if (material.IsParallaxEdgeFade())
+		{
+			// The second uv set holds the distances to the edges of the flat surface instead of texture coordinates.
+			//	The texture is not shifted at an edge, because the outline of the mesh can't follow it:
+			static const half PARALLAX_EDGE_FADE_DISTANCE = 0.12;
+			parallax_strength *= smoothstep(0, 1, saturate(min(uvsets.z, uvsets.w) / PARALLAX_EDGE_FADE_DISTANCE));
+		}
+
 		ParallaxOcclusionMapping_Impl(
 			uvsets,
 			surface.V,
 			TBN,
-			material.GetParallaxOcclusionMapping(),
+			parallax_strength,
 			tex,
 			uv,
 			uv_dx,

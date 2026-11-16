@@ -137,7 +137,8 @@ namespace wi::scene
 			DISABLE_TEXTURE_STREAMING = 1 << 15,
 			COPLANAR_BLENDING = 1 << 16, // force transparent material draw in opaque pass (useful for coplanar polygons)
 			DISABLE_CAPSULE_SHADOW = 1 << 17,
-			INTERNAL = 1 << 18 // used only for internal purposes
+			INTERNAL = 1 << 18, // used only for internal purposes
+			PARALLAX_EDGE_FADE = 1 << 19, // parallax occlusion mapping fades out towards the edges, see SetParallaxEdgeFade()
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -377,6 +378,13 @@ namespace wi::scene
 
 		constexpr bool IsCapsuleShadowDisabled() const { return _flags & DISABLE_CAPSULE_SHADOW; }
 		constexpr void SetCapsuleShadowDisabled(bool value = true) { set_flag(_flags, DISABLE_CAPSULE_SHADOW, value); }
+
+		// Parallax occlusion mapping can't change the outline of a mesh, so at the edges of a flat surface the shifted texture doesn't fit.
+		//	With this, the second uv set of the mesh is not used for textures, but tells the distance to the edges of the surface
+		//	in the two directions of the face. The parallax effect has its full strength where both distances are at least
+		//	PARALLAX_EDGE_FADE_DISTANCE (shader constant) and none at the edge.
+		constexpr bool IsParallaxEdgeFade() const { return _flags & PARALLAX_EDGE_FADE; }
+		constexpr void SetParallaxEdgeFade(bool value = true) { SetDirty(); set_flag(_flags, PARALLAX_EDGE_FADE, value); }
 
 		constexpr void SetMeshBlend(float value) { mesh_blend = value; SetDirty(); }
 		constexpr float GetMeshBlend() const { return mesh_blend; }
