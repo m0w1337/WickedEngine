@@ -620,17 +620,23 @@ namespace wi::xr
 			return false;
 		}
 
+		XrInstanceProperties instance_properties = { XR_TYPE_INSTANCE_PROPERTIES };
+		xrGetInstanceProperties(state.instance, &instance_properties);
+		wilog("[wi::xr] OpenXR runtime: %s %u.%u.%u", instance_properties.runtimeName,
+			XR_VERSION_MAJOR(instance_properties.runtimeVersion), XR_VERSION_MINOR(instance_properties.runtimeVersion), XR_VERSION_PATCH(instance_properties.runtimeVersion));
+
 		XrSystemGetInfo system_info = { XR_TYPE_SYSTEM_GET_INFO };
 		system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
-		if (XR_FAILED(xrGetSystem(state.instance, &system_info, &state.system)))
+		const XrResult system_result = xrGetSystem(state.instance, &system_info, &state.system);
+		if (XR_FAILED(system_result))
 		{
-			wilog_warning("[wi::xr] no head mounted display was found");
+			char result_string[XR_MAX_RESULT_STRING_SIZE] = "unknown";
+			xrResultToString(state.instance, system_result, result_string);
+			wilog_warning("[wi::xr] no head mounted display was found (%s), is the headset connected and active in the runtime?", result_string);
 			Shutdown();
 			return false;
 		}
 
-		XrInstanceProperties instance_properties = { XR_TYPE_INSTANCE_PROPERTIES };
-		xrGetInstanceProperties(state.instance, &instance_properties);
 		XrSystemProperties system_properties = { XR_TYPE_SYSTEM_PROPERTIES };
 		xrGetSystemProperties(state.instance, state.system, &system_properties);
 		wilog("[wi::xr] initialized, runtime: %s, system: %s", instance_properties.runtimeName, system_properties.systemName);

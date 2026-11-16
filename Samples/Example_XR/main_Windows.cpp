@@ -50,6 +50,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		}
 		return 0;
 	};
+	// process command line string (before the window is created, because a WM_SIZE message already creates the graphics device):
+	wi::arguments::Parse(lpCmdLine);
+
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 	WNDCLASSEXW wcex = {};
 	wcex.cbSize = sizeof(WNDCLASSEX);
@@ -67,9 +70,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	RegisterClassExW(&wcex);
 	HWND hWnd = CreateWindowW(wcex.lpszClassName, wcex.lpszClassName, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
 	ShowWindow(hWnd, SW_SHOWDEFAULT);
-
-	// process command line string:
-	wi::arguments::Parse(lpCmdLine);
 
 	// set Win32 window to engine (the window shows a mirror image of the headset):
 	application.SetWindow(hWnd);

@@ -17,7 +17,9 @@ namespace wi
 		RenderPath3D eyes[wi::xr::EYE_COUNT];
 		wi::scene::CameraComponent cameras[wi::xr::EYE_COUNT];
 
-		// Calls a function for the render path of every eye, to apply the same settings for both. Example:
+		// Calls a function for the render path of every eye, to apply the same settings for both
+		//	Note: occlusion culling must stay disabled for eyes[1], because the occlusion queries of the scene can only be used by one render path
+		//	Example:
 		//	path.ForEachEye([](wi::RenderPath3D& eye) { eye.setBloomEnabled(false); });
 		template<typename Func>
 		void ForEachEye(Func&& func)

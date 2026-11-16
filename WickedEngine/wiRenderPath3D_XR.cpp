@@ -24,6 +24,10 @@ namespace wi
 			eyes[i].camera = &cameras[i];
 			// The scene is shared between the eyes, so it must be updated only once per frame:
 			eyes[i].setSceneUpdateEnabled(i == 0);
+			// The occlusion queries are allocated per object in the scene, not per render path, so only one eye can use them:
+			//	Otherwise one eye allocates queries for objects that the other eye never draws, and the query resolve
+			//	waits for them forever on Vulkan (VK_QUERY_RESULT_WAIT_BIT), which hangs the GPU
+			eyes[i].setOcclusionCullingEnabled(i == 0);
 			ApplyDefaultSettings(eyes[i]);
 		}
 	}
