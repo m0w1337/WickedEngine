@@ -89,6 +89,18 @@ namespace std
 
 namespace wi::graphics
 {
+	// Optional hooks that allow an external system (for example an OpenXR runtime) to take part in Vulkan instance and device creation
+	//	Every hook is optional, if a hook is not set, the default Vulkan behaviour is used
+	struct VulkanCreationHooks
+	{
+		// Replaces vkCreateInstance(). The engine fills the create info with everything it needs, the hook can extend it
+		std::function<VkResult(const VkInstanceCreateInfo* create_info, VkInstance* instance)> create_instance;
+		// Returns the physical device that must be used. If it returns VK_NULL_HANDLE, the engine selects the physical device by itself
+		std::function<VkPhysicalDevice(VkInstance instance)> select_physical_device;
+		// Replaces vkCreateDevice(). The engine fills the create info with everything it needs, the hook can extend it
+		std::function<VkResult(VkPhysicalDevice physical_device, const VkDeviceCreateInfo* create_info, VkDevice* device)> create_device;
+	};
+
 	class GraphicsDevice_Vulkan final : public GraphicsDevice
 	{
 		friend struct CommandQueue;
@@ -544,7 +556,7 @@ namespace wi::graphics
 		void set_semaphore_name(VkSemaphore semaphore, const char* name);
 
 	public:
-		GraphicsDevice_Vulkan(wi::platform::window_type window, ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
+		GraphicsDevice_Vulkan(wi::platform::window_type window, ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete, const VulkanCreationHooks* hooks = nullptr);
 		~GraphicsDevice_Vulkan() override;
 
 		bool CreateSwapChain(const SwapChainDesc* desc, wi::platform::window_type window, SwapChain* swapchain) const override;
@@ -557,6 +569,7 @@ namespace wi::graphics
 		bool CreateRaytracingAccelerationStructure(const RaytracingAccelerationStructureDesc* desc, RaytracingAccelerationStructure* bvh) const override;
 		bool CreateRaytracingPipelineState(const RaytracingPipelineStateDesc* desc, RaytracingPipelineState* rtpso) const override;
 		bool CreateVideoDecoder(const VideoDesc* desc, VideoDecoder* video_decoder) const override;
+		bool CreateTextureFromNativeImage(const TextureDesc* desc, void* native_image, Texture* texture) const override;
 
 		int CreateSubresource(Texture* texture, SubresourceType type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount, const Format* format_change = nullptr, const ImageAspect* aspect = nullptr, const Swizzle* swizzle = nullptr, float min_lod_clamp = 0) const override;
 		int CreateSubresource(GPUBuffer* buffer, SubresourceType type, uint64_t offset, uint64_t size = ~0, const Format* format_change = nullptr, const uint32_t* structuredbuffer_stride_change = nullptr) const override;
@@ -711,6 +724,10 @@ namespace wi::graphics
 		VkInstance GetInstance();
 		VkQueue GetGraphicsCommandQueue();
 		uint32_t GetGraphicsFamilyIndex();
+		// The graphics queue must be externally synchronized when it is used outside of the device (for example by an OpenXR runtime)
+		std::mutex& GetGraphicsQueueLocker();
+		// Converts an engine format to the native Vulkan format
+		static VkFormat GetNativeFormat(Format format);
 
 		struct AllocationHandler
 		{

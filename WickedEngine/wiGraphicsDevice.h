@@ -100,6 +100,10 @@ namespace wi::graphics
 		virtual bool CreateRaytracingAccelerationStructure(const RaytracingAccelerationStructureDesc* desc, RaytracingAccelerationStructure* bvh) const { return false; }
 		virtual bool CreateRaytracingPipelineState(const RaytracingPipelineStateDesc* desc, RaytracingPipelineState* rtpso) const { return false; }
 		virtual bool CreateVideoDecoder(const VideoDesc* desc, VideoDecoder* video_decoder) const { return false; };
+		// Create a texture that refers to an externally owned native image (for example a VkImage from an OpenXR swapchain)
+		//	The device will create views for the texture based on desc->bind_flags, but it will not take ownership of the native image
+		//	desc->layout must match the layout that the external image is in when it is used by the engine
+		virtual bool CreateTextureFromNativeImage(const TextureDesc* desc, void* native_image, Texture* texture) const { return false; }
 
 		virtual int CreateSubresource(Texture* texture, SubresourceType type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount, const Format* format_change = nullptr, const ImageAspect* aspect = nullptr, const Swizzle* swizzle = nullptr, float min_lod_clamp = 0) const = 0;
 		virtual int CreateSubresource(GPUBuffer* buffer, SubresourceType type, uint64_t offset, uint64_t size = ~0, const Format* format_change = nullptr, const uint32_t* structuredbuffer_stride_change = nullptr) const = 0;

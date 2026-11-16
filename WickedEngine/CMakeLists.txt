@@ -273,6 +273,29 @@ endif()
 
 target_link_libraries(WickedEngine_common PUBLIC ${WICKEDENGINE_STATIC_LIBRARIES})
 
+# Optional OpenXR (VR) support:
+#	Uses an installed OpenXR SDK if available, otherwise the official Khronos OpenXR-SDK (loader + headers) is fetched
+if (WICKED_OPENXR)
+    find_package(OpenXR CONFIG QUIET)
+    if (NOT OpenXR_FOUND)
+        message(STATUS "OpenXR SDK not found, fetching OpenXR-SDK from GitHub")
+        include(FetchContent)
+        set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+        set(DYNAMIC_LOADER ON CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            OpenXR
+            GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+            GIT_TAG release-1.1.63
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(OpenXR)
+    endif()
+    target_link_libraries(WickedEngine_common PUBLIC OpenXR::openxr_loader)
+    target_compile_definitions(WickedEngine_common PUBLIC WICKED_OPENXR=1)
+    message(STATUS "OpenXR support enabled")
+endif()
+
 if (PLATFORM MATCHES "SDL2")
     target_compile_definitions(WickedEngine_common PUBLIC SDL2=1)
 elseif (PLATFORM MATCHES "SDL3")

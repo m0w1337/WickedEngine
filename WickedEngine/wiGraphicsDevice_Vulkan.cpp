@@ -876,6 +876,7 @@ namespace vulkan_internal
 		wi::allocator::shared_ptr<GraphicsDevice_Vulkan::AllocationHandler> allocationhandler;
 		VmaAllocation allocation = nullptr;
 		VkImage resource = VK_NULL_HANDLE;
+		bool owns_resource = true; // false if the image was created externally (for example by an OpenXR runtime), then it won't be destroyed here
 		VkImageLayout defaultLayout = VK_IMAGE_LAYOUT_GENERAL;
 		VkBuffer staging_resource = VK_NULL_HANDLE;
 		struct TextureSubresource
@@ -964,7 +965,10 @@ namespace vulkan_internal
 			uint64_t framecount = allocationhandler->framecount;
 			if (resource)
 			{
-				allocationhandler->destroyer_images.push_back(std::make_pair(std::make_pair(resource, allocation), framecount));
+				if (owns_resource)
+				{
+					allocationhandler->destroyer_images.push_back(std::make_pair(std::make_pair(resource, allocation), framecount));
+				}
 			}
 			else if (staging_resource)
 			{
@@ -2170,7 +2174,7 @@ using namespace vulkan_internal;
 	}
 
 	// Engine functions
-	GraphicsDevice_Vulkan::GraphicsDevice_Vulkan(wi::platform::window_type window, ValidationMode validationMode_, GPUPreference preference)
+	GraphicsDevice_Vulkan::GraphicsDevice_Vulkan(wi::platform::window_type window, ValidationMode validationMode_, GPUPreference preference, const VulkanCreationHooks* hooks)
 	{
 		wi::Timer timer;
 		capabilities |= GraphicsDeviceCapability::ALIASING_GENERIC;
@@ -2329,7 +2333,14 @@ using namespace vulkan_internal;
 				createInfo.pNext = &debugUtilsCreateInfo;
 			}
 
-			res = vulkan_check(vkCreateInstance(&createInfo, nullptr, &instance));
+			if (hooks != nullptr && hooks->create_instance)
+			{
+				res = vulkan_check(hooks->create_instance(&createInfo, &instance));
+			}
+			else
+			{
+				res = vulkan_check(vkCreateInstance(&createInfo, nullptr, &instance));
+			}
 			if (res != VK_SUCCESS)
 			{
 				wi::helper::messageBox("vkCreateInstance failed! ERROR: " + std::string(string_VkResult(res)), "Error!");
@@ -2552,8 +2563,28 @@ using namespace vulkan_internal;
 				return true;
 			};
 
+			if (hooks != nullptr && hooks->select_physical_device)
+			{
+				// The physical device is dictated externally:
+				const VkPhysicalDevice required_device = hooks->select_physical_device(instance);
+				if (required_device != VK_NULL_HANDLE)
+				{
+					if (checkPhysicalDeviceAndFillPropertiesFeatures(required_device))
+					{
+						physicalDevice = required_device;
+					}
+					else
+					{
+						wilog_messagebox("The externally required GPU is not suitable!");
+						wi::platform::Exit();
+					}
+				}
+			}
+
 			for (const auto& dev : devices)
 			{
+				if (physicalDevice != VK_NULL_HANDLE && hooks != nullptr && hooks->select_physical_device)
+					break; // physical device was already selected externally
 				if (!checkPhysicalDeviceAndFillPropertiesFeatures(dev))
 					continue;
 
@@ -2955,7 +2986,14 @@ using namespace vulkan_internal;
 			createInfo.enabledExtensionCount = static_cast<uint32_t>(enabled_deviceExtensions.size());
 			createInfo.ppEnabledExtensionNames = enabled_deviceExtensions.data();
 
-			res = vulkan_check(vkCreateDevice(physicalDevice, &createInfo, nullptr, &device));
+			if (hooks != nullptr && hooks->create_device)
+			{
+				res = vulkan_check(hooks->create_device(physicalDevice, &createInfo, &device));
+			}
+			else
+			{
+				res = vulkan_check(vkCreateDevice(physicalDevice, &createInfo, nullptr, &device));
+			}
 			if (res != VK_SUCCESS)
 			{
 				wi::helper::messageBox("vkCreateDevice failed! ERROR: " + std::string(string_VkResult(res)), "Error!");
@@ -4482,6 +4520,49 @@ using namespace vulkan_internal;
 		}
 
 		return res >= VK_SUCCESS;
+	}
+	bool GraphicsDevice_Vulkan::CreateTextureFromNativeImage(const TextureDesc* desc, void* native_image, Texture* texture) const
+	{
+		if (native_image == nullptr)
+			return false;
+
+		auto internal_state = wi::allocator::make_shared<Texture_Vulkan>();
+		internal_state->allocationhandler = allocationhandler;
+		internal_state->resource = (VkImage)native_image;
+		internal_state->owns_resource = false;
+		internal_state->defaultLayout = _ConvertImageLayout(desc->layout);
+		texture->internal_state = internal_state;
+		texture->type = GPUResource::Type::TEXTURE;
+		texture->mapped_data = nullptr;
+		texture->mapped_size = 0;
+		texture->mapped_subresources = nullptr;
+		texture->mapped_subresource_count = 0;
+		texture->sparse_properties = nullptr;
+		texture->desc = *desc;
+		texture->desc.mip_levels = GetMipCount(texture->desc);
+
+		// The external image is expected to be already in desc->layout, so no initial transition is recorded here
+		if (!has_flag(desc->misc_flags, ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS))
+		{
+			if (has_flag(texture->desc.bind_flags, BindFlag::RENDER_TARGET))
+			{
+				CreateSubresource(texture, SubresourceType::RTV, 0, -1, 0, -1);
+			}
+			if (has_flag(texture->desc.bind_flags, BindFlag::DEPTH_STENCIL))
+			{
+				CreateSubresource(texture, SubresourceType::DSV, 0, -1, 0, -1);
+			}
+			if (has_flag(texture->desc.bind_flags, BindFlag::SHADER_RESOURCE))
+			{
+				CreateSubresource(texture, SubresourceType::SRV, 0, -1, 0, -1);
+			}
+			if (has_flag(texture->desc.bind_flags, BindFlag::UNORDERED_ACCESS))
+			{
+				CreateSubresource(texture, SubresourceType::UAV, 0, -1, 0, -1);
+			}
+		}
+
+		return true;
 	}
 	bool GraphicsDevice_Vulkan::CreateShader(ShaderStage stage, const void* shadercode, size_t shadercode_size, Shader* shader, const char* entrypoint) const
 	{
@@ -9124,6 +9205,14 @@ using namespace vulkan_internal;
 	uint32_t GraphicsDevice_Vulkan::GetGraphicsFamilyIndex()
 	{
 		return graphicsFamily;
+	}
+	std::mutex& GraphicsDevice_Vulkan::GetGraphicsQueueLocker()
+	{
+		return *queues[QUEUE_GRAPHICS].locker;
+	}
+	VkFormat GraphicsDevice_Vulkan::GetNativeFormat(Format format)
+	{
+		return _ConvertFormat(format);
 	}
 }
 
