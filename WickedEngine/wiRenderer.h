@@ -268,6 +268,16 @@ namespace wi::renderer
 		const wi::scene::CameraComponent& camera_reflection,
 		wi::graphics::CommandList cmd
 	);
+	// Same as BindCameraCB(), but for a stereo render pass (RenderPassFlags::STEREO), with the cameras of both eyes
+	void BindCameraCB_Stereo(
+		const wi::scene::CameraComponent& camera_left,
+		const wi::scene::CameraComponent& camera_left_previous,
+		const wi::scene::CameraComponent& camera_left_reflection,
+		const wi::scene::CameraComponent& camera_right,
+		const wi::scene::CameraComponent& camera_right_previous,
+		const wi::scene::CameraComponent& camera_right_reflection,
+		wi::graphics::CommandList cmd
+	);
 
 
 	enum DRAWSCENE_FLAGS

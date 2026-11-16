@@ -12,8 +12,9 @@ struct HairShadowPush
 PUSHCONSTANT(push, HairShadowPush);
 
 [earlydepthstencil]
-float4 main(VertexToPixel input) : SV_Target
+float4 main(VertexToPixel input STEREO_VIEWID_PARAM) : SV_Target
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	ShaderCamera camera = GetCameraIndexed(push.camera_index);
 	ShaderMaterial material = HairGetMaterial();
 	ShaderMeshInstance meshinstance = HairGetInstance();

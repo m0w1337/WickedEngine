@@ -877,6 +877,9 @@ namespace vulkan_internal
 		VmaAllocation allocation = nullptr;
 		VkImage resource = VK_NULL_HANDLE;
 		bool owns_resource = true; // false if the image was created externally (for example by an OpenXR runtime), then it won't be destroyed here
+		bool is_slice = false; // true if this refers to one array slice of an other texture, see CreateTextureSlice()
+		uint32_t slice_offset = 0; // array slice of the image that is the first slice of this texture
+		wi::allocator::shared_ptr<void> slice_parent; // keeps the image alive when this is a slice of an other texture
 		VkImageLayout defaultLayout = VK_IMAGE_LAYOUT_GENERAL;
 		VkBuffer staging_resource = VK_NULL_HANDLE;
 		struct TextureSubresource
@@ -2663,6 +2666,10 @@ using namespace vulkan_internal;
 				break;
 			}
 
+			if (features_1_1.multiview == VK_TRUE)
+			{
+				capabilities |= GraphicsDeviceCapability::STEREO_RENDERPASS;
+			}
 			if (features2.features.tessellationShader == VK_TRUE)
 			{
 				capabilities |= GraphicsDeviceCapability::TESSELLATION;
@@ -4564,6 +4571,54 @@ using namespace vulkan_internal;
 
 		return true;
 	}
+	bool GraphicsDevice_Vulkan::CreateTextureSlice(const Texture* texture, uint32_t slice, Texture* slice_texture) const
+	{
+		if (texture == nullptr || !texture->IsValid() || slice >= texture->desc.array_size)
+			return false;
+
+		auto parent_state = to_internal(texture);
+
+		auto internal_state = wi::allocator::make_shared<Texture_Vulkan>();
+		internal_state->allocationhandler = allocationhandler;
+		internal_state->resource = parent_state->resource;
+		internal_state->owns_resource = false;
+		internal_state->is_slice = true;
+		internal_state->slice_offset = parent_state->slice_offset + slice;
+		internal_state->slice_parent = texture->internal_state;
+		internal_state->defaultLayout = parent_state->defaultLayout;
+		slice_texture->internal_state = internal_state;
+		slice_texture->type = GPUResource::Type::TEXTURE;
+		slice_texture->mapped_data = nullptr;
+		slice_texture->mapped_size = 0;
+		slice_texture->mapped_subresources = nullptr;
+		slice_texture->mapped_subresource_count = 0;
+		slice_texture->sparse_properties = nullptr;
+		slice_texture->desc = texture->desc;
+		slice_texture->desc.array_size = 1;
+		slice_texture->desc.misc_flags &= ~ResourceMiscFlag::TEXTURECUBE;
+
+		if (!has_flag(slice_texture->desc.misc_flags, ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS))
+		{
+			if (has_flag(slice_texture->desc.bind_flags, BindFlag::RENDER_TARGET))
+			{
+				CreateSubresource(slice_texture, SubresourceType::RTV, 0, -1, 0, -1);
+			}
+			if (has_flag(slice_texture->desc.bind_flags, BindFlag::DEPTH_STENCIL))
+			{
+				CreateSubresource(slice_texture, SubresourceType::DSV, 0, -1, 0, -1);
+			}
+			if (has_flag(slice_texture->desc.bind_flags, BindFlag::SHADER_RESOURCE))
+			{
+				CreateSubresource(slice_texture, SubresourceType::SRV, 0, -1, 0, -1);
+			}
+			if (has_flag(slice_texture->desc.bind_flags, BindFlag::UNORDERED_ACCESS))
+			{
+				CreateSubresource(slice_texture, SubresourceType::UAV, 0, -1, 0, -1);
+			}
+		}
+
+		return true;
+	}
 	bool GraphicsDevice_Vulkan::CreateShader(ShaderStage stage, const void* shadercode, size_t shadercode_size, Shader* shader, const char* entrypoint) const
 	{
 		auto internal_state = wi::allocator::make_shared<Shader_Vulkan>();
@@ -5419,7 +5474,7 @@ using namespace vulkan_internal;
 
 			VkPipelineRenderingCreateInfo renderingInfo = {};
 			renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-			renderingInfo.viewMask = 0;
+			renderingInfo.viewMask = renderpass_info->stereo ? 0b11 : 0;
 			renderingInfo.colorAttachmentCount = renderpass_info->rt_count;
 			VkFormat formats[8] = {};
 			for (uint32_t i = 0; i < renderpass_info->rt_count; ++i)
@@ -6054,6 +6109,14 @@ using namespace vulkan_internal;
 		if (format_change != nullptr)
 		{
 			format = *format_change;
+		}
+
+		if (internal_state->is_slice)
+		{
+			// A slice texture can only see its own part of the image:
+			sliceCount = std::min(sliceCount, texture->desc.array_size - std::min(firstSlice, texture->desc.array_size));
+			mipCount = std::min(mipCount, texture->desc.mip_levels - std::min(firstMip, texture->desc.mip_levels));
+			firstSlice += internal_state->slice_offset;
 		}
 
 		Texture_Vulkan::TextureSubresource subresource;
@@ -7473,6 +7536,12 @@ using namespace vulkan_internal;
 			info.flags |= VK_RENDERING_RESUMING_BIT;
 		}
 		info.layerCount = 1;
+		if (has_flag(flags, RenderPassFlags::STEREO))
+		{
+			// Multiview: every draw is rendered into the first two array slices of the attachments:
+			assert(CheckCapability(GraphicsDeviceCapability::STEREO_RENDERPASS));
+			info.viewMask = 0b11;
+		}
 		info.renderArea.offset.x = 0;
 		info.renderArea.offset.y = 0;
 		info.renderArea.extent.width = properties2.properties.limits.maxFramebufferWidth;
@@ -7707,6 +7776,7 @@ using namespace vulkan_internal;
 		vkCmdBeginRendering(commandlist.GetCommandBuffer(), &info);
 
 		commandlist.renderpass_info = RenderPassInfo::from(images, image_count);
+		commandlist.renderpass_info.stereo = has_flag(flags, RenderPassFlags::STEREO);
 	}
 	void GraphicsDevice_Vulkan::RenderPassEnd(CommandList cmd)
 	{
@@ -7990,9 +8060,10 @@ using namespace vulkan_internal;
 			commandlist.binder.dirty |= DescriptorBinder::DIRTY_DESCRIPTOR;
 		}
 
-		if (internal_state->pipeline != VK_NULL_HANDLE)
+		// Note: a static pso was not created for stereo render pass, in that case a matching pipeline is created like for a dynamic pso
+		if (internal_state->pipeline != VK_NULL_HANDLE && !commandlist.renderpass_info.stereo)
 		{
-			if (commandlist.active_pso != pso)
+			if (commandlist.active_pso != pso || commandlist.prev_pipeline_hash.pso != nullptr)
 			{
 				vkCmdBindPipeline(commandlist.GetCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, internal_state->pipeline);
 			}
@@ -8274,7 +8345,7 @@ using namespace vulkan_internal;
 				{
 					copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 				}
-				copy.srcSubresource.baseArrayLayer = 0;
+				copy.srcSubresource.baseArrayLayer = internal_state_src->slice_offset;
 				copy.srcSubresource.layerCount = src_desc.array_size;
 				copy.srcSubresource.mipLevel = 0;
 
@@ -8290,7 +8361,7 @@ using namespace vulkan_internal;
 				{
 					copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 				}
-				copy.dstSubresource.baseArrayLayer = 0;
+				copy.dstSubresource.baseArrayLayer = internal_state_dst->slice_offset;
 				copy.dstSubresource.layerCount = dst_desc.array_size;
 				copy.dstSubresource.mipLevel = 0;
 
@@ -8435,7 +8506,7 @@ using namespace vulkan_internal;
 			// GPU (texture) -> GPU (texture)
 			VkImageCopy copy = {};
 			copy.dstSubresource.aspectMask = _ConvertImageAspect(dst_aspect);
-			copy.dstSubresource.baseArrayLayer = dstSlice;
+			copy.dstSubresource.baseArrayLayer = dstSlice + dst_internal->slice_offset;
 			copy.dstSubresource.layerCount = 1;
 			copy.dstSubresource.mipLevel = dstMip;
 			copy.dstOffset.x = dstX;
@@ -8443,7 +8514,7 @@ using namespace vulkan_internal;
 			copy.dstOffset.z = dstZ;
 
 			copy.srcSubresource.aspectMask = _ConvertImageAspect(src_aspect);
-			copy.srcSubresource.baseArrayLayer = srcSlice;
+			copy.srcSubresource.baseArrayLayer = srcSlice + src_internal->slice_offset;
 			copy.srcSubresource.layerCount = 1;
 			copy.srcSubresource.mipLevel = srcMip;
 
@@ -8656,15 +8727,15 @@ using namespace vulkan_internal;
 				{
 					barrierdesc.subresourceRange.baseMipLevel = (uint32_t)std::max(0, barrier.image.mip);
 					barrierdesc.subresourceRange.levelCount = 1;
-					barrierdesc.subresourceRange.baseArrayLayer = (uint32_t)std::max(0, barrier.image.slice);
+					barrierdesc.subresourceRange.baseArrayLayer = (uint32_t)std::max(0, barrier.image.slice) + internal_state->slice_offset;
 					barrierdesc.subresourceRange.layerCount = 1;
 				}
 				else
 				{
 					barrierdesc.subresourceRange.baseMipLevel = 0;
 					barrierdesc.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-					barrierdesc.subresourceRange.baseArrayLayer = 0;
-					barrierdesc.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+					barrierdesc.subresourceRange.baseArrayLayer = internal_state->slice_offset;
+					barrierdesc.subresourceRange.layerCount = internal_state->is_slice ? desc.array_size : VK_REMAINING_ARRAY_LAYERS;
 				}
 				barrierdesc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				barrierdesc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -8985,14 +9056,14 @@ using namespace vulkan_internal;
 			color.uint32[2] = value;
 			color.uint32[3] = value;
 
+			auto internal_state = to_internal<Texture>(resource);
+
 			VkImageSubresourceRange range = {};
 			range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			range.baseArrayLayer = 0;
+			range.baseArrayLayer = internal_state->slice_offset;
 			range.baseMipLevel = 0;
-			range.layerCount = VK_REMAINING_ARRAY_LAYERS;
+			range.layerCount = internal_state->is_slice ? ((const Texture*)resource)->desc.array_size : VK_REMAINING_ARRAY_LAYERS;
 			range.levelCount = VK_REMAINING_MIP_LEVELS;
-
-			auto internal_state = to_internal<Texture>(resource);
 			vkCmdClearColorImage(
 				commandlist.GetCommandBuffer(),
 				internal_state->resource,

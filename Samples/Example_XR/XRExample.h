@@ -22,6 +22,11 @@ public:
 			// Update() is called for the first time when the engine initialization was finished, so resources can be created here:
 			scene_created = true;
 			CreateScene(scene);
+			if (wi::arguments::HasArgument("multipass"))
+			{
+				// The eyes are rendered one after the other instead of in a single pass, this is slower but can be used for comparison:
+				path.single_pass_stereo = false;
+			}
 			path.SetScene(&scene);
 			ActivatePath(&path);
 		}

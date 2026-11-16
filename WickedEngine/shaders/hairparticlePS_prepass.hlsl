@@ -7,8 +7,9 @@
 #pragma PSSL_target_output_format (target 0 FMT_32_R)
 #endif // __PSSL__
 
-uint main(VertexToPixel input, out uint coverage : SV_Coverage) : SV_Target
+uint main(VertexToPixel input, out uint coverage : SV_Coverage STEREO_VIEWID_PARAM) : SV_Target
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	ShaderMaterial material = HairGetMaterial();
 
 	half alpha = 1;

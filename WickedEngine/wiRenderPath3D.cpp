@@ -93,12 +93,139 @@ namespace wi
 		RenderPath2D::DeleteGPUResources();
 	}
 
+	// Visibility can't be copied by default because it has atomic members:
+	static void CopyVisibility(wi::renderer::Visibility& dst, const wi::renderer::Visibility& src)
+	{
+		dst.layerMask = src.layerMask;
+		dst.scene = src.scene;
+		dst.camera = src.camera;
+		dst.flags = src.flags;
+		dst.frustum = src.frustum;
+		dst.visibleObjects = src.visibleObjects;
+		dst.visibleDecals = src.visibleDecals;
+		dst.visibleEnvProbes = src.visibleEnvProbes;
+		dst.visibleEmitters = src.visibleEmitters;
+		dst.visibleHairs = src.visibleHairs;
+		dst.visibleLights = src.visibleLights;
+		dst.visibleColliders = src.visibleColliders;
+		dst.shadow_packer = src.shadow_packer;
+		dst.rain_blocker_shadow_rect = src.rain_blocker_shadow_rect;
+		dst.visibleLightShadowRects = src.visibleLightShadowRects;
+		dst.object_counter.store(src.object_counter.load());
+		dst.light_counter.store(src.light_counter.load());
+		dst.meshlet_counter.store(src.meshlet_counter.load());
+		dst.planar_reflection_visible = src.planar_reflection_visible;
+		dst.closest_ref = src.closest_ref;
+		dst.reflectionPlane = src.reflectionPlane;
+		dst.volumetriclight_request.store(src.volumetriclight_request.load());
+		dst.transparents_visible.store(src.transparents_visible.load());
+		dst.mesh_blend_visible.store(src.mesh_blend_visible.load());
+		dst.foreground_object_visible.store(src.foreground_object_visible.load());
+	}
+
+	void RenderPath3D::SetStereoSecondary(RenderPath3D* secondary)
+	{
+		if (stereo_secondary == secondary)
+			return;
+		if (stereo_secondary != nullptr)
+		{
+			stereo_secondary->stereo_primary = nullptr;
+			stereo_secondary->current_buffersize = {}; // resources will be recreated
+		}
+		stereo_secondary = secondary;
+		if (secondary != nullptr)
+		{
+			secondary->stereo_primary = this;
+			secondary->current_buffersize = {}; // resources will be recreated
+		}
+		current_buffersize = {}; // resources will be recreated
+	}
+	bool RenderPath3D::IsStereoPrimary() const
+	{
+		return stereo_secondary != nullptr && wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::STEREO_RENDERPASS);
+	}
+	bool RenderPath3D::IsStereoSecondary() const
+	{
+		return stereo_primary != nullptr && wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::STEREO_RENDERPASS);
+	}
+	bool RenderPath3D::IsOcclusionCullingActive() const
+	{
+		// The occlusion queries are rendered from one eye, so objects that are only visible for the other eye would disappear in stereo mode:
+		return getOcclusionCullingEnabled() && !IsStereoPrimary() && !IsStereoSecondary();
+	}
+	void RenderPath3D::BindCameraCB_Eye(CommandList cmd) const
+	{
+		wi::renderer::BindCameraCB(
+			*camera,
+			camera_previous,
+			camera_reflection,
+			cmd
+		);
+	}
+	void RenderPath3D::BindCameraCB_Shared(CommandList cmd) const
+	{
+		if (IsStereoPrimary() && stereo_culling_camera != nullptr)
+		{
+			wi::renderer::BindCameraCB(
+				*stereo_culling_camera,
+				*stereo_culling_camera,
+				camera_reflection,
+				cmd
+			);
+		}
+		else
+		{
+			BindCameraCB_Eye(cmd);
+		}
+	}
+	void RenderPath3D::BindCameraCB_Geometry(CommandList cmd) const
+	{
+		if (IsStereoPrimary())
+		{
+			wi::renderer::BindCameraCB_Stereo(
+				*camera,
+				camera_previous,
+				camera_reflection,
+				*stereo_secondary->camera,
+				stereo_secondary->camera_previous,
+				stereo_secondary->camera_reflection,
+				cmd
+			);
+		}
+		else
+		{
+			BindCameraCB_Eye(cmd);
+		}
+	}
+
 	void RenderPath3D::ResizeBuffers()
 	{
 		first_frame = true;
 		DeleteGPUResources();
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		// In stereo mode, the textures that the geometry is rendered into are array slices of the primary's texture arrays:
+		const bool stereo = IsStereoPrimary() || IsStereoSecondary();
+		RenderPath3D* stereo_owner = IsStereoSecondary() ? stereo_primary : this;
+		if (IsStereoPrimary())
+		{
+			stereo_generation++;
+		}
+		else if (IsStereoSecondary())
+		{
+			stereo_generation = stereo_primary->stereo_generation;
+		}
+		auto create_stereo_slice = [&](TextureDesc desc, Texture RenderPath3D::* array_member, Texture& eye_texture, const char* name) {
+			if (stereo_owner == this)
+			{
+				desc.array_size = 2;
+				device->CreateTexture(&desc, nullptr, &(this->*array_member));
+				device->SetName(&(this->*array_member), name);
+			}
+			bool success = device->CreateTextureSlice(&(stereo_owner->*array_member), stereo_owner == this ? 0 : 1, &eye_texture);
+			assert(success);
+		};
 
 		XMUINT2 internalResolution = GetInternalResolution();
 		camera->width = (float)internalResolution.x;
@@ -173,19 +300,32 @@ namespace wi
 		}
 		{
 			TextureDesc desc = desc_rtPrimitiveID;
-			device->CreateTexture(&desc, nullptr, &rtPrimitiveID, &aliasingAllocation, offset_rtPrimitiveID); // Aliased!
-			device->SetName(&rtPrimitiveID, "renderpath3D.rtPrimitiveID");
-
+			if (!stereo || getMSAASampleCount() > 1)
+			{
+				device->CreateTexture(&desc, nullptr, &rtPrimitiveID, &aliasingAllocation, offset_rtPrimitiveID); // Aliased!
+				device->SetName(&rtPrimitiveID, "renderpath3D.rtPrimitiveID");
+			}
 			if (getMSAASampleCount() > 1)
 			{
 				desc.sample_count = getMSAASampleCount();
 				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
 				desc.misc_flags = ResourceMiscFlag::NONE;
-				device->CreateTexture(&desc, nullptr, &rtPrimitiveID_render);
-				device->SetName(&rtPrimitiveID_render, "renderpath3D.rtPrimitiveID_render");
+				if (stereo)
+				{
+					create_stereo_slice(desc, &RenderPath3D::stereo_rtPrimitiveID_render, rtPrimitiveID_render, "renderpath3D.stereo_rtPrimitiveID_render");
+				}
+				else
+				{
+					device->CreateTexture(&desc, nullptr, &rtPrimitiveID_render);
+					device->SetName(&rtPrimitiveID_render, "renderpath3D.rtPrimitiveID_render");
+				}
 			}
 			else
 			{
+				if (stereo)
+				{
+					create_stereo_slice(desc, &RenderPath3D::stereo_rtPrimitiveID_render, rtPrimitiveID, "renderpath3D.stereo_rtPrimitiveID_render");
+				}
 				rtPrimitiveID_render = rtPrimitiveID;
 			}
 		}
@@ -224,16 +364,30 @@ namespace wi
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
 			desc.sample_count = 1;
-			device->CreateTexture(&desc, nullptr, &rtMain);
-			device->SetName(&rtMain, "renderpath3D.rtMain");
+			if (stereo && getMSAASampleCount() <= 1)
+			{
+				create_stereo_slice(desc, &RenderPath3D::stereo_rtMain_render, rtMain, "renderpath3D.stereo_rtMain_render");
+			}
+			else
+			{
+				device->CreateTexture(&desc, nullptr, &rtMain);
+				device->SetName(&rtMain, "renderpath3D.rtMain");
+			}
 
 			if (getMSAASampleCount() > 1)
 			{
 				desc.sample_count = getMSAASampleCount();
 				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
 
-				device->CreateTexture(&desc, nullptr, &rtMain_render);
-				device->SetName(&rtMain_render, "renderpath3D.rtMain_render");
+				if (stereo)
+				{
+					create_stereo_slice(desc, &RenderPath3D::stereo_rtMain_render, rtMain_render, "renderpath3D.stereo_rtMain_render");
+				}
+				else
+				{
+					device->CreateTexture(&desc, nullptr, &rtMain_render);
+					device->SetName(&rtMain_render, "renderpath3D.rtMain_render");
+				}
 				
 				// Note: graphics API can downgrade sample count for last supported value, this will be reflected in the renderpath setting too
 				msaaSampleCount = std::min(msaaSampleCount, rtMain_render.desc.sample_count);
@@ -286,8 +440,15 @@ namespace wi
 			desc.layout = ResourceState::DEPTHSTENCIL;
 			desc.format = wi::renderer::format_depthbuffer_main;
 			desc.bind_flags = BindFlag::DEPTH_STENCIL;
-			device->CreateTexture(&desc, nullptr, &depthBuffer_Main);
-			device->SetName(&depthBuffer_Main, "renderpath3D.depthBuffer_Main");
+			if (stereo)
+			{
+				create_stereo_slice(desc, &RenderPath3D::stereo_depthBuffer_Main, depthBuffer_Main, "renderpath3D.stereo_depthBuffer_Main");
+			}
+			else
+			{
+				device->CreateTexture(&desc, nullptr, &depthBuffer_Main);
+				device->SetName(&depthBuffer_Main, "renderpath3D.depthBuffer_Main");
+			}
 
 			desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 			desc.format = Format::R32_FLOAT;
@@ -381,16 +542,33 @@ namespace wi
 			ResizeBuffers();
 		}
 
-		// Frustum culling for main camera:
-		visibility_main.layerMask = getLayerMask();
-		visibility_main.scene = scene;
-		visibility_main.camera = camera;
-		visibility_main.flags = wi::renderer::Visibility::ALLOW_EVERYTHING;
-		if (!getOcclusionCullingEnabled())
+		if (IsStereoSecondary())
 		{
-			visibility_main.flags &= ~wi::renderer::Visibility::ALLOW_OCCLUSION_CULLING;
+			if (stereo_generation != stereo_primary->stereo_generation)
+			{
+				// The primary recreated the texture arrays, so the slices must be recreated too:
+				ResizeBuffers();
+			}
+			// Culling was already done by the primary for both eyes:
+			CopyVisibility(visibility_main, stereo_primary->visibility_main);
 		}
-		wi::renderer::UpdateVisibility(visibility_main);
+		else
+		{
+			// Frustum culling for main camera:
+			visibility_main.layerMask = getLayerMask();
+			visibility_main.scene = scene;
+			visibility_main.camera = IsStereoPrimary() && stereo_culling_camera != nullptr ? stereo_culling_camera : camera;
+			visibility_main.flags = wi::renderer::Visibility::ALLOW_EVERYTHING;
+			if (!IsOcclusionCullingActive())
+			{
+				visibility_main.flags &= ~wi::renderer::Visibility::ALLOW_OCCLUSION_CULLING;
+			}
+			wi::renderer::UpdateVisibility(visibility_main);
+			if (IsStereoPrimary())
+			{
+				visibility_main.planar_reflection_visible = false; // not supported in stereo mode
+			}
+		}
 
 		if (visibility_main.planar_reflection_visible)
 		{
@@ -415,12 +593,20 @@ namespace wi
 
 		XMUINT2 internalResolution = GetInternalResolution();
 
-		wi::renderer::UpdatePerFrameData(
-			*scene,
-			visibility_main,
-			frameCB,
-			getSceneUpdateEnabled() ? scene->dt : 0
-		);
+		if (IsStereoSecondary())
+		{
+			// The frame data is shared between the eyes:
+			frameCB = stereo_primary->frameCB;
+		}
+		else
+		{
+			wi::renderer::UpdatePerFrameData(
+				*scene,
+				visibility_main,
+				frameCB,
+				getSceneUpdateEnabled() ? scene->dt : 0
+			);
+		}
 
 		if (getFSR2Enabled())
 		{
@@ -847,6 +1033,12 @@ namespace wi
 		}
 		prerender_happened = false;
 
+		if (IsStereoSecondary())
+		{
+			// The primary render path renders for this one too
+			return;
+		}
+
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		wi::jobsystem::context ctx;
 
@@ -869,19 +1061,16 @@ namespace wi
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 			GraphicsDevice* device = wi::graphics::GetDevice();
 
-			wi::renderer::BindCameraCB(
-				*camera,
-				camera_previous,
-				camera_reflection,
-				cmd
-			);
+			BindCameraCB_Shared(cmd);
 			wi::renderer::UpdateRenderData(visibility_main, frameCB, cmd);
 
-			GPUBarrier barriers[] = {
-				GPUBarrier::Image(&debugUAV, debugUAV.desc.layout, ResourceState::UNORDERED_ACCESS),
-				GPUBarrier::Aliasing(&rtPostprocess, &rtPrimitiveID),
-			};
-			device->Barrier(barriers, arraysize(barriers), cmd);
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				GPUBarrier barriers[] = {
+					GPUBarrier::Image(&eye.debugUAV, eye.debugUAV.desc.layout, ResourceState::UNORDERED_ACCESS),
+					GPUBarrier::Aliasing(&eye.rtPostprocess, &eye.rtPrimitiveID),
+				};
+				device->Barrier(barriers, arraysize(barriers), cmd);
+			});
 
 		});
 
@@ -895,12 +1084,7 @@ namespace wi
 		}
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-			wi::renderer::BindCameraCB(
-				*camera,
-				camera_previous,
-				camera_reflection,
-				cmd
-			);
+			BindCameraCB_Shared(cmd);
 			wi::renderer::UpdateRenderDataAsync(visibility_main, frameCB, cmd);
 
 			if (scene->IsWetmapProcessingRequired())
@@ -947,28 +1131,30 @@ namespace wi
 
 			GraphicsDevice* device = wi::graphics::GetDevice();
 
-			wi::renderer::BindCameraCB(
-				*camera,
-				camera_previous,
-				camera_reflection,
-				cmd
-			);
+			const bool stereo = IsStereoPrimary();
+			BindCameraCB_Shared(cmd);
 
 			wi::renderer::RefreshImpostors(*scene, cmd);
 
-			if (reprojectedDepth.IsValid())
-			{
-				wi::renderer::ComputeReprojectedDepthPyramid(
-					depthBuffer_Copy,
-					rtVelocity,
-					reprojectedDepth,
-					cmd
-				);
-			}
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				if (eye.reprojectedDepth.IsValid())
+				{
+					eye.BindCameraCB_Eye(cmd);
+					wi::renderer::ComputeReprojectedDepthPyramid(
+						eye.depthBuffer_Copy,
+						eye.rtVelocity,
+						eye.reprojectedDepth,
+						cmd
+					);
+				}
+			});
+
+			// Geometry is rendered for both eyes at once in stereo mode:
+			BindCameraCB_Geometry(cmd);
 
 			RenderPassImage rp[] = {
 				RenderPassImage::DepthStencil(
-					&depthBuffer_Main,
+					stereo ? &stereo_depthBuffer_Main : &depthBuffer_Main,
 					RenderPassImage::LoadOp::CLEAR,
 					RenderPassImage::StoreOp::STORE,
 					ResourceState::DEPTHSTENCIL,
@@ -976,14 +1162,14 @@ namespace wi
 					ResourceState::DEPTHSTENCIL
 				),
 				RenderPassImage::RenderTarget(
-					&rtPrimitiveID_render,
+					stereo ? &stereo_rtPrimitiveID_render : &rtPrimitiveID_render,
 					RenderPassImage::LoadOp::CLEAR,
 					RenderPassImage::StoreOp::STORE,
 					ResourceState::SHADER_RESOURCE_COMPUTE,
 					ResourceState::SHADER_RESOURCE_COMPUTE
 				),
 			};
-			device->RenderPassBegin(rp, arraysize(rp), cmd);
+			device->RenderPassBegin(rp, arraysize(rp), cmd, stereo ? RenderPassFlags::STEREO : RenderPassFlags::NONE);
 
 			device->EventBegin("Opaque Z-prepass", cmd);
 			auto range = wi::profiler::BeginRangeGPU("Z-Prepass", cmd);
@@ -1041,114 +1227,14 @@ namespace wi
 		device->WaitCommandList(cmd, cmd_maincamera_prepass);
 		CommandList cmd_maincamera_compute_effects = cmd;
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-
-			GraphicsDevice* device = wi::graphics::GetDevice();
-
-			wi::renderer::BindCameraCB(
-				*camera,
-				camera_previous,
-				camera_reflection,
-				cmd
-			);
-
-			wi::renderer::Visibility_Prepare(
-				visibilityResources,
-				rtPrimitiveID_render,
-				cmd
-			);
-
-			wi::renderer::ComputeTiledLightCulling(
-				tiledLightResources,
-				visibility_main,
-				debugUAV,
-				cmd
-			);
-
-			if (
-				getSSREnabled() ||
-				getSSGIEnabled() ||
-				getRaytracedReflectionEnabled() ||
-				getRaytracedDiffuseEnabled() ||
-				wi::renderer::GetScreenSpaceShadowsEnabled() ||
-				wi::renderer::GetRaytracedShadowsEnabled() ||
-				wi::renderer::GetVXGIEnabled()
-				)
-			{
-				// These post effects require surface normals and/or roughness
-				wi::renderer::Visibility_Surface(
-					visibilityResources,
-					cmd
-				);
-			}
-
-			if (rtVelocity.IsValid())
-			{
-				wi::renderer::Visibility_Velocity(
-					visibilityResources,
-					rtVelocity,
-					cmd
-				);
-			}
-
-			if (wi::renderer::GetSurfelGIEnabled())
-			{
-				wi::renderer::SurfelGI_Coverage(
-					surfelGIResources,
-					*scene,
-					depthBuffer_Copy,
-					debugUAV,
-					cmd
-				);
-			}
-
-			RenderAO(cmd);
-
-			if (wi::renderer::GetVariableRateShadingClassification() && device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2))
-			{
-				wi::renderer::ComputeShadingRateClassification(
-					rtShadingRate,
-					debugUAV,
-					cmd
-				);
-			}
-
-			RenderSSR(cmd);
-
-			RenderSSGI(cmd);
-
-			if (wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_DISABLED)
-			{
-				if (wi::renderer::GetRaytracedShadowsEnabled())
-				{
-					wi::renderer::Postprocess_RTShadow(
-						rtshadowResources,
-						*scene,
-						rtShadow,
-						cmd
-					);
-				}
-				else if (wi::renderer::GetScreenSpaceShadowsEnabled()) // rtshadow or screenspace shadow, not both
-				{
-					wi::renderer::Postprocess_ScreenSpaceShadow(
-						screenspaceshadowResources,
-						rtShadow,
-						cmd,
-						getScreenSpaceShadowRange(),
-						getScreenSpaceShadowSampleCount()
-					);
-				}
-			}
-
-			if (getMeshBlendEnabled() && visibility_main.IsMeshBlendVisible())
-			{
-				wi::renderer::PostProcess_MeshBlend_EdgeProcess(meshblendResources, cmd);
-			}
-
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderEye_ComputeEffects(cmd);
+			});
 		});
 
 		// Occlusion culling:
 		CommandList cmd_occlusionculling;
-		if (getOcclusionCullingEnabled())
+		if (IsOcclusionCullingActive())
 		{
 			cmd = device->BeginCommandList();
 			cmd_occlusionculling = cmd;
@@ -1310,12 +1396,7 @@ namespace wi
 			}
 			wi::jobsystem::Execute(ctx, [cmd, this](wi::jobsystem::JobArgs args) {
 				wi::renderer::BindCommonResources(cmd);
-				wi::renderer::BindCameraCB(
-					*camera,
-					camera_previous,
-					camera_reflection,
-					cmd
-				);
+				BindCameraCB_Shared(cmd);
 				wi::renderer::RefreshLightmaps(*scene, cmd);
 				wi::renderer::RefreshEnvProbes(visibility_main, cmd);
 				wi::renderer::PaintDecals(*scene, cmd);
@@ -1445,52 +1526,14 @@ namespace wi
 			GraphicsDevice* device = wi::graphics::GetDevice();
 			device->EventBegin("Opaque Scene", cmd);
 
-			wi::renderer::BindCameraCB(
-				*camera,
-				camera_previous,
-				camera_reflection,
-				cmd
-			);
+			const bool stereo = IsStereoPrimary();
 
-			if (getRaytracedReflectionEnabled())
-			{
-				wi::renderer::Postprocess_RTReflection(
-					rtreflectionResources,
-					*scene,
-					rtSSR,
-					cmd,
-					getRaytracedReflectionsRange(),
-					getReflectionRoughnessCutoff()
-				);
-			}
-			if (getRaytracedDiffuseEnabled())
-			{
-				wi::renderer::Postprocess_RTDiffuse(
-					rtdiffuseResources,
-					*scene,
-					rtRaytracedDiffuse,
-					cmd,
-					getRaytracedDiffuseRange()
-				);
-			}
-			if (wi::renderer::GetVXGIEnabled())
-			{
-				wi::renderer::VXGI_Resolve(
-					vxgiResources,
-					*scene,
-					depthBuffer_Copy,
-					cmd
-				);
-			}
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderEye_OpaquePrepare(cmd);
+			});
 
-			if (visibility_shading_in_compute)
-			{
-				wi::renderer::Visibility_Shade(
-					visibilityResources,
-					rtMain,
-					cmd
-				);
-			}
+			// Geometry is rendered for both eyes at once in stereo mode:
+			BindCameraCB_Geometry(cmd);
 
 			Viewport vp;
 			vp.width = (float)depthBuffer_Main.GetDesc().width;
@@ -1500,59 +1543,9 @@ namespace wi
 			wi::graphics::Rect scissor = GetScissorInternalResolution();
 			device->BindScissorRects(1, &scissor, cmd);
 
-			if (getOutlineEnabled())
-			{
-				// Cut off outline source from depth:
-				device->EventBegin("Outline Source", cmd);
-
-				if (getMSAASampleCount() > 1)
-				{
-					RenderPassImage rp[] = {
-						RenderPassImage::RenderTarget(&rtOutlineSource_MSAA, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::DONTCARE, ResourceState::RENDERTARGET, ResourceState::RENDERTARGET),
-						RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD),
-						RenderPassImage::Resolve(&rtOutlineSource)
-					};
-					device->RenderPassBegin(rp, arraysize(rp), cmd);
-				}
-				else
-				{
-					RenderPassImage rp[] = {
-						RenderPassImage::RenderTarget(&rtOutlineSource, RenderPassImage::LoadOp::CLEAR),
-						RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD)
-					};
-					device->RenderPassBegin(rp, arraysize(rp), cmd);
-				}
-				wi::image::Params params;
-				params.enableFullScreen();
-				params.stencilRefMode = wi::image::STENCILREFMODE_ENGINE;
-				params.stencilComp = wi::image::STENCILMODE_EQUAL;
-				params.stencilRef = wi::enums::STENCILREF_OUTLINE;
-				wi::image::Draw(&depthBuffer_Copy, params, cmd);
-				params.stencilRef = wi::enums::STENCILREF_CUSTOMSHADER_OUTLINE;
-				wi::image::Draw(&depthBuffer_Copy, params, cmd);
-				device->RenderPassEnd(cmd);
-				device->EventEnd(cmd);
-			}
-
 			RenderPassImage rp[4] = {};
-			uint32_t rp_count = 0;
-			rp[rp_count++] = RenderPassImage::RenderTarget(
-				&rtMain_render,
-				visibility_shading_in_compute ? RenderPassImage::LoadOp::LOAD : RenderPassImage::LoadOp::CLEAR
-			);
-			if (device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2) && rtShadingRate.IsValid())
-			{
-				rp[rp_count++] = RenderPassImage::ShadingRateSource(&rtShadingRate, ResourceState::UNORDERED_ACCESS, ResourceState::UNORDERED_ACCESS);
-			}
-			rp[rp_count++] = RenderPassImage::DepthStencil(
-				&depthBuffer_Main,
-				RenderPassImage::LoadOp::LOAD,
-				RenderPassImage::StoreOp::STORE,
-				ResourceState::DEPTHSTENCIL,
-				ResourceState::DEPTHSTENCIL,
-				ResourceState::DEPTHSTENCIL
-			);
-			device->RenderPassBegin(rp, rp_count, cmd, RenderPassFlags::ALLOW_UAV_WRITES);
+			const uint32_t rp_count = GetOpaqueRenderPassImages(rp, stereo);
+			device->RenderPassBegin(rp, rp_count, cmd, RenderPassFlags::ALLOW_UAV_WRITES | (stereo ? RenderPassFlags::STEREO : RenderPassFlags::NONE));
 
 			if (visibility_shading_in_compute)
 			{
@@ -1599,20 +1592,32 @@ namespace wi
 
 			wi::renderer::DrawSky(*scene, cmd, false); // Note: volumetric cloud sampling disabled in sky shader, instead the postprocess will be used for a high quality effect
 
-			RenderOutline(cmd);
+			if (!stereo)
+			{
+				RenderOutline(cmd);
+			}
 
 			device->RenderPassEnd(cmd);
 
-			if (getMeshBlendEnabled() && visibility_main.IsMeshBlendVisible())
+			if (stereo && getOutlineEnabled())
 			{
-				rp[0].loadop = RenderPassImage::LoadOp::LOAD;
-				wi::renderer::PostProcess_MeshBlend_Resolve(meshblendResources, rtMain, rp, rp_count, cmd);
+				// The outline is a full screen effect that has different source textures for the eyes, so it can't be drawn in the stereo render pass:
+				ForEachStereoEye([&](const RenderPath3D& eye) {
+					eye.BindCameraCB_Eye(cmd);
+					RenderPassImage rp_outline[4] = {};
+					const uint32_t rp_outline_count = eye.GetOpaqueRenderPassImages(rp_outline, false);
+					rp_outline[0].loadop = RenderPassImage::LoadOp::LOAD;
+					device->RenderPassBegin(rp_outline, rp_outline_count, cmd);
+					device->BindViewports(1, &vp, cmd);
+					eye.RenderOutline(cmd);
+					device->RenderPassEnd(cmd);
+				});
 			}
 
-			if (rtAO.IsValid())
-			{
-				device->Barrier(GPUBarrier::Aliasing(&rtAO, &rtParticleDistortion), cmd);
-			}
+
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderEye_OpaqueFinish(cmd);
+			});
 
 			device->EventEnd(cmd);
 		});
@@ -1634,34 +1639,9 @@ namespace wi
 				device->WaitCommandList(cmd_weathereffect, cmd_shadowmap);
 			}
 			wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-
-				wi::renderer::BindCameraCB(
-					*camera,
-					camera_previous,
-					camera_reflection,
-					cmd
-				);
-
-				if (scene->weather.IsVolumetricClouds())
-				{
-					wi::renderer::Postprocess_VolumetricClouds(
-						volumetriccloudResources,
-						cmd,
-						*camera,
-						camera_previous,
-						camera_reflection,
-						(wi::renderer::GetTemporalAAEnabled() && wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_DISABLED) || getFSR2Enabled(),
-						scene->weather.volumetricCloudsWeatherMapFirst.IsValid() ? &scene->weather.volumetricCloudsWeatherMapFirst.GetTexture() : nullptr,
-						scene->weather.volumetricCloudsWeatherMapSecond.IsValid() ? &scene->weather.volumetricCloudsWeatherMapSecond.GetTexture() : nullptr
-					);
-				}
-				if (scene->weather.IsRealisticSky() && scene->weather.IsRealisticSkyAerialPerspective())
-				{
-					wi::renderer::Postprocess_AerialPerspective(
-						aerialperspectiveResources,
-						cmd
-					);
-				}
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderEye_WeatherEffects(cmd);
+			});
 			});
 		}
 
@@ -1674,50 +1654,9 @@ namespace wi
 				device->WaitCommandList(cmd, cmd_weathereffect);
 			}
 			wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-				GraphicsDevice* device = wi::graphics::GetDevice();
-				device->EventBegin("Opaque Scene (weather blend / MSAA resolve)", cmd);
-
-				wi::renderer::BindCameraCB(
-					*camera,
-					camera_previous,
-					camera_reflection,
-					cmd
-				);
-
-				Viewport vp;
-				vp.width = (float)depthBuffer_Main.GetDesc().width;
-				vp.height = (float)depthBuffer_Main.GetDesc().height;
-				device->BindViewports(1, &vp, cmd);
-
-				RenderPassImage rp[4] = {};
-				uint32_t rp_count = 0;
-				rp[rp_count++] = RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
-				if (getMSAASampleCount() > 1)
-				{
-					rp[rp_count++] = RenderPassImage::Resolve(&rtMain);
-				}
-				device->RenderPassBegin(rp, rp_count, cmd);
-
-				// Blend Aerial Perspective on top:
-				if (scene->weather.IsRealisticSky() && scene->weather.IsRealisticSkyAerialPerspective())
-				{
-					device->EventBegin("Aerial Perspective Blend", cmd);
-					wi::image::Params fx;
-					fx.enableFullScreen();
-					fx.blendFlag = BLENDMODE_PREMULTIPLIED;
-					wi::image::Draw(&aerialperspectiveResources.texture_output, fx, cmd);
-					device->EventEnd(cmd);
-				}
-
-				// Blend the volumetric clouds on top of opaque scene if they will be refracted by ocean:
-				if (scene->weather.IsVolumetricClouds() && !ocean_behind_clouds)
-				{
-					wi::renderer::Postprocess_VolumetricClouds_Upsample(volumetriccloudResources, cmd);
-				}
-
-				device->RenderPassEnd(cmd);
-
-				device->EventEnd(cmd);
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderEye_OpaqueResolve(cmd);
+			});
 			});
 		}
 
@@ -1749,22 +1688,9 @@ namespace wi
 			device->WaitCommandList(cmd, cmd_ocean);
 		}
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-
-			GraphicsDevice* device = wi::graphics::GetDevice();
-
-			wi::renderer::BindCameraCB(
-				*camera,
-				camera_previous,
-				camera_reflection,
-				cmd
-			);
-			wi::renderer::BindCommonResources(cmd);
-
-			RenderLightShafts(cmd);
-
-			RenderVolumetrics(cmd);
-
-			RenderTransparents(cmd);
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderEye_Transparents(cmd);
+			});
 		});
 
 		RenderCameraComponents(ctx);
@@ -1776,7 +1702,9 @@ namespace wi
 			device->WaitCommandList(cmd, video_cmd);
 		}
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-			RenderPostprocessChain(cmd);
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				eye.RenderPostprocessChain(cmd);
+			});
 
 			for (size_t i = 0; i < scene->videos.GetCount(); ++i)
 			{
@@ -1785,7 +1713,9 @@ namespace wi
 			}
 
 			GraphicsDevice* device = wi::graphics::GetDevice();
-			device->Barrier(GPUBarrier::Image(&debugUAV, ResourceState::UNORDERED_ACCESS, debugUAV.desc.layout), cmd);
+			ForEachStereoEye([&](const RenderPath3D& eye) {
+				device->Barrier(GPUBarrier::Image(&eye.debugUAV, ResourceState::UNORDERED_ACCESS, eye.debugUAV.desc.layout), cmd);
+			});
 		});
 
 		cmd = device->BeginCommandList(QUEUE_COPY);
@@ -1798,7 +1728,9 @@ namespace wi
 
 		wi::jobsystem::Wait(ctx);
 
-		first_frame = false;
+		ForEachStereoEye([&](const RenderPath3D& eye) {
+			eye.first_frame = false;
+		});
 	}
 
 	void RenderPath3D::Compose(CommandList cmd) const
@@ -3346,6 +3278,344 @@ namespace wi
 		if (tex_resolved.IsValid())
 			return tex_resolved;
 		return tex;
+	}
+
+	void RenderPath3D::RenderEye_ComputeEffects(CommandList cmd) const
+	{
+
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		wi::renderer::BindCameraCB(
+			*camera,
+			camera_previous,
+			camera_reflection,
+			cmd
+		);
+
+		wi::renderer::Visibility_Prepare(
+			visibilityResources,
+			rtPrimitiveID_render,
+			cmd
+		);
+
+		wi::renderer::ComputeTiledLightCulling(
+			tiledLightResources,
+			visibility_main,
+			debugUAV,
+			cmd
+		);
+
+		if (
+			getSSREnabled() ||
+			getSSGIEnabled() ||
+			getRaytracedReflectionEnabled() ||
+			getRaytracedDiffuseEnabled() ||
+			wi::renderer::GetScreenSpaceShadowsEnabled() ||
+			wi::renderer::GetRaytracedShadowsEnabled() ||
+			wi::renderer::GetVXGIEnabled()
+			)
+		{
+			// These post effects require surface normals and/or roughness
+			wi::renderer::Visibility_Surface(
+				visibilityResources,
+				cmd
+			);
+		}
+
+		if (rtVelocity.IsValid())
+		{
+			wi::renderer::Visibility_Velocity(
+				visibilityResources,
+				rtVelocity,
+				cmd
+			);
+		}
+
+		if (wi::renderer::GetSurfelGIEnabled())
+		{
+			wi::renderer::SurfelGI_Coverage(
+				surfelGIResources,
+				*scene,
+				depthBuffer_Copy,
+				debugUAV,
+				cmd
+			);
+		}
+
+		RenderAO(cmd);
+
+		if (wi::renderer::GetVariableRateShadingClassification() && device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2))
+		{
+			wi::renderer::ComputeShadingRateClassification(
+				rtShadingRate,
+				debugUAV,
+				cmd
+			);
+		}
+
+		RenderSSR(cmd);
+
+		RenderSSGI(cmd);
+
+		if (wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_DISABLED)
+		{
+			if (wi::renderer::GetRaytracedShadowsEnabled())
+			{
+				wi::renderer::Postprocess_RTShadow(
+					rtshadowResources,
+					*scene,
+					rtShadow,
+					cmd
+				);
+			}
+			else if (wi::renderer::GetScreenSpaceShadowsEnabled()) // rtshadow or screenspace shadow, not both
+			{
+				wi::renderer::Postprocess_ScreenSpaceShadow(
+					screenspaceshadowResources,
+					rtShadow,
+					cmd,
+					getScreenSpaceShadowRange(),
+					getScreenSpaceShadowSampleCount()
+				);
+			}
+		}
+
+		if (getMeshBlendEnabled() && visibility_main.IsMeshBlendVisible())
+		{
+			wi::renderer::PostProcess_MeshBlend_EdgeProcess(meshblendResources, cmd);
+		}
+
+	}
+	void RenderPath3D::RenderEye_WeatherEffects(CommandList cmd) const
+	{
+
+			wi::renderer::BindCameraCB(
+				*camera,
+				camera_previous,
+				camera_reflection,
+				cmd
+			);
+
+			if (scene->weather.IsVolumetricClouds())
+			{
+				wi::renderer::Postprocess_VolumetricClouds(
+					volumetriccloudResources,
+					cmd,
+					*camera,
+					camera_previous,
+					camera_reflection,
+					(wi::renderer::GetTemporalAAEnabled() && wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_DISABLED) || getFSR2Enabled(),
+					scene->weather.volumetricCloudsWeatherMapFirst.IsValid() ? &scene->weather.volumetricCloudsWeatherMapFirst.GetTexture() : nullptr,
+					scene->weather.volumetricCloudsWeatherMapSecond.IsValid() ? &scene->weather.volumetricCloudsWeatherMapSecond.GetTexture() : nullptr
+				);
+			}
+			if (scene->weather.IsRealisticSky() && scene->weather.IsRealisticSkyAerialPerspective())
+			{
+				wi::renderer::Postprocess_AerialPerspective(
+					aerialperspectiveResources,
+					cmd
+				);
+			}
+	}
+	void RenderPath3D::RenderEye_OpaqueResolve(CommandList cmd) const
+	{
+			GraphicsDevice* device = wi::graphics::GetDevice();
+			device->EventBegin("Opaque Scene (weather blend / MSAA resolve)", cmd);
+
+			wi::renderer::BindCameraCB(
+				*camera,
+				camera_previous,
+				camera_reflection,
+				cmd
+			);
+
+			Viewport vp;
+			vp.width = (float)depthBuffer_Main.GetDesc().width;
+			vp.height = (float)depthBuffer_Main.GetDesc().height;
+			device->BindViewports(1, &vp, cmd);
+
+			RenderPassImage rp[4] = {};
+			uint32_t rp_count = 0;
+			rp[rp_count++] = RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
+			if (getMSAASampleCount() > 1)
+			{
+				rp[rp_count++] = RenderPassImage::Resolve(&rtMain);
+			}
+			device->RenderPassBegin(rp, rp_count, cmd);
+
+			// Blend Aerial Perspective on top:
+			if (scene->weather.IsRealisticSky() && scene->weather.IsRealisticSkyAerialPerspective())
+			{
+				device->EventBegin("Aerial Perspective Blend", cmd);
+				wi::image::Params fx;
+				fx.enableFullScreen();
+				fx.blendFlag = BLENDMODE_PREMULTIPLIED;
+				wi::image::Draw(&aerialperspectiveResources.texture_output, fx, cmd);
+				device->EventEnd(cmd);
+			}
+
+			// Blend the volumetric clouds on top of opaque scene if they will be refracted by ocean:
+			if (scene->weather.IsVolumetricClouds() && !ocean_behind_clouds)
+			{
+				wi::renderer::Postprocess_VolumetricClouds_Upsample(volumetriccloudResources, cmd);
+			}
+
+			device->RenderPassEnd(cmd);
+
+			device->EventEnd(cmd);
+	}
+	void RenderPath3D::RenderEye_Transparents(CommandList cmd) const
+	{
+
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		wi::renderer::BindCameraCB(
+			*camera,
+			camera_previous,
+			camera_reflection,
+			cmd
+		);
+		wi::renderer::BindCommonResources(cmd);
+
+		RenderLightShafts(cmd);
+
+		RenderVolumetrics(cmd);
+
+		RenderTransparents(cmd);
+	}
+	void RenderPath3D::RenderEye_OpaquePrepare(CommandList cmd) const
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		wi::renderer::BindCameraCB(
+			*camera,
+			camera_previous,
+			camera_reflection,
+			cmd
+		);
+
+		if (getRaytracedReflectionEnabled())
+		{
+			wi::renderer::Postprocess_RTReflection(
+				rtreflectionResources,
+				*scene,
+				rtSSR,
+				cmd,
+				getRaytracedReflectionsRange(),
+				getReflectionRoughnessCutoff()
+			);
+		}
+		if (getRaytracedDiffuseEnabled())
+		{
+			wi::renderer::Postprocess_RTDiffuse(
+				rtdiffuseResources,
+				*scene,
+				rtRaytracedDiffuse,
+				cmd,
+				getRaytracedDiffuseRange()
+			);
+		}
+		if (wi::renderer::GetVXGIEnabled())
+		{
+			wi::renderer::VXGI_Resolve(
+				vxgiResources,
+				*scene,
+				depthBuffer_Copy,
+				cmd
+			);
+		}
+
+		if (visibility_shading_in_compute)
+		{
+			wi::renderer::Visibility_Shade(
+				visibilityResources,
+				rtMain,
+				cmd
+			);
+		}
+
+		Viewport vp;
+		vp.width = (float)depthBuffer_Main.GetDesc().width;
+		vp.height = (float)depthBuffer_Main.GetDesc().height;
+		device->BindViewports(1, &vp, cmd);
+
+		wi::graphics::Rect scissor = GetScissorInternalResolution();
+		device->BindScissorRects(1, &scissor, cmd);
+
+		if (getOutlineEnabled())
+		{
+			// Cut off outline source from depth:
+			device->EventBegin("Outline Source", cmd);
+
+			if (getMSAASampleCount() > 1)
+			{
+				RenderPassImage rp[] = {
+					RenderPassImage::RenderTarget(&rtOutlineSource_MSAA, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::DONTCARE, ResourceState::RENDERTARGET, ResourceState::RENDERTARGET),
+					RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD),
+					RenderPassImage::Resolve(&rtOutlineSource)
+				};
+				device->RenderPassBegin(rp, arraysize(rp), cmd);
+			}
+			else
+			{
+				RenderPassImage rp[] = {
+					RenderPassImage::RenderTarget(&rtOutlineSource, RenderPassImage::LoadOp::CLEAR),
+					RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD)
+				};
+				device->RenderPassBegin(rp, arraysize(rp), cmd);
+			}
+			wi::image::Params params;
+			params.enableFullScreen();
+			params.stencilRefMode = wi::image::STENCILREFMODE_ENGINE;
+			params.stencilComp = wi::image::STENCILMODE_EQUAL;
+			params.stencilRef = wi::enums::STENCILREF_OUTLINE;
+			wi::image::Draw(&depthBuffer_Copy, params, cmd);
+			params.stencilRef = wi::enums::STENCILREF_CUSTOMSHADER_OUTLINE;
+			wi::image::Draw(&depthBuffer_Copy, params, cmd);
+			device->RenderPassEnd(cmd);
+			device->EventEnd(cmd);
+		}
+
+	}
+	void RenderPath3D::RenderEye_OpaqueFinish(CommandList cmd) const
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		if (getMeshBlendEnabled() && visibility_main.IsMeshBlendVisible())
+		{
+			RenderPassImage rp[4] = {};
+			const uint32_t rp_count = GetOpaqueRenderPassImages(rp, false);
+			rp[0].loadop = RenderPassImage::LoadOp::LOAD;
+			wi::renderer::PostProcess_MeshBlend_Resolve(meshblendResources, rtMain, rp, rp_count, cmd);
+		}
+
+		if (rtAO.IsValid())
+		{
+			device->Barrier(GPUBarrier::Aliasing(&rtAO, &rtParticleDistortion), cmd);
+		}
+
+	}
+	uint32_t RenderPath3D::GetOpaqueRenderPassImages(RenderPassImage* rp, bool stereo_arrays) const
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+		uint32_t rp_count = 0;
+		rp[rp_count++] = RenderPassImage::RenderTarget(
+			stereo_arrays ? &stereo_rtMain_render : &rtMain_render,
+			visibility_shading_in_compute ? RenderPassImage::LoadOp::LOAD : RenderPassImage::LoadOp::CLEAR
+		);
+		if (!stereo_arrays && device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2) && rtShadingRate.IsValid()) // the shading rate texture is different for every eye
+		{
+			rp[rp_count++] = RenderPassImage::ShadingRateSource(&rtShadingRate, ResourceState::UNORDERED_ACCESS, ResourceState::UNORDERED_ACCESS);
+		}
+		rp[rp_count++] = RenderPassImage::DepthStencil(
+			stereo_arrays ? &stereo_depthBuffer_Main : &depthBuffer_Main,
+			RenderPassImage::LoadOp::LOAD,
+			RenderPassImage::StoreOp::STORE,
+			ResourceState::DEPTHSTENCIL,
+			ResourceState::DEPTHSTENCIL,
+			ResourceState::DEPTHSTENCIL
+		);
+		return rp_count;
 	}
 
 }

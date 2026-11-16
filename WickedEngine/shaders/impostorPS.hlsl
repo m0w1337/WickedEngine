@@ -3,8 +3,9 @@
 #include "objectHF.hlsli"
 
 [earlydepthstencil]
-float4 main(VSOut input) : SV_Target
+float4 main(VSOut input STEREO_VIEWID_PARAM) : SV_Target
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	ShaderCamera camera = GetCamera();
 	
 	float3 uv_col = float3(input.uv, input.slice);

@@ -11,8 +11,9 @@ static const float2 BILLBOARD[] = {
 Buffer<float4> vb_pos : register(t0);
 ByteAddressBuffer impostor_data : register(t2);
 
-VSOut main(uint vertexID : SV_VertexID)
+VSOut main(uint vertexID : SV_VertexID STEREO_VIEWID_PARAM)
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	uint impostorID = vertexID / 4u;
 	uint2 data = impostor_data.Load2(impostorID * sizeof(uint2));
 	float3 pos3D = vb_pos[vertexID].xyz;

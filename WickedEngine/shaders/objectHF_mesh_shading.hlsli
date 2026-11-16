@@ -272,6 +272,7 @@ void main(
 		uint vertexID = cluster.vertices[vi];
 
 		VertexInput input;
+		STEREO_VIEWID_FIELD_INIT(input); // stereo render pass is not supported with mesh shaders
 		input.vertexID = vertexID;
 		input.instanceID = amplification_payload.instanceID;
 		

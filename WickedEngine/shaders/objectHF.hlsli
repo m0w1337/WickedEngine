@@ -135,6 +135,7 @@ struct VertexInput
 {
 	uint vertexID : SV_VertexID;
 	uint instanceID : SV_InstanceID;
+	STEREO_VIEWID_FIELD
 	
 #ifdef OBJECTSHADER_USE_PROVOKING_INDEX_BUFFER
 	uint GetPrimitiveID()
@@ -322,6 +323,10 @@ struct PixelInput
 {
 	precise float4 pos : SV_Position;
 
+#ifdef OBJECTSHADER_COMPILE_PS
+	STEREO_VIEWID_FIELD
+#endif // OBJECTSHADER_COMPILE_PS
+
 #ifdef OBJECTSHADER_USE_COLOR
 	half4 color : COLOR;
 #endif // OBJECTSHADER_USE_COLOR
@@ -397,7 +402,7 @@ struct PixelInput
 		pointer.data = poi;
 		return pointer.GetCameraIndex();
 #else
-		return 0;
+		return g_xCameraIndex;
 #endif // OBJECTSHADER_USE_CAMERAINDEX
 	}
 	
@@ -425,6 +430,7 @@ struct PixelInput
 
 PixelInput vertex_to_pixel_export(VertexInput input)
 {
+	STEREO_VIEWID_APPLY(input.stereo_view_id);
 	ShaderMaterial material = GetMaterial();
 
 	VertexSurface surface;
@@ -555,7 +561,8 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #ifdef OBJECTSHADER_USE_CAMERAINDEX
 	const uint cameraIndex = WaveReadLaneFirst(input.GetCameraIndex()); // scalarized camera index assumes that wave from two cameras will not be packed together, this simplifies camera resource indexing significantly
 #else
-	const uint cameraIndex = 0;
+	STEREO_VIEWID_APPLY(input.stereo_view_id);
+	const uint cameraIndex = g_xCameraIndex;
 #endif // OBJECTSHADER_USE_CAMERAINDEX
 
 	ShaderCamera camera = GetCameraIndexed(cameraIndex);

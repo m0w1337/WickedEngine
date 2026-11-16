@@ -3,8 +3,9 @@
 #include "hairparticleHF.hlsli"
 #include "ShaderInterop_HairParticle.h"
 
-void main(VertexToPixel input, out uint coverage : SV_Coverage)
+void main(VertexToPixel input, out uint coverage : SV_Coverage STEREO_VIEWID_PARAM)
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	ShaderMaterial material = HairGetMaterial();
 
 	float alpha = 1;

@@ -8,8 +8,9 @@ struct PushData
 };
 PUSHCONSTANT(push, PushData);
 
-float4 main(float4 pos : SV_Position) : SV_Target
+float4 main(float4 pos : SV_Position STEREO_VIEWID_PARAM) : SV_Target
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	const float3 V = normalize(-GetCamera().screen_to_view(pos));
 	
 	bool highQuality = GetFrame().options & OPTION_BIT_REALISTIC_SKY_HIGH_QUALITY;

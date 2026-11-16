@@ -235,6 +235,12 @@ namespace wi::shadercompiler
 			minshadermodel = std::max(minshadermodel, ShaderModel::SM_6_6);
 		}
 
+		if (input.format == ShaderFormat::SPIRV)
+		{
+			// SV_ViewID is used for stereo rendering (see STEREO_VIEWID in globals.hlsli), it needs at least shader model 6.1
+			minshadermodel = std::max(minshadermodel, ShaderModel::SM_6_1);
+		}
+
 		args.push_back(L"-T");
 		switch (input.stage)
 		{

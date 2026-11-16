@@ -450,6 +450,7 @@ namespace wi::graphics
 		VIDEO_DECODE_H265 = 1 << 21,
 		R9G9B9E5_SHAREDEXP_RENDERABLE = 1 << 22, // indicates supporting R9G9B9E5_SHAREDEXP format for rendering to
 		COPY_BETWEEN_DIFFERENT_IMAGE_ASPECTS_NOT_SUPPORTED = 1 << 23, // indicates that CopyTexture src and dst ImageAspect must match
+		STEREO_RENDERPASS = 1 << 24, // RenderPassFlags::STEREO and CreateTextureSlice() are supported
 		
 		// Compat:
 		GENERIC_SPARSE_TILE_POOL = ALIASING_GENERIC,
@@ -492,6 +493,7 @@ namespace wi::graphics
 		ALLOW_UAV_WRITES = 1 << 0,			// allows UAV writes to happen within render pass
 		SUSPENDING = 1 << 1,				// suspends the renderpass to be continued in the next submitted command list
 		RESUMING = 1 << 2,					// resumes the renderpass that was suspended in the previously submitted command list
+		STEREO = 1 << 3,					// renders into the first two array slices of every attachment at once (multiview), shaders get the index of the eye from SV_ViewID. Requires GraphicsDeviceCapability::STEREO_RENDERPASS
 	};
 
 	enum class VideoDecoderSupportFlags
@@ -1090,6 +1092,7 @@ namespace wi::graphics
 		uint32_t rt_count = 0;
 		Format ds_format = Format::UNKNOWN;
 		uint32_t sample_count = 1;
+		bool stereo = false; // RenderPassFlags::STEREO
 
 		constexpr uint64_t get_hash() const
 		{
@@ -1107,6 +1110,7 @@ namespace wi::graphics
 					uint64_t rt_format_7 : 6;
 					uint64_t ds_format : 6;
 					uint64_t sample_count : 3;
+					uint64_t stereo : 1;
 				} bits;
 				uint64_t value;
 			} hasher = {};
@@ -1121,6 +1125,7 @@ namespace wi::graphics
 			hasher.bits.rt_format_7 = (uint64_t)rt_formats[7];
 			hasher.bits.ds_format = (uint64_t)ds_format;
 			hasher.bits.sample_count = (uint64_t)sample_count;
+			hasher.bits.stereo = stereo ? 1 : 0;
 			return hasher.value;
 		}
 		static constexpr RenderPassInfo from(const RenderPassImage* images, uint32_t image_count)

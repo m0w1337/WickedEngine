@@ -11326,15 +11326,13 @@ void BindCommonResources(CommandList cmd)
 	device->BindConstantBuffer(&buffers[BUFFERTYPE_FRAMECB], CBSLOT_RENDERER_FRAME, cmd);
 }
 
-void BindCameraCB(
+static void FillShaderCamera(
+	ShaderCamera& shadercam,
 	const CameraComponent& camera,
 	const CameraComponent& camera_previous,
-	const CameraComponent& camera_reflection,
-	CommandList cmd
+	const CameraComponent& camera_reflection
 )
 {
-	CameraCB cb = camera_cb_null;
-	ShaderCamera& shadercam = cb.cameras[0];
 
 	shadercam.options = camera.shadercamera_options;
 	if (camera.IsOrtho())
@@ -11445,7 +11443,31 @@ void BindCameraCB(
 	shadercam.texture_vxgi_diffuse_index = camera.texture_vxgi_diffuse_index;
 	shadercam.texture_vxgi_specular_index = camera.texture_vxgi_specular_index;
 	shadercam.texture_reprojected_depth_index = camera.texture_reprojected_depth_index;
-
+}
+void BindCameraCB(
+	const CameraComponent& camera,
+	const CameraComponent& camera_previous,
+	const CameraComponent& camera_reflection,
+	CommandList cmd
+)
+{
+	CameraCB cb = camera_cb_null;
+	FillShaderCamera(cb.cameras[0], camera, camera_previous, camera_reflection);
+	device->BindDynamicConstantBuffer(cb, CBSLOT_RENDERER_CAMERA, cmd);
+}
+void BindCameraCB_Stereo(
+	const CameraComponent& camera_left,
+	const CameraComponent& camera_left_previous,
+	const CameraComponent& camera_left_reflection,
+	const CameraComponent& camera_right,
+	const CameraComponent& camera_right_previous,
+	const CameraComponent& camera_right_reflection,
+	CommandList cmd
+)
+{
+	CameraCB cb = camera_cb_null;
+	FillShaderCamera(cb.cameras[0], camera_left, camera_left_previous, camera_left_reflection);
+	FillShaderCamera(cb.cameras[1], camera_right, camera_right_previous, camera_right_reflection);
 	device->BindDynamicConstantBuffer(cb, CBSLOT_RENDERER_CAMERA, cmd);
 }
 

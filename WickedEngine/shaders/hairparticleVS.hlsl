@@ -10,8 +10,9 @@ struct HairShadowPush
 };
 PUSHCONSTANT(push, HairShadowPush);
 
-VertexToPixel main(uint vid : SV_VertexID, out uint VPIndex : SV_ViewportArrayIndex)
+VertexToPixel main(uint vid : SV_VertexID, out uint VPIndex : SV_ViewportArrayIndex STEREO_VIEWID_PARAM)
 {
+	STEREO_VIEWID_APPLY(stereo_view_id);
 	VPIndex = push.camera_index;
 	ShaderCamera camera = GetCameraIndexed(push.camera_index);
 	ShaderMeshInstance inst = HairGetInstance();

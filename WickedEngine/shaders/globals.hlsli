@@ -583,7 +583,24 @@ StructuredBuffer<SurfelGridCell> bindless_structured_surfelgridcell[] : register
 #define GetFrame() (g_xFrame)
 #define GetScene() (g_xFrame.scene)
 #define GetWeather() (g_xFrame.scene.weather)
-#define GetCamera() (g_xCamera.cameras[0])
+// Stereo rendering: this is the index of the camera that is returned by GetCamera()
+//	In a stereo render pass (RenderPassFlags::STEREO), every draw is rendered for both eyes, and cameras[0] and cameras[1] are the eyes
+//	Shaders that can be used in a stereo render pass must set this from SV_ViewID at their beginning with the STEREO_VIEWID macros
+//	Outside of a stereo render pass SV_ViewID is always 0, so the same shader works for both
+static uint g_xCameraIndex = 0;
+#ifdef __spirv__
+#define STEREO_VIEWID_PARAM , in uint stereo_view_id : SV_ViewID // append to the parameters of the main function
+#define STEREO_VIEWID_FIELD uint stereo_view_id : SV_ViewID; // or put into the input struct of the main function
+#define STEREO_VIEWID_APPLY(view_id) g_xCameraIndex = view_id // call at the beginning of the main function
+#define STEREO_VIEWID_FIELD_INIT(input) input.stereo_view_id = 0 // when the input struct is not coming from the main function
+#else
+// Stereo render pass is only supported with Vulkan currently
+#define STEREO_VIEWID_PARAM
+#define STEREO_VIEWID_FIELD
+#define STEREO_VIEWID_APPLY(view_id)
+#define STEREO_VIEWID_FIELD_INIT(input)
+#endif // __spirv__
+#define GetCamera() (g_xCamera.cameras[g_xCameraIndex])
 #define GetCameraIndexed(camera_index) (g_xCamera.cameras[camera_index])
 #define load_instance(instanceIndex) (bindless_structured_meshinstance[descriptor_index(GetScene().instancebuffer)][instanceIndex])
 #define load_geometry(geometryIndex) (bindless_structured_geometry[descriptor_index(GetScene().geometrybuffer)][geometryIndex])

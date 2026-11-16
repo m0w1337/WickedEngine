@@ -392,6 +392,60 @@ namespace wi
 		void Stop() override;
 		void Start() override;
 
+		// Stereo rendering: two render paths can be linked, then the primary renders the scene for both eyes in a single pass
+		//	- the geometry is rendered only once into texture arrays with RenderPassFlags::STEREO, every eye has one array slice
+		//	- culling, shadow maps and other view independent work is only done once by the primary
+		//	- screen space effects and post processes are still computed separately for the eyes, in the render path of the eye
+		//	- Render() of the secondary does nothing, the primary renders for both
+		//	Both render paths need the same resolution and settings. This is used by RenderPath3D_XR, you don't need to call it in other cases
+		//	If the graphics device doesn't support GraphicsDeviceCapability::STEREO_RENDERPASS, the render paths remain independent
+		//	Not supported in stereo mode currently: occlusion culling, planar reflections, variable rate shading, mesh shaders
+		//	Transparents, particles, volumetric lights and light shafts are still rendered separately for the eyes
+		void SetStereoSecondary(RenderPath3D* secondary);
+		bool IsStereoPrimary() const;
+		bool IsStereoSecondary() const;
+		// The primary uses this camera for culling and shadow cascades in stereo mode, it must contain the view of both eyes:
+		const wi::scene::CameraComponent* stereo_culling_camera = nullptr;
+		// Texture arrays of the primary, the corresponding textures of the eyes are slices of these in stereo mode:
+		wi::graphics::Texture stereo_rtMain_render;
+		wi::graphics::Texture stereo_rtPrimitiveID_render;
+		wi::graphics::Texture stereo_depthBuffer_Main;
+
+	protected:
+		RenderPath3D* stereo_primary = nullptr; // set for the secondary
+		RenderPath3D* stereo_secondary = nullptr; // set for the primary
+		uint32_t stereo_generation = 0; // the secondary must recreate its slices when the primary recreated the texture arrays
+
+		// Calls a function for this render path, and for the stereo secondary if there is one:
+		template<typename Func>
+		void ForEachStereoEye(Func&& func) const
+		{
+			func(*this);
+			if (IsStereoPrimary())
+			{
+				func(*stereo_secondary);
+			}
+		}
+
+		bool IsOcclusionCullingActive() const;
+		// Binds the camera of this render path:
+		void BindCameraCB_Eye(wi::graphics::CommandList cmd) const;
+		// Binds the camera for view independent work (the culling camera in stereo mode):
+		void BindCameraCB_Shared(wi::graphics::CommandList cmd) const;
+		// Binds the camera for geometry passes (both eyes in stereo mode):
+		void BindCameraCB_Geometry(wi::graphics::CommandList cmd) const;
+
+		// The parts of Render() that are executed for every eye:
+		void RenderEye_ComputeEffects(wi::graphics::CommandList cmd) const;
+		void RenderEye_OpaquePrepare(wi::graphics::CommandList cmd) const;
+		void RenderEye_OpaqueFinish(wi::graphics::CommandList cmd) const;
+		void RenderEye_WeatherEffects(wi::graphics::CommandList cmd) const;
+		void RenderEye_OpaqueResolve(wi::graphics::CommandList cmd) const;
+		void RenderEye_Transparents(wi::graphics::CommandList cmd) const;
+		// Render pass images of the opaque color pass, either for this eye or for both eyes (stereo_arrays), returns the count:
+		uint32_t GetOpaqueRenderPassImages(wi::graphics::RenderPassImage* rp, bool stereo_arrays) const;
+
+	public:
 		// Creates screenshot of the render result and replaces background (sky) pixels with transparency
 		//	The stencil parameters let you configure other stencil ops instead of making sky transparent which is default
 		wi::graphics::Texture CreateScreenshotWithAlphaBackground(uint8_t stencilref = wi::enums::STENCILREF_EMPTY, wi::image::STENCILMODE stencilmode = wi::image::STENCILMODE_NOT, wi::image::STENCILREFMODE stencilrefmode = wi::image::STENCILREFMODE_ALL);
