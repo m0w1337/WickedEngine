@@ -216,6 +216,10 @@ if (WICKED_IMGUI_EXAMPLE AND NOT WICKED_USE_SDL3)
     add_subdirectory(Samples/Example_ImGui_Docking)
 endif()
 
+if (WICKED_OPENXR AND NOT WICKED_USE_SDL3)
+    add_subdirectory(Samples/Example_XR)
+endif()
+
 if (WICKED_LINUX_TEMPLATE)
     add_subdirectory(Samples/Template_Linux)
 endif()

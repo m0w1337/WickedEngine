@@ -48,10 +48,14 @@ namespace wi
 		uint32_t renderHeight = 0;
 
 	public:
-		virtual ~Application() = default;
+		virtual ~Application();
 
 		bool is_window_active = true;
 		bool allow_hdr = true;
+		// Request virtual reality rendering with the wi::xr system. It must be set before SetWindow()
+		//	It can also be requested with the "xr" command line argument
+		//	If it's successful, wi::xr::IsInitialized() will return true after SetWindow(), and a RenderPath3D_XR can be used to render to the headset
+		bool xr_requested = false;
 		wi::graphics::SwapChain swapChain;
 		wi::Canvas canvas;
 		wi::platform::window_type window;

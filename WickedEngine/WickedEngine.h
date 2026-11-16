@@ -14,6 +14,8 @@
 #include "wiRenderPath.h"
 #include "wiRenderPath2D.h"
 #include "wiRenderPath3D.h"
+#include "wiRenderPath3D_XR.h"
+#include "wiXR.h"
 #include "wiRenderPath3D_PathTracing.h"
 #include "wiLoadingScreen.h"
 

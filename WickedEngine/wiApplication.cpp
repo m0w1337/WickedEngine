@@ -16,6 +16,7 @@
 #include "wiImage.h"
 #include "wiEventHandler.h"
 #include "wiPlatform.h"
+#include "wiXR.h"
 
 #if defined(PLATFORM_PS5)
 #include "wiGraphicsDevice_PS5.h"
@@ -86,6 +87,12 @@ namespace wi
 		fadeManager.Update(0); // If user calls ActivatePath without fadeout, it will be instant
 	}
 
+	Application::~Application()
+	{
+		// The XR session uses the graphics device, so it must be destroyed first:
+		wi::xr::Shutdown();
+	}
+
 	void Application::Run()
 	{
 		if (!initialized)
@@ -93,6 +100,18 @@ namespace wi
 			// Initialize in a lazy way, so the user application doesn't have to call this explicitly
 			Initialize();
 			initialized = true;
+		}
+
+		// If virtual reality is active, then the frame timing is driven by the headset:
+		//	The XR frame is ended after the command lists were submitted, wherever this function returns
+		wi::xr::BeginFrame();
+		struct XRFrameEnder
+		{
+			~XRFrameEnder() { wi::xr::EndFrame(); }
+		} xr_frame_ender;
+		if (wi::xr::IsExitRequested())
+		{
+			wi::platform::Exit();
 		}
 
 		wi::font::UpdateAtlas(canvas.GetDPIScaling());
@@ -255,7 +274,7 @@ namespace wi
 			}
 		}
 
-		if (!is_window_active && !alwaysactive)
+		if (!is_window_active && !alwaysactive && !wi::xr::IsSessionRunning())
 		{
 			// If the application is not active, disable Update loops:
 			deltaTimeAccumulator = 0;
@@ -270,7 +289,7 @@ namespace wi
 		deltaTime = float(timer.record_elapsed_seconds());
 
 		const float target_deltaTime = 1.0f / targetFrameRate;
-		if (framerate_lock && deltaTime < target_deltaTime)
+		if (framerate_lock && deltaTime < target_deltaTime && !wi::xr::IsSessionRunning())
 		{
 			wi::helper::QuickSleep((target_deltaTime - deltaTime) * 1000);
 			deltaTime += float(timer.record_elapsed_seconds());
@@ -770,6 +789,24 @@ namespace wi
 			bool use_dx12 = wi::arguments::HasArgument("dx12");
 			bool use_vulkan = wi::arguments::HasArgument("vulkan");
 
+#ifdef WICKEDENGINE_BUILD_VULKAN
+			const VulkanCreationHooks* vulkan_hooks = nullptr;
+			if (xr_requested || wi::arguments::HasArgument("xr"))
+			{
+				// Virtual reality is only supported with Vulkan, the XR runtime takes part in the creation of the graphics device:
+				if (wi::xr::Initialize())
+				{
+					vulkan_hooks = wi::xr::GetVulkanCreationHooks();
+					use_vulkan = true;
+					use_dx12 = false;
+				}
+				else
+				{
+					wi::backlog::post("Virtual reality was requested, but it could not be initialized!", wi::backlog::LogLevel::Warning);
+				}
+			}
+#endif // WICKEDENGINE_BUILD_VULKAN
+
 #ifndef WICKEDENGINE_BUILD_DX12
 			if (use_dx12) {
 				wi::helper::messageBox("The engine was built without DX12 support!", "Error");
@@ -800,7 +837,12 @@ namespace wi
 			{
 #ifdef WICKEDENGINE_BUILD_VULKAN
 				wi::renderer::SetShaderPath(wi::renderer::GetShaderPath() + "spirv/");
-				graphicsDevice = std::make_unique<GraphicsDevice_Vulkan>(window, validationMode, preference);
+				graphicsDevice = std::make_unique<GraphicsDevice_Vulkan>(window, validationMode, preference, vulkan_hooks);
+				if (vulkan_hooks != nullptr && !wi::xr::CreateSession(graphicsDevice.get()))
+				{
+					wi::backlog::post("Virtual reality session could not be created!", wi::backlog::LogLevel::Warning);
+					wi::xr::Shutdown();
+				}
 #endif
 			}
 			else if (use_dx12)
@@ -846,6 +888,11 @@ namespace wi
 		desc.width = canvas.GetPhysicalWidth();
 		desc.height = canvas.GetPhysicalHeight();
 		desc.allow_hdr = allow_hdr;
+		if (wi::xr::IsInitialized())
+		{
+			// The desktop window must not limit the frame rate of the headset:
+			desc.vsync = false;
+		}
 		bool success = graphicsDevice->CreateSwapChain(&desc, window, &swapChain);
 		assert(success);
 
