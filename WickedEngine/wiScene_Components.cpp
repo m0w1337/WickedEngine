@@ -397,6 +397,11 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_SPARKLE;
 		}
+		if (IsEdgeBevel())
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_EDGE_BEVEL;
+			material.edge_bevel = edge_bevel;
+		}
 
 		material.options_stencilref |= wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef) << 24u;
 

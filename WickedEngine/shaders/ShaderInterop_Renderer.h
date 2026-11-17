@@ -94,6 +94,7 @@ enum SHADERMATERIAL_OPTIONS
 	SHADERMATERIAL_OPTION_BIT_CAPSULE_SHADOW_DISABLED = 1 << 11,
 	SHADERMATERIAL_OPTION_BIT_PARALLAX_EDGE_FADE = 1 << 12,
 	SHADERMATERIAL_OPTION_BIT_SPARKLE = 1 << 13,
+	SHADERMATERIAL_OPTION_BIT_EDGE_BEVEL = 1 << 14,
 };
 
 #ifndef __cplusplus
@@ -415,7 +416,8 @@ struct alignas(32) ShaderMaterial
 
 	ShaderTextureSlot textures[TEXTURESLOT_COUNT];
 
-	float4 padding;
+	float edge_bevel; // radius of the rounded edges in meters, see MaterialComponent::SetEdgeBevel()
+	float3 padding;
 
 	inline void init()
 	{
@@ -442,7 +444,8 @@ struct alignas(32) ShaderMaterial
 		shaderType_meshblend = 0;
 
 		userdata = uint4(0, 0, 0, 0);
-		padding = float4(0, 0, 0, 0);
+		edge_bevel = 0;
+		padding = float3(0, 0, 0);
 
 		for (int i = 0; i < TEXTURESLOT_COUNT; ++i)
 		{
@@ -504,6 +507,8 @@ struct alignas(32) ShaderMaterial
 	inline bool IsCapsuleShadowDisabled() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_CAPSULE_SHADOW_DISABLED; }
 	inline bool IsParallaxEdgeFade() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_PARALLAX_EDGE_FADE; }
 	inline bool IsSparkle() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_SPARKLE; }
+	inline bool IsEdgeBevel() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_EDGE_BEVEL; }
+	inline float GetEdgeBevel() { return edge_bevel; }
 	inline bool IsUnlit() { return GetShaderType() == SHADERTYPE_UNLIT; }
 
 #endif // __cplusplus

@@ -530,6 +530,148 @@ PixelInput main(VertexInput input)
 //	WATER				-	include specialized water shader code
 //  ... and other material type specific defines
 
+// The second uv set can hold the distances in meters to the edges of a flat surface along the two directions of the face,
+//	see MaterialComponent::SetParallaxEdgeFade() and SetEdgeBevel(). Inner edges are marked with an offset:
+static const float EDGE_BEVEL_CONCAVE_OFFSET = 32;
+inline float2 IsEdgeConcave(float2 encoded)
+{
+	return step(EDGE_BEVEL_CONCAVE_OFFSET * 0.75, encoded);
+}
+inline float2 DecodeEdgeDistance(float2 encoded)
+{
+	return encoded - IsEdgeConcave(encoded) * EDGE_BEVEL_CONCAVE_OFFSET;
+}
+
+// Rounded outer edges of flat surfaces (MaterialComponent::SetEdgeBevel()), without changing the mesh:
+//	Near an outer edge the view ray is intersected with the rounding, a quarter circle that replaces the sharp edge.
+//	Where the ray hits it, the normal of the rounding is used. Where the ray passes the rounding, it would have missed the
+//	block, so the prepass removes those samples from the coverage and the outline of the block gets round too.
+//	Two edges of a corner are rounded independently. The directions to the edges come from the screen derivatives,
+//	so the faces don't have to be aligned to any axis.
+struct EdgeRounding
+{
+	float3 N;		// the normal on the rounding
+	uint coverage;	// the samples of the pixel whose rays hit the block
+};
+
+// One edge, in the plane perpendicular to it: x points from the pixel towards the edge, y along the normal of the face.
+//	The pixel is at (0, 0), the edge at (d, 0) and the center of the rounding with radius r at c = (d - r, -r).
+//	The ray goes from the pixel in direction dir into the block. Returns true if it hits the rounded block,
+//	normal is the normal of the rounding where the ray hits it, or where it passes closest to it.
+bool RoundedEdgeHit(float d, float r, float2 dir, out float2 normal)
+{
+	normal = float2(0, 1);
+	if (d >= r)
+		return true; // the pixel is on the flat part of the face
+	const float2 c = float2(d - r, -r);
+	const float a = max(dot(dir, dir), 1e-12);
+	const float b = -2 * dot(dir, c);
+	const float k = dot(c, c) - r * r;
+	const float discriminant = b * b - 4 * a * k;
+	if (discriminant >= 0)
+	{
+		const float s = (-b - sqrt(discriminant)) / (2 * a);
+		const float2 hit = dir * s;
+		if (s >= 0 && hit.x <= d)
+		{
+			normal = (hit - c) / r;
+			return true;
+		}
+	}
+	// The ray leaves through the side of the block before it reaches the rounding:
+	normal = normalize(dir * max(dot(c, dir) / a, 0) - c);
+	return false;
+}
+
+// The standard sample positions of multisampling, in pixels from the center (y down):
+float2 GetStandardSamplePosition(uint sample_count, uint index)
+{
+	static const float2 positions2[2] = { float2(4, 4), float2(-4, -4) };
+	static const float2 positions4[4] = { float2(-2, -6), float2(6, -2), float2(-6, 2), float2(2, 6) };
+	static const float2 positions8[8] = { float2(1, -3), float2(-1, 3), float2(5, 1), float2(-3, -5), float2(-5, 5), float2(-7, -1), float2(3, 7), float2(7, -7) };
+	switch (sample_count)
+	{
+	case 2:
+		return positions2[index] / 16.0;
+	case 4:
+		return positions4[index] / 16.0;
+	case 8:
+		return positions8[index] / 16.0;
+	default:
+		return 0;
+	}
+}
+
+// N: the normal of the flat face towards the viewer, P: the position on the face, V: the direction from P to the viewer
+EdgeRounding RoundEdges(float3 N, float3 P, float3 V, float2 encoded, float radius, uint sample_count)
+{
+	EdgeRounding result;
+	result.N = N;
+	result.coverage = ~0u;
+
+	const float2 distance = DecodeEdgeDistance(encoded);
+	const float3 P_dx = ddx(P);
+	const float3 P_dy = ddy(P);
+	const float2 distance_dx = ddx(distance);
+	const float2 distance_dy = ddy(distance);
+
+	// Only outer edges are rounded, and only where the rounding is at least a pixel wide. Where it gets thinner than a
+	//	few pixels the normal fades back to the face, so that the highlights don't flicker:
+	const float2 meters_per_pixel = max(sqrt(distance_dx * distance_dx + distance_dy * distance_dy), 1e-6);
+	const float2 pixels = radius / meters_per_pixel;
+	const float2 active = (1 - IsEdgeConcave(encoded)) * step(1, pixels) * step(distance, radius);
+	[branch]
+	if (!any(active))
+		return result;
+
+	// The gradients of the distances along the surface point away from the edges:
+	const float3 r1 = cross(P_dy, N);
+	const float3 r2 = cross(N, P_dx);
+	const float det = dot(P_dx, r1);
+	if (!(abs(det) > 1e-20))
+		return result;
+	const float3 gradient_u = (distance_dx.x * r1 + distance_dy.x * r2) / det;
+	const float3 gradient_v = (distance_dx.y * r1 + distance_dy.y * r2) / det;
+	const float3 to_edge_u = -gradient_u / max(length(gradient_u), 1e-6);
+	const float3 to_edge_v = -gradient_v / max(length(gradient_v), 1e-6);
+
+	const float3 ray = -V;
+	const float2 dir_u = float2(dot(ray, to_edge_u), dot(ray, N));
+	const float2 dir_v = float2(dot(ray, to_edge_v), dot(ray, N));
+
+	// Normal at the pixel center, the slopes of both roundings add up:
+	float2 normal_u = float2(0, 1);
+	float2 normal_v = float2(0, 1);
+	if (active.x > 0)
+	{
+		RoundedEdgeHit(distance.x, radius, dir_u, normal_u);
+	}
+	if (active.y > 0)
+	{
+		RoundedEdgeHit(distance.y, radius, dir_v, normal_v);
+	}
+	const float2 fade = saturate(pixels * 0.5 - 0.5);
+	const float2 slope = float2(normal_u.x / max(normal_u.y, 0.05), normal_v.x / max(normal_v.y, 0.05)) * fade;
+	result.N = normalize(N + to_edge_u * slope.x + to_edge_v * slope.y);
+
+	// The outline, for every sample of the pixel:
+	result.coverage = 0;
+	const uint count = max(1u, sample_count);
+	for (uint i = 0; i < count; ++i)
+	{
+		const float2 offset = GetStandardSamplePosition(count, i);
+		const float2 sample_distance = distance + distance_dx * offset.x + distance_dy * offset.y;
+		float2 unused;
+		const bool hit_u = active.x == 0 || RoundedEdgeHit(sample_distance.x, radius, dir_u, unused);
+		const bool hit_v = active.y == 0 || RoundedEdgeHit(sample_distance.y, radius, dir_v, unused);
+		if (hit_u && hit_v)
+		{
+			result.coverage |= 1u << i;
+		}
+	}
+	return result;
+}
+
 #if defined(__PSSL__) && defined(PREPASS) && !defined(DEPTHONLY)
 #pragma PSSL_target_output_format (target 0 FMT_32_R)
 #endif // __PSSL__ && PREPASS
@@ -579,6 +721,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	
 #ifdef OBJECTSHADER_USE_UVSETS
 	float4 uvsets = input.GetUVSets();
+	const float2 edge_encoded = uvsets.zw; // before parallax mapping shifts the uv sets
 #endif // OBJECTSHADER_USE_UVSETS
 
 #ifdef TILEDFORWARD
@@ -602,6 +745,25 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	surface.N = normalize(input.nor);
 	surface.facenormal = surface.N;
 #endif // OBJECTSHADER_USE_NORMAL
+
+#ifdef OBJECTSHADER_USE_UVSETS
+	// Rounded edges: the prepass cuts the outline with the coverage, the other passes use the normal.
+	//	Both compute the same, so that the main pass draws exactly where the prepass left its depth:
+	EdgeRounding edge_rounding;
+	edge_rounding.N = 0;
+	edge_rounding.coverage = ~0u;
+	[branch]
+	if (material.IsEdgeBevel())
+	{
+#ifdef OBJECTSHADER_USE_NORMAL
+		const float3 face_normal = surface.N;
+#else
+		float3 face_normal = normalize(cross(ddx(surface.P), ddy(surface.P)));
+		face_normal = dot(face_normal, surface.V) < 0 ? -face_normal : face_normal;
+#endif // OBJECTSHADER_USE_NORMAL
+		edge_rounding = RoundEdges(face_normal, surface.P, surface.V, edge_encoded, material.GetEdgeBevel(), camera.sample_count);
+	}
+#endif // OBJECTSHADER_USE_UVSETS
 
 #ifdef OBJECTSHADER_USE_COMMON
 	surface.occlusion = input.ao_wet.x;
@@ -630,7 +792,8 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 			// The second uv set holds the distances to the edges of the flat surface instead of texture coordinates.
 			//	The texture is not shifted at an edge, because the outline of the mesh can't follow it:
 			static const half PARALLAX_EDGE_FADE_DISTANCE = 0.12;
-			parallax_strength *= smoothstep(0, 1, saturate(min(uvsets.z, uvsets.w) / PARALLAX_EDGE_FADE_DISTANCE));
+			const float2 edge_distance = DecodeEdgeDistance(edge_encoded);
+			parallax_strength *= smoothstep(0, 1, saturate(min(edge_distance.x, edge_distance.y) / PARALLAX_EDGE_FADE_DISTANCE));
 		}
 
 		ParallaxOcclusionMapping_Impl(
@@ -805,6 +968,19 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 
 
 #ifndef WATER
+#if defined(OBJECTSHADER_USE_UVSETS) && defined(OBJECTSHADER_USE_NORMAL)
+	[branch]
+	if (material.IsEdgeBevel())
+	{
+		surface.N = edge_rounding.N;
+#ifdef OBJECTSHADER_USE_TANGENT
+		// The normal map is applied on the rounded surface:
+		TBN[2] = surface.N;
+		TBN[0] -= surface.N * dot(TBN[0], surface.N);
+		TBN[1] -= surface.N * dot(TBN[1], surface.N);
+#endif // OBJECTSHADER_USE_TANGENT
+	}
+#endif // OBJECTSHADER_USE_UVSETS && OBJECTSHADER_USE_NORMAL
 #ifdef OBJECTSHADER_USE_TANGENT
 	[branch]
 	if (any(surface.bumpColor))
@@ -1150,6 +1326,9 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 
 #ifndef DISABLE_ALPHATEST
 	coverage = AlphaToCoverage(color.a, alphatest, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
+#ifdef OBJECTSHADER_USE_UVSETS
+	coverage &= edge_rounding.coverage;
+#endif // OBJECTSHADER_USE_UVSETS
 #endif // DISABLE_ALPHATEST
 
 #ifdef ENVMAPRENDERING
