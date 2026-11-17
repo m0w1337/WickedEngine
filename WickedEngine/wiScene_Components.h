@@ -139,6 +139,7 @@ namespace wi::scene
 			DISABLE_CAPSULE_SHADOW = 1 << 17,
 			INTERNAL = 1 << 18, // used only for internal purposes
 			PARALLAX_EDGE_FADE = 1 << 19, // parallax occlusion mapping fades out towards the edges, see SetParallaxEdgeFade()
+			SPARKLE = 1 << 20, // the emissive map holds glitter points, see SetSparkle()
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -385,6 +386,12 @@ namespace wi::scene
 		//	PARALLAX_EDGE_FADE_DISTANCE (shader constant) and none at the edge.
 		constexpr bool IsParallaxEdgeFade() const { return _flags & PARALLAX_EDGE_FADE; }
 		constexpr void SetParallaxEdgeFade(bool value = true) { SetDirty(); set_flag(_flags, PARALLAX_EDGE_FADE, value); }
+
+		// Glitter, for example for gems and gold in rock: the emissive map holds single sparkle points (rgb: color,
+		//	alpha: a random value per point). Every point flashes for a moment, depending on the view direction and the time,
+		//	so the glitter moves when the viewer moves. The emissive color and strength of the material scale it.
+		constexpr bool IsSparkle() const { return _flags & SPARKLE; }
+		constexpr void SetSparkle(bool value = true) { SetDirty(); set_flag(_flags, SPARKLE, value); }
 
 		constexpr void SetMeshBlend(float value) { mesh_blend = value; SetDirty(); }
 		constexpr float GetMeshBlend() const { return mesh_blend; }

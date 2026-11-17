@@ -712,7 +712,14 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	if (any(surface.emissiveColor) && material.textures[EMISSIVEMAP].IsValid())
 	{
 		half4 emissiveMap = material.textures[EMISSIVEMAP].Sample(sampler_objectshader, uvsets);
-		surface.emissiveColor *= emissiveMap.rgb * emissiveMap.a;
+		if (material.IsSparkle())
+		{
+			surface.emissiveColor *= SparkleEmissive(emissiveMap, surface.V);
+		}
+		else
+		{
+			surface.emissiveColor *= emissiveMap.rgb * emissiveMap.a;
+		}
 	}
 #endif // OBJECTSHADER_USE_UVSETS
 

@@ -1046,6 +1046,18 @@ inline uint2 GetInternalResolution() { return GetCamera().internal_resolution; }
 inline float GetDeltaTime() { return GetFrame().delta_time; }
 inline float GetTime() { return GetFrame().time; }
 inline float GetTimePrev() { return GetFrame().time_previous; }
+
+// Glitter of a sparkle material (MaterialComponent::SetSparkle()): the emissive map holds single points, its alpha is a
+//	random value per point. Every point has its own direction and flashes briefly when the view direction or the time
+//	passes its phase, so the glitter moves with the head of the viewer and twinkles slowly when nothing moves.
+inline half3 SparkleEmissive(half4 emissiveMap, float3 V)
+{
+	const float random = emissiveMap.a;
+	const float3 axis = normalize(frac(random * float3(13.17, 71.31, 37.73)) * 2 - 1 + 0.001);
+	const float wave = sin(dot(V, axis) * 60 + random * 6.2831853 * 7 + GetTime() * (1.5 + random * 2));
+	const float flash = pow(saturate(wave), 30);
+	return emissiveMap.rgb * (half)flash * (half)step(0.002, random);
+}
 inline uint GetFrameCount() { return GetFrame().frame_count; }
 inline min16uint2 GetTemporalAASampleRotation() { return uint2(GetFrame().temporalaa_samplerotation & 0xFF, (GetFrame().temporalaa_samplerotation >> 8u) & 0xFF); }
 inline half GetCapsuleShadowFade() { return f16tof32(GetFrame().capsuleshadow_fade_angle); }

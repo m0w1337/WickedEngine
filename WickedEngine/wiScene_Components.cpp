@@ -393,6 +393,10 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_PARALLAX_EDGE_FADE;
 		}
+		if (IsSparkle())
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_SPARKLE;
+		}
 
 		material.options_stencilref |= wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef) << 24u;
 

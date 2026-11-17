@@ -93,6 +93,7 @@ enum SHADERMATERIAL_OPTIONS
 	SHADERMATERIAL_OPTION_BIT_USE_VERTEXAO = 1 << 10,
 	SHADERMATERIAL_OPTION_BIT_CAPSULE_SHADOW_DISABLED = 1 << 11,
 	SHADERMATERIAL_OPTION_BIT_PARALLAX_EDGE_FADE = 1 << 12,
+	SHADERMATERIAL_OPTION_BIT_SPARKLE = 1 << 13,
 };
 
 #ifndef __cplusplus
@@ -502,6 +503,7 @@ struct alignas(32) ShaderMaterial
 	inline bool IsDoubleSided() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_DOUBLE_SIDED; }
 	inline bool IsCapsuleShadowDisabled() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_CAPSULE_SHADOW_DISABLED; }
 	inline bool IsParallaxEdgeFade() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_PARALLAX_EDGE_FADE; }
+	inline bool IsSparkle() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_SPARKLE; }
 	inline bool IsUnlit() { return GetShaderType() == SHADERTYPE_UNLIT; }
 
 #endif // __cplusplus

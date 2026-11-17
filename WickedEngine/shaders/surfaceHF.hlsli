@@ -703,7 +703,14 @@ struct Surface
 #endif // SURFACE_LOAD_MIPCONE
 				half4 emissiveMap = material.textures[EMISSIVEMAP].SampleLevel(sam, uvsets, lod);
 #endif // SURFACE_LOAD_QUAD_DERIVATIVES
-				emissiveColor *= emissiveMap.rgb * emissiveMap.a;
+				if (material.IsSparkle())
+				{
+					emissiveColor *= SparkleEmissive(emissiveMap, V);
+				}
+				else
+				{
+					emissiveColor *= emissiveMap.rgb * emissiveMap.a;
+				}
 			}
 		}
 
