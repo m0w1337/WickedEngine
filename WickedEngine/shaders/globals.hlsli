@@ -2412,9 +2412,13 @@ inline void ParallaxOcclusionMapping_Impl(
 		iter++;
 	}
 	float2 prevTCoords = currentTextureCoords + dtex;
-	half nextH = heightFromTexture - curLayerHeight;
-	half prevH = 1 - tex.SampleGrad(sam, prevTCoords, uv_dx, uv_dy).r - curLayerHeight + NUM_PARALLAX_OCCLUSION_STEPS_RCP;
-	half weight = nextH / (nextH - prevH);
+	// The interpolation between the last two steps is done in full precision: where the height changes steeply, nextH and prevH
+	//	are almost the same and their difference is zero in half precision, then the weight became infinite or NaN and the
+	//	texture coordinates invalid, which showed as black specks on the surface.
+	float nextH = float(heightFromTexture) - float(curLayerHeight);
+	float prevH = 1 - float(tex.SampleGrad(sam, prevTCoords, uv_dx, uv_dy).r) - float(curLayerHeight) + float(NUM_PARALLAX_OCCLUSION_STEPS_RCP);
+	const float denominator = nextH - prevH;
+	float weight = abs(denominator) > 1e-5 ? saturate(nextH / denominator) : 0;
 	float2 finalTextureCoords = mad(prevTCoords, weight, currentTextureCoords * (1.0 - weight));
 	float2 difference = finalTextureCoords - uv;
 	uvsets += difference.xyxy;
