@@ -3276,10 +3276,7 @@ void RenderMeshes(
 				continue;
 			}
 
-			// Rounded edges cut the outline of the surface in the prepass, like an alpha test, this needs the uv sets there.
-			//	The main pass draws only where the prepass left its depth, so it doesn't need to cut it again:
-			const bool edgeBevelCut = material.IsEdgeBevel() && (renderPass == RENDERPASS_PREPASS || renderPass == RENDERPASS_PREPASS_DEPTHONLY);
-			const bool alphatestRequested = material.IsAlphaTestEnabled() || forceAlphaTestForDithering || edgeBevelCut;
+			const bool alphatestRequested = material.IsAlphaTestEnabled() || forceAlphaTestForDithering;
 
 			const PipelineState* pso = nullptr;
 			const PipelineState* pso_backside = nullptr; // only when separate backside rendering is required (transparent doublesided)

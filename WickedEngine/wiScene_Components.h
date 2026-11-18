@@ -394,15 +394,13 @@ namespace wi::scene
 		constexpr bool IsSparkle() const { return _flags & SPARKLE; }
 		constexpr void SetSparkle(bool value = true) { SetDirty(); set_flag(_flags, SPARKLE, value); }
 
-		// Rounds the outer edges of flat surfaces with a quarter circle, without changing the mesh: the pixel shader intersects
-		//	the view ray with the rounding and uses its normal, and the prepass cuts away the samples whose rays pass it, so the
-		//	outline gets round too (shadows stay sharp). Like SetParallaxEdgeFade(), this uses the second uv set as the distances
-		//	to the edges of the surface. A distance at or above EDGE_BEVEL_CONCAVE_OFFSET (shader constant, 32) belongs to an
-		//	inner edge, which stays sharp. The radius is in meters, 0 disables it. Where the rounding is thinner than a pixel
-		//	it is left away, and below a few pixels its normal fades out, so that it doesn't flicker.
+		// Rounds the outer edges of flat surfaces by bending the normal, the outline of the mesh stays sharp.
+		//	Like SetParallaxEdgeFade(), this uses the second uv set as the distances to the edges of the surface. A distance at
+		//	or above EDGE_BEVEL_CONCAVE_OFFSET (shader constant, 32) belongs to an inner edge, which stays sharp. The width is
+		//	in meters, 0 disables it. The rounding fades out where it gets thinner than a few pixels, so that it doesn't flicker.
 		constexpr bool IsEdgeBevel() const { return edge_bevel > 0; }
 		constexpr float GetEdgeBevel() const { return edge_bevel; }
-		constexpr void SetEdgeBevel(float radius) { SetDirty(); edge_bevel = radius; }
+		constexpr void SetEdgeBevel(float width) { SetDirty(); edge_bevel = width; }
 
 		constexpr void SetMeshBlend(float value) { mesh_blend = value; SetDirty(); }
 		constexpr float GetMeshBlend() const { return mesh_blend; }

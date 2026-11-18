@@ -416,7 +416,7 @@ struct alignas(32) ShaderMaterial
 
 	ShaderTextureSlot textures[TEXTURESLOT_COUNT];
 
-	float edge_bevel; // radius of the rounded edges in meters, see MaterialComponent::SetEdgeBevel()
+	float edge_bevel; // width of the rounding at the edges in meters, see MaterialComponent::SetEdgeBevel()
 	float3 padding;
 
 	inline void init()
