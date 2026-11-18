@@ -1220,6 +1220,11 @@ namespace wi::scene
 		uint8_t userStencilRef = 0;
 		wi::ecs::Entity meshID = wi::ecs::INVALID_ENTITY;
 		uint32_t cascadeMask = 0; // which shadow cascades to skip from lowest detail to highest detail (0: skip none, 1: skip first, etc...)
+		// Shadow cascades counted from the highest detail: the object casts shadows from cascade cascadeFirst up to before
+		//	cascadeEnd. With two objects for the same thing, a detailed one can cast the near shadows and a simple one the far.
+		//	Not serialized.
+		uint32_t cascadeFirst = 0;
+		uint32_t cascadeEnd = ~0u;
 		uint32_t filterMask = 0;
 		XMFLOAT4 color = XMFLOAT4(1, 1, 1, 1);
 		XMFLOAT4 emissiveColor = XMFLOAT4(1, 1, 1, 1);

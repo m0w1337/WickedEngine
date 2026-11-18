@@ -6889,7 +6889,7 @@ void DrawShadowmaps(
 							const SHCAM& shcam = shcams[view];
 							const uint32_t cascade = cascade_indices[view];
 							const uint32_t cascade_count = cascade_counts[view];
-							if ((!cbcam.IsOrtho() || cascade < (cascade_count - object.cascadeMask)) && shcam.frustum.CheckBoxFast(aabb))
+							if ((!cbcam.IsOrtho() || (cascade < (cascade_count - object.cascadeMask) && cascade >= object.cascadeFirst && cascade < object.cascadeEnd)) && shcam.frustum.CheckBoxFast(aabb))
 							{
 								camera_mask |= 1 << view;
 								if (shadow_lod_override)
