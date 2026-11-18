@@ -83,6 +83,7 @@ namespace wi::scene
 		wi::vector<wi::primitive::AABB> parallel_bounds;
 		WeatherComponent weather;
 		uint32_t cloudmap_resolution = 256;
+		uint32_t cloudmap_update_interval = 1; // the cloud map (sky capture of the volumetric clouds) is updated in every n-th frame
 		wi::graphics::Texture cloudmap;
 		wi::graphics::GPUBuffer cloudmap_variance;
 		mutable int cloudmap_frame = 0;

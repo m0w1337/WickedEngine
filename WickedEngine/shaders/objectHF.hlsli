@@ -684,6 +684,11 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 			const float2 edge_distance = DecodeEdgeDistance(edge_encoded);
 			parallax_strength *= smoothstep(0, 1, saturate(min(edge_distance.x, edge_distance.y) / PARALLAX_EDGE_FADE_DISTANCE));
 		}
+		// Far away the relief is smaller than a pixel, there the steps through the height map are left out (a large part
+		//	of the cost of the parallax mapping in a big resolution, like the eyes of a headset):
+		static const float PARALLAX_FADE_START = 10;
+		static const float PARALLAX_FADE_END = 16;
+		parallax_strength *= (half)saturate((PARALLAX_FADE_END - dist) / (PARALLAX_FADE_END - PARALLAX_FADE_START));
 
 		ParallaxOcclusionMapping_Impl(
 			uvsets,

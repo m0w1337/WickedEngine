@@ -5703,7 +5703,7 @@ void UpdateRenderDataAsync(
 		}
 	}
 
-	if (vis.scene->weather.IsVolumetricClouds())
+	if (vis.scene->weather.IsVolumetricClouds() && (vis.scene->cloudmap_frame == 0 || device->GetFrameCount() % std::max(1u, vis.scene->cloudmap_update_interval) == 0))
 	{
 		VolumetricClouds_Capture(*vis.scene, cmd);
 	}
@@ -9695,7 +9695,14 @@ void RefreshEnvProbes(const Visibility& vis, CommandList cmd)
 		probe_aabb.layerMask = 0;
 		if (probe.texture.IsValid())
 		{
-			render_probe(probe, probe_aabb);
+			// The update interval of the probe applies to the global probe too:
+			probe.realtime_time_accumulator += vis.scene->dt;
+			if (probe.ShouldRenderThisFrame())
+			{
+				probe.first_render = false;
+				probe.realtime_time_accumulator = 0.0f;
+				render_probe(probe, probe_aabb);
+			}
 		}
 	}
 	else
