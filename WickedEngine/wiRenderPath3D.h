@@ -399,9 +399,28 @@ namespace wi
 		//	- Render() of the secondary does nothing, the primary renders for both
 		//	Both render paths need the same resolution and settings. This is used by RenderPath3D_XR, you don't need to call it in other cases
 		//	If the graphics device doesn't support GraphicsDeviceCapability::STEREO_RENDERPASS, the render paths remain independent
-		//	Not supported in stereo mode currently: occlusion culling, planar reflections, variable rate shading, mesh shaders
+		//	Not supported in stereo mode currently: occlusion culling, planar reflections, variable rate shading classification
+		//	(but see setFoveation), mesh shaders
 		//	Transparents, particles, volumetric lights and light shafts are still rendered separately for the eyes
 		void SetStereoSecondary(RenderPath3D* secondary);
+
+		// Foveated shading in stereo mode (needs GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2): the opaque pass runs
+		//	the pixel shaders less often in the outer parts of the eyes, where the lenses of a headset blur the image anyway.
+		//	Depth and coverage stay per pixel (and per sample with MSAA), only the shading is shared by neighboring pixels.
+		//	The middle of an eye is where it looks straight ahead, taken from its projection, so the asymmetric views of a
+		//	headset are handled. The radii are distances from the middle in normalized device coordinates (the edges of the
+		//	image are 1 from the center of the image): inside inner_radius every pixel is shaded, up to outer_radius one
+		//	shading for 2x2 pixels, beyond that one for 4x4 pixels. Only the primary of the stereo pair uses it.
+		struct Foveation
+		{
+			bool enabled = false;
+			float inner_radius = 0.5f;
+			float outer_radius = 1.0f;
+		};
+		void setFoveation(const Foveation& value) { foveation = value; }
+		const Foveation& getFoveation() const { return foveation; }
+		// The shading rate image of both eyes, when foveated shading is active (array slice 0: primary eye):
+		const wi::graphics::Texture& getFoveationShadingRate() const { return stereo_rtShadingRate; }
 		bool IsStereoPrimary() const;
 		bool IsStereoSecondary() const;
 		// The primary uses this camera for culling and shadow cascades in stereo mode, it must contain the view of both eyes:
@@ -415,6 +434,13 @@ namespace wi
 		RenderPath3D* stereo_primary = nullptr; // set for the secondary
 		RenderPath3D* stereo_secondary = nullptr; // set for the primary
 		uint32_t stereo_generation = 0; // the secondary must recreate its slices when the primary recreated the texture arrays
+
+		Foveation foveation;
+		wi::graphics::Texture stereo_rtShadingRate; // 2 array slices, one for every eye, used by the stereo opaque pass
+		Foveation foveation_built; // the settings and eye centers that stereo_rtShadingRate was made for
+		XMFLOAT4 foveation_centers = {};
+		// Makes stereo_rtShadingRate if foveated shading is active and something changed, otherwise releases it:
+		void UpdateFoveation();
 
 		// Calls a function for this render path, and for the stereo secondary if there is one:
 		template<typename Func>

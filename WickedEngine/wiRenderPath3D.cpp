@@ -593,6 +593,8 @@ namespace wi
 
 		XMUINT2 internalResolution = GetInternalResolution();
 
+		UpdateFoveation();
+
 		if (IsStereoSecondary())
 		{
 			// The frame data is shared between the eyes:
@@ -3595,6 +3597,86 @@ namespace wi
 		}
 
 	}
+	void RenderPath3D::UpdateFoveation()
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+		if (!foveation.enabled || !IsStereoPrimary() || camera == nullptr || stereo_secondary->camera == nullptr ||
+			!device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2))
+		{
+			stereo_rtShadingRate = {};
+			return;
+		}
+		const XMUINT2 resolution = GetInternalResolution();
+		const uint32_t tile = std::max(1u, device->GetVariableRateShadingTileSize());
+		const uint32_t width = (resolution.x + tile - 1) / tile;
+		const uint32_t height = (resolution.y + tile - 1) / tile;
+
+		// Where an eye looks straight ahead, in normalized device coordinates: the projection of a point on the view axis.
+		//	Rounded, so that small changes (like jitter) don't make the image again:
+		XMFLOAT4 centers;
+		float* center = &centers.x;
+		for (const wi::scene::CameraComponent* eye : { camera, stereo_secondary->camera })
+		{
+			const XMFLOAT4X4& P = eye->Projection;
+			const float w = P._34 + P._44;
+			const float x = std::abs(w) > 1e-6f ? (P._31 + P._41) / w : 0.0f;
+			const float y = std::abs(w) > 1e-6f ? (P._32 + P._42) / w : 0.0f;
+			*center++ = std::round(x * 50.0f) / 50.0f;
+			*center++ = std::round(y * 50.0f) / 50.0f;
+		}
+
+		if (stereo_rtShadingRate.IsValid() && stereo_rtShadingRate.desc.width == width && stereo_rtShadingRate.desc.height == height &&
+			foveation_built.inner_radius == foveation.inner_radius && foveation_built.outer_radius == foveation.outer_radius &&
+			foveation_centers.x == centers.x && foveation_centers.y == centers.y && foveation_centers.z == centers.z && foveation_centers.w == centers.w)
+		{
+			return;
+		}
+		foveation_built = foveation;
+		foveation_centers = centers;
+
+		uint8_t rates[3] = {};
+		device->WriteShadingRateValue(ShadingRate::RATE_1X1, &rates[0]);
+		device->WriteShadingRateValue(ShadingRate::RATE_2X2, &rates[1]);
+		device->WriteShadingRateValue(ShadingRate::RATE_4X4, &rates[2]);
+		wi::vector<uint8_t> data(size_t(width) * height * 2);
+		const float* eye_centers = &centers.x;
+		for (uint32_t slice = 0; slice < 2; ++slice)
+		{
+			for (uint32_t y = 0; y < height; ++y)
+			{
+				for (uint32_t x = 0; x < width; ++x)
+				{
+					// The middle of the tile, in normalized device coordinates (y goes up):
+					const float ndc_x = (float(x) + 0.5f) * float(tile) / float(resolution.x) * 2.0f - 1.0f;
+					const float ndc_y = 1.0f - (float(y) + 0.5f) * float(tile) / float(resolution.y) * 2.0f;
+					const float dx = ndc_x - eye_centers[slice * 2 + 0];
+					const float dy = ndc_y - eye_centers[slice * 2 + 1];
+					const float distance = std::sqrt(dx * dx + dy * dy);
+					data[(size_t(slice) * height + y) * width + x] =
+						distance < foveation.inner_radius ? rates[0] : distance < foveation.outer_radius ? rates[1] : rates[2];
+				}
+			}
+		}
+		SubresourceData initdata[2] = {};
+		for (uint32_t slice = 0; slice < 2; ++slice)
+		{
+			initdata[slice].data_ptr = data.data() + size_t(slice) * width * height;
+			initdata[slice].row_pitch = width;
+			initdata[slice].slice_pitch = width * height;
+		}
+		TextureDesc desc;
+		desc.width = width;
+		desc.height = height;
+		desc.array_size = 2;
+		desc.format = Format::R8_UINT;
+		desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADING_RATE;
+		desc.layout = ResourceState::SHADING_RATE_SOURCE;
+		device->CreateTexture(&desc, initdata, &stereo_rtShadingRate);
+		device->SetName(&stereo_rtShadingRate, "renderpath3D.stereo_rtShadingRate");
+		wilog("[RenderPath3D] foveated shading: %ux%u tiles of %u pixels, eye centers (%.2f, %.2f) and (%.2f, %.2f)",
+			width, height, tile, centers.x, centers.y, centers.z, centers.w);
+	}
+
 	uint32_t RenderPath3D::GetOpaqueRenderPassImages(RenderPassImage* rp, bool stereo_arrays) const
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
@@ -3606,6 +3688,10 @@ namespace wi
 		if (!stereo_arrays && device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2) && rtShadingRate.IsValid()) // the shading rate texture is different for every eye
 		{
 			rp[rp_count++] = RenderPassImage::ShadingRateSource(&rtShadingRate, ResourceState::UNORDERED_ACCESS, ResourceState::UNORDERED_ACCESS);
+		}
+		if (stereo_arrays && stereo_rtShadingRate.IsValid()) // foveated shading, a slice for every view
+		{
+			rp[rp_count++] = RenderPassImage::ShadingRateSource(&stereo_rtShadingRate);
 		}
 		rp[rp_count++] = RenderPassImage::DepthStencil(
 			stereo_arrays ? &stereo_depthBuffer_Main : &depthBuffer_Main,
