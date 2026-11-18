@@ -1003,7 +1003,9 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 
 	surface.update();
 
-	half3 ambient = GetAmbient(surface.N);
+	// Use the sky hemisphere for thin cards, independent of which face the
+	// camera sees. This replaces the existing lookup; it adds no probe sample.
+	half3 ambient = GetAmbient(surface.IsThinSurface() ? float3(0, 1, 0) : surface.N);
 	ambient = lerp(ambient, ambient * surface.sss.rgb, saturate(surface.sss.a));
 
 	Lighting lighting;

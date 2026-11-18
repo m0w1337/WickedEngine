@@ -140,6 +140,7 @@ namespace wi::scene
 			INTERNAL = 1 << 18, // used only for internal purposes
 			PARALLAX_EDGE_FADE = 1 << 19, // parallax occlusion mapping fades out towards the edges, see SetParallaxEdgeFade()
 			SPARKLE = 1 << 20, // the emissive map holds glitter points, see SetSparkle()
+			THIN_SURFACE = 1 << 21, // symmetric diffuse lighting for thin foliage/cutout cards
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -288,6 +289,7 @@ namespace wi::scene
 
 		constexpr void SetCastShadow(bool value) { SetDirty(); set_flag(_flags, CAST_SHADOW, value); }
 		constexpr void SetReceiveShadow(bool value) { SetDirty(); set_flag(_flags, DISABLE_RECEIVE_SHADOW, !value); }
+		constexpr void SetThinSurface(bool value) { SetDirty(); set_flag(_flags, THIN_SURFACE, value); }
 		constexpr void SetOcclusionEnabled_Primary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_PRIMARY, value); }
 		constexpr void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_SECONDARY, value); }
 
@@ -298,6 +300,7 @@ namespace wi::scene
 		constexpr bool IsUsingVertexColors() const { return _flags & USE_VERTEXCOLORS; }
 		constexpr bool IsUsingWind() const { return _flags & USE_WIND; }
 		constexpr bool IsReceiveShadow() const { return (_flags & DISABLE_RECEIVE_SHADOW) == 0; }
+		constexpr bool IsThinSurface() const { return _flags & THIN_SURFACE; }
 		constexpr bool IsUsingSpecularGlossinessWorkflow() const { return _flags & SPECULAR_GLOSSINESS_WORKFLOW; }
 		constexpr bool IsOcclusionEnabled_Primary() const { return _flags & OCCLUSION_PRIMARY; }
 		constexpr bool IsOcclusionEnabled_Secondary() const { return _flags & OCCLUSION_SECONDARY; }

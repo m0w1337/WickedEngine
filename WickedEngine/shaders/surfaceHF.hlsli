@@ -98,6 +98,7 @@ struct Surface
 
 	// It's good to use bools instead of flags in shaders, because bools of all lanes can be combined into one SGPR
 	bool receiveshadow;
+	bool thin_surface;
 	bool is_backface;
 	bool gi_applied;
 	bool capsuleshadow_disabled;
@@ -153,6 +154,7 @@ struct Surface
 		dominant_lightcolor = 0;
 		
 		receiveshadow = true;
+		thin_surface = false;
 		is_backface = false;
 		gi_applied = false;
 		capsuleshadow_disabled = true;
@@ -187,6 +189,7 @@ struct Surface
 		sss = material.GetSSS();
 		sss_inv = material.GetSSSInverse();
 		SetReceiveShadow(material.IsReceiveShadow());
+		thin_surface = material.IsThinSurface();
 		SetCapsuleShadowDisabled(material.IsCapsuleShadowDisabled());
 	}
 
@@ -311,6 +314,7 @@ struct Surface
 	}
 
 	inline bool IsReceiveShadow() { return receiveshadow; }
+	inline bool IsThinSurface() { return thin_surface; }
 	inline bool IsBackface() { return is_backface; }
 	inline bool IsGIApplied() { return gi_applied; }
 	inline bool IsCapsuleShadowDisabled() { return capsuleshadow_disabled; }

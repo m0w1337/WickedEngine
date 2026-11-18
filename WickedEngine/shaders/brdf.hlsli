@@ -145,6 +145,10 @@ struct SurfaceToLight
 		NdotL_sss = (NdotL_sss + surface.sss.rgb) * surface.sss_inv.rgb;
 #endif // CARTOON
 
+		// Thin leaf/grass cards represent curved, transmitting leaves: identical
+		// diffuse response for N and -N, with gentle wrap at grazing angles.
+		// Keep the signed normal for specular and all non-thin materials.
+		if (surface.IsThinSurface()) NdotL_sss = 0.25 + 0.75 * abs(NdotL);
 		NdotL = saturate(NdotL);
 		NdotL_sss = saturate(NdotL_sss);
 	}
@@ -190,7 +194,9 @@ half3 BRDF_GetDiffuse(in Surface surface, in SurfaceToLight surface_to_light)
 {
 	// Note: subsurface scattering will remove Fresnel (F), because otherwise
 	//	there would be artifact on backside where diffuse wraps
-	half3 diffuse = (1 - lerp(surface_to_light.F, 0, saturate(surface.sss.a)));
+	// The thin-sheet term includes transmitted light. The reflection Fresnel
+	// term would otherwise extinguish it when the sun is behind the sheet.
+	half3 diffuse = surface.IsThinSurface() ? half3(1, 1, 1) : (1 - lerp(surface_to_light.F, 0, saturate(surface.sss.a)));
 
 #ifdef SHEEN
 	diffuse *= surface.sheen.albedoScaling;
