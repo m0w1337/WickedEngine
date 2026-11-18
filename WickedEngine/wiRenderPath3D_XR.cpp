@@ -53,6 +53,10 @@ namespace wi
 			// Without a headset, the window is split into two halves:
 			resolution.x = std::max(1u, GetPhysicalWidth() / 2);
 			resolution.y = std::max(1u, GetPhysicalHeight());
+			if (fallback_eye_resolution.x > 0 && fallback_eye_resolution.y > 0)
+			{
+				resolution = fallback_eye_resolution;
+			}
 		}
 		for (RenderPath3D& eye : eyes)
 		{

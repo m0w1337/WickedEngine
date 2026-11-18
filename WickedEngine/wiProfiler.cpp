@@ -668,6 +668,20 @@ namespace wi::profiler
 		return ENABLED;
 	}
 
+	wi::vector<RangeTime> GetRangeTimes()
+	{
+		wi::vector<RangeTime> result;
+		std::scoped_lock lck(lock);
+		for (auto& x : ranges)
+		{
+			const Range& range = x.second;
+			if (range.avg_counter == 0)
+				continue;
+			result.push_back({ range.name, range.time, !range.IsCPURange() });
+		}
+		return result;
+	}
+
 	void SetBackgroundColor(wi::Color color)
 	{
 		background_color = color;

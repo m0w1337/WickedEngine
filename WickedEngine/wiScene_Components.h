@@ -1942,6 +1942,7 @@ namespace wi::scene
 			REALISTIC_SKY_HIGH_QUALITY = 1 << 8,
 			REALISTIC_SKY_RECEIVE_SHADOW = 1 << 9,
 			VOLUMETRIC_CLOUDS_RECEIVE_SHADOW = 1 << 10,
+			RAIN_DISTORTION_DISABLED = 1 << 11, // the rain is not drawn a second time for the refraction (cheaper)
 		};
 		uint32_t _flags = EMPTY;
 
@@ -1955,6 +1956,7 @@ namespace wi::scene
 		constexpr bool IsRealisticSkyHighQuality() const { return _flags & REALISTIC_SKY_HIGH_QUALITY; }
 		constexpr bool IsRealisticSkyReceiveShadow() const { return _flags & REALISTIC_SKY_RECEIVE_SHADOW; }
 		constexpr bool IsVolumetricCloudsReceiveShadow() const { return _flags & VOLUMETRIC_CLOUDS_RECEIVE_SHADOW; }
+		constexpr bool IsRainDistortionDisabled() const { return _flags & RAIN_DISTORTION_DISABLED; }
 
 		constexpr void SetOceanEnabled(bool value = true) { set_flag(_flags, OCEAN_ENABLED, value); }
 		constexpr void SetRealisticSky(bool value = true) { set_flag(_flags, REALISTIC_SKY, value); }
@@ -1966,6 +1968,7 @@ namespace wi::scene
 		constexpr void SetRealisticSkyHighQuality(bool value = true) { set_flag(_flags, REALISTIC_SKY_HIGH_QUALITY, value); }
 		constexpr void SetRealisticSkyReceiveShadow(bool value = true) { set_flag(_flags, REALISTIC_SKY_RECEIVE_SHADOW, value); }
 		constexpr void SetVolumetricCloudsReceiveShadow(bool value = true) { set_flag(_flags, VOLUMETRIC_CLOUDS_RECEIVE_SHADOW, value); }
+		constexpr void SetRainDistortionDisabled(bool value = true) { set_flag(_flags, RAIN_DISTORTION_DISABLED, value); }
 
 		XMFLOAT3 sunColor = XMFLOAT3(0, 0, 0);
 		XMFLOAT3 sunDirection = XMFLOAT3(0, 1, 0);

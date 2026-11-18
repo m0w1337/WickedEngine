@@ -43,6 +43,7 @@ namespace wi
 		// Used when no headset is available, then a standing player is simulated:
 		float fallback_eye_height = 1.7f; // meters
 		float fallback_fov = XM_PI / 3.0f; // vertical field of view in radians
+		XMUINT2 fallback_eye_resolution = XMUINT2(0, 0); // without a headset: the eyes are rendered in this resolution instead of half the window, for measuring the time of a headset frame
 
 		// Single pass stereo rendering: the geometry is rendered only once for both eyes, and culling, shadow maps etc. are shared
 		//	If this is disabled or not supported by the graphics device, the eyes are rendered completely one after the other

@@ -6159,7 +6159,7 @@ void DrawSoftParticles(
 		}
 	}
 
-	if (distortion && vis.scene->weather.rain_amount > 0)
+	if (distortion && vis.scene->weather.rain_amount > 0 && !vis.scene->weather.IsRainDistortionDisabled())
 	{
 		// Draw with distortion shader override:
 		EmittedParticleSystem::PARTICLESHADERTYPE shader = EmittedParticleSystem::PARTICLESHADERTYPE::SOFT_DISTORTION;

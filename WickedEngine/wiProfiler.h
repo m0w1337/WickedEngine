@@ -2,6 +2,9 @@
 #include "wiGraphicsDevice.h"
 #include "wiCanvas.h"
 #include "wiColor.h"
+#include "wiVector.h"
+
+#include <string>
 
 
 // QoL macros, allows writing just ScopedXxxProfiling without needing to declare a variable manually
@@ -66,6 +69,15 @@ namespace wi::profiler
 	void SetEnabled(bool value);
 
 	bool IsEnabled();
+
+	// The averaged times of the ranges, in milliseconds (for logging them instead of drawing them)
+	struct RangeTime
+	{
+		std::string name;
+		float milliseconds = 0;
+		bool gpu = false;
+	};
+	wi::vector<RangeTime> GetRangeTimes();
 
 	void SetBackgroundColor(wi::Color color);
 	void SetTextColor(wi::Color color);
