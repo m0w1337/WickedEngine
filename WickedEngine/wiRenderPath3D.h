@@ -188,6 +188,8 @@ namespace wi
 		virtual void RenderSSGI(wi::graphics::CommandList cmd) const;
 		virtual void RenderOutline(wi::graphics::CommandList cmd) const;
 		virtual void RenderLightShafts(wi::graphics::CommandList cmd) const;
+		// How strong the light shafts are for the angle between the sun and the view direction (the dot product of the two), 0 to 1:
+		static float GetLightShaftsAngularFade(float sunDotCamera);
 		virtual void RenderVolumetrics(wi::graphics::CommandList cmd) const;
 		virtual void RenderSceneMIPChain(wi::graphics::CommandList cmd) const;
 		virtual void RenderTransparents(wi::graphics::CommandList cmd) const;

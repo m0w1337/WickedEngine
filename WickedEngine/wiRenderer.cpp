@@ -9702,6 +9702,17 @@ void RefreshEnvProbes(const Visibility& vis, CommandList cmd)
 				probe.first_render = false;
 				probe.realtime_time_accumulator = 0.0f;
 				render_probe(probe, probe_aabb);
+
+				// Reset SkyAtmosphere SkyViewLut after usage, it was computed for the place of the probe. With an update
+				//	interval, the frames that render the probe would otherwise draw the sky (and the glow of the sun) for
+				//	that place, and the others for the camera, the sky would flicker:
+				if (vis.scene->weather.IsRealisticSky())
+				{
+					CameraCB cb = camera_cb_null;
+					cb.cameras[0].position = vis.camera->Eye;
+					device->BindDynamicConstantBuffer(cb, CBSLOT_RENDERER_CAMERA, cmd);
+					ComputeSkyAtmosphereSkyViewLut(cmd);
+				}
 			}
 		}
 	}

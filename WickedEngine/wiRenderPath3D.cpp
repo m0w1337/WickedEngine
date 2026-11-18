@@ -1870,12 +1870,22 @@ namespace wi
 			);
 		}
 	}
+	float RenderPath3D::GetLightShaftsAngularFade(float sunDotCamera)
+	{
+		// The radial blur starts at the place of the sun on the screen. When the sun is far to the side, that place is far
+		//	outside of the screen (or the projection breaks down near 90 degrees), and the blur smears the bright sky and
+		//	clouds across the image in a pattern that stays on the screen while the view turns. The time based fade of
+		//	the shafts lags behind a turning head, so they also fade with the angle immediately: full strength within
+		//	about 50 degrees from the view direction, nothing beyond about 70 degrees.
+		return wi::math::saturate((sunDotCamera - 0.35f) / (0.65f - 0.35f));
+	}
+
 	void RenderPath3D::RenderLightShafts(CommandList cmd) const
 	{
 		const XMVECTOR sunDirection = XMLoadFloat3(&scene->weather.sunDirection);
 		const float sunDotCamera = XMVectorGetX(XMVector3Dot(sunDirection, camera->GetAt()));
 
-		if (getLightShaftsEnabled() && sunDotCamera > 0)
+		if (getLightShaftsEnabled() && GetLightShaftsAngularFade(sunDotCamera) > 0)
 		{
 			constexpr float fadeThreshold = 0.25f;
 
@@ -2217,13 +2227,14 @@ namespace wi
 		}
 
 		XMVECTOR sunDirection = XMLoadFloat3(&scene->weather.sunDirection);
-		if (getLightShaftsEnabled() && XMVectorGetX(XMVector3Dot(sunDirection, camera->GetAt())) > 0)
+		const float lightShaftsAngularFade = GetLightShaftsAngularFade(XMVectorGetX(XMVector3Dot(sunDirection, camera->GetAt())));
+		if (getLightShaftsEnabled() && lightShaftsAngularFade > 0)
 		{
 			device->EventBegin("Contribute LightShafts", cmd);
 			wi::image::Params fx;
 			fx.enableFullScreen();
 			fx.blendFlag = BLENDMODE_ADDITIVE;
-			fx.opacity = lightShaftsFadeFactor;
+			fx.opacity = lightShaftsFadeFactor * lightShaftsAngularFade;
 			wi::image::Draw(&rtSun[1], fx, cmd);
 			device->EventEnd(cmd);
 		}
