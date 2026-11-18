@@ -116,7 +116,7 @@ namespace wi::scene
 			impostorInstanceOffset = uint32_t(instanceArraySize);
 			instanceArraySize += 1;
 		}
-		if (weathers.GetCount() > 0 && weathers[0].rain_amount > 0)
+		if ((weathers.GetCount() > 0 ? weathers[0].rain_amount : weather.rain_amount) > 0) // the weather can also be set directly, without a component
 		{
 			rainInstanceOffset = uint32_t(instanceArraySize);
 			instanceArraySize += 1;
@@ -158,7 +158,7 @@ namespace wi::scene
 			impostorMaterialOffset = uint32_t(materialArraySize);
 			materialArraySize += 1;
 		}
-		if (weathers.GetCount() > 0 && weathers[0].rain_amount > 0)
+		if ((weathers.GetCount() > 0 ? weathers[0].rain_amount : weather.rain_amount) > 0) // the weather can also be set directly, without a component
 		{
 			rainMaterialOffset = uint32_t(materialArraySize);
 			materialArraySize += 1;
@@ -341,7 +341,7 @@ namespace wi::scene
 			impostorGeometryOffset = uint32_t(geometryArraySize);
 			geometryArraySize += 1;
 		}
-		if (weathers.GetCount() > 0 && weathers[0].rain_amount > 0)
+		if ((weathers.GetCount() > 0 ? weathers[0].rain_amount : weather.rain_amount) > 0) // the weather can also be set directly, without a component
 		{
 			rainGeometryOffset = uint32_t(geometryArraySize);
 			geometryArraySize += 1;
