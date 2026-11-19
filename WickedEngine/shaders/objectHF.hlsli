@@ -1291,8 +1291,9 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	if (camera.texture_refraction_index >= 0)
 	{
 		// Water refraction. Without planar reflections there is no reflection plane, then the water lies in the horizontal
-		//	plane of this pixel (a flat surface, like the water of a voxel world):
-		float4 water_plane = camera.texture_reflection_index >= 0 ? camera.reflection_plane : float4(0, -1, 0, surface.P.y);
+		//	plane of this pixel (a flat surface, like the water of a voxel world). Its normal points up like the one of the
+		//	reflection plane: the signs below depend on it, pointing down the water depth was always 0 and the water clear:
+		float4 water_plane = camera.texture_reflection_index >= 0 ? camera.reflection_plane : float4(0, 1, 0, -surface.P.y);
 		const float camera_above_water = dot(float4(camera.position, 1), water_plane) < 0; 
 		Texture2D<half4> texture_refraction = bindless_textures_half4[descriptor_index(camera.texture_refraction_index)];
 		// First sample using full perturbation:
