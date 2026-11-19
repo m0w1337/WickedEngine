@@ -1088,6 +1088,12 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		}
 		lighting.indirect.specular += reflectiveColor * surface.F;
 	}
+	else
+	{
+		// Without planar reflections (they are off in stereo rendering), the water reflects the sky and the surroundings
+		//	from the global environment probe:
+		lighting.indirect.specular += EnvironmentReflection_Global(surface);
+	}
 #endif // WATER
 
 
@@ -1171,8 +1177,9 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	[branch]
 	if (camera.texture_refraction_index >= 0)
 	{
-		// Water refraction:
-		float4 water_plane = camera.reflection_plane;
+		// Water refraction. Without planar reflections there is no reflection plane, then the water lies in the horizontal
+		//	plane of this pixel (a flat surface, like the water of a voxel world):
+		float4 water_plane = camera.texture_reflection_index >= 0 ? camera.reflection_plane : float4(0, -1, 0, surface.P.y);
 		const float camera_above_water = dot(float4(camera.position, 1), water_plane) < 0; 
 		Texture2D<half4> texture_refraction = bindless_textures_half4[descriptor_index(camera.texture_refraction_index)];
 		// First sample using full perturbation:
