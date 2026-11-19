@@ -143,6 +143,7 @@ namespace wi::scene
 			THIN_SURFACE = 1 << 21, // symmetric diffuse lighting for thin foliage/cutout cards
 			RAIN_WETNESS = 1 << 22, // gets wet in the rain, see SetRainWetness()
 			BLOCK_LIGHT = 1 << 23, // lit by the light level in the alpha of the vertex colors, see SetBlockLight()
+			FLOW = 1 << 24, // two layers of the maps move against each other, see SetFlow()
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -302,6 +303,11 @@ namespace wi::scene
 		//	the surface with WeatherComponent::block_light_color, unaffected by the ambient occlusion.
 		constexpr void SetBlockLight(bool value = true) { SetDirty(); set_flag(_flags, BLOCK_LIGHT, value); }
 		constexpr bool IsBlockLight() const { return _flags & BLOCK_LIGHT; }
+		// A flowing surface (lava): the base color, emissive and normal maps are read a second time, smaller, turned and moving
+		//	the other way (with texMulAdd.w, the first layer moves with texMulAdd.zw), and the brighter of the two is taken, so
+		//	the pattern changes its shape instead of sliding as a whole. Like the waves of the water shader.
+		constexpr void SetFlow(bool value = true) { SetDirty(); set_flag(_flags, FLOW, value); }
+		constexpr bool IsFlow() const { return _flags & FLOW; }
 		constexpr void SetOcclusionEnabled_Primary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_PRIMARY, value); }
 		constexpr void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_SECONDARY, value); }
 

@@ -377,6 +377,10 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_BLOCK_LIGHT;
 		}
+		if (IsFlow())
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_FLOW;
+		}
 		if (IsCastingShadow())
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_CAST_SHADOW;

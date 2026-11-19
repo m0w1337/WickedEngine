@@ -594,6 +594,51 @@ float3 EdgeBevelNormal(float3 N, float3 P, float2 encoded, float width)
 	return normalize(N + to_edge_u * bend.x + to_edge_v * bend.y);
 }
 
+// The second layer of a flowing surface (MaterialComponent::SetFlow()): smaller, turned and moving the other way with the
+//	animation offset texMulAdd.w, against the first layer that moves with texMulAdd.zw
+inline float4 GetFlowUVSets(ShaderMaterial material, float4 uvsets)
+{
+	const float2 base = uvsets.xy - material.texMulAdd.zw;
+	return float4(float2(base.y, -base.x) * 0.79 + float2(0.37, 0.61) - material.texMulAdd.ww * float2(0.7, -1.1), uvsets.zw);
+}
+
+// How near a point is to the border between the cells of a pattern of wandering points (one in each unit square), 0 on
+//	the border
+inline float CausticCellBorder(float2 p, float t)
+{
+	const float2 cell = floor(p);
+	const float2 f = p - cell;
+	float nearest = 8, second = 8;
+	[unroll]
+	for (int y = -1; y <= 1; ++y)
+	{
+		[unroll]
+		for (int x = -1; x <= 1; ++x)
+		{
+			const int2 c = int2(cell) + int2(x, y);
+			uint h = uint(c.x) * 0x8da6b343u ^ uint(c.y) * 0xd8163841u;
+			h = (h ^ (h >> 15)) * 0x2c1b3c6du;
+			h ^= h >> 12;
+			const float2 random = float2(h & 0xFFFF, h >> 16) / 65535.0;
+			const float2 center = float2(x, y) + 0.5 + 0.38 * sin(t * (0.6 + 0.5 * random.yx) + 6.2832 * random);
+			const float d = length(center - f);
+			second = d < nearest ? nearest : min(second, d);
+			nearest = min(nearest, d);
+		}
+	}
+	return second - nearest;
+}
+
+// The light of the sun focused by the waves on the ground under water: a net of bright lines that wander and change
+//	their shape. p in meters along the ground, t in seconds; two layers of cells (about 30 and 45 cm) moving against
+//	each other, 0 to 1
+inline half WaterCaustics(float2 p, float t)
+{
+	const float a = CausticCellBorder(p * 3.3, t * 1.1);
+	const float b = CausticCellBorder(float2(p.y, -p.x) * 2.2 + 7.3, t * 0.8);
+	return (half)saturate(pow(saturate(1 - a * 3.5), 4) + 0.7 * pow(saturate(1 - b * 3.5), 4));
+}
+
 #if defined(__PSSL__) && defined(PREPASS) && !defined(DEPTHONLY)
 #pragma PSSL_target_output_format (target 0 FMT_32_R)
 #endif // __PSSL__ && PREPASS
@@ -730,7 +775,13 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	if (material.textures[BASECOLORMAP].IsValid() && (GetFrame().options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
 #endif // PREPASS
 	{
-		surface.baseColor *= material.textures[BASECOLORMAP].Sample(sampler_objectshader, uvsets);
+		half4 base_map = material.textures[BASECOLORMAP].Sample(sampler_objectshader, uvsets);
+		[branch]
+		if (material.IsFlow())
+		{
+			base_map = max(base_map, material.textures[BASECOLORMAP].Sample(sampler_objectshader, GetFlowUVSets(material, uvsets)));
+		}
+		surface.baseColor *= base_map;
 	}
 #endif // INTERIORMAPPING
 	
@@ -755,7 +806,13 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	[branch]
 	if (material.textures[NORMALMAP].IsValid())
 	{
-		surface.bumpColor = half3(material.textures[NORMALMAP].Sample(sampler_objectshader, uvsets).rg, 1);
+		half2 bump_map = material.textures[NORMALMAP].Sample(sampler_objectshader, uvsets).rg;
+		[branch]
+		if (material.IsFlow())
+		{
+			bump_map = (bump_map + material.textures[NORMALMAP].Sample(sampler_objectshader, GetFlowUVSets(material, uvsets)).rg) * 0.5;
+		}
+		surface.bumpColor = half3(bump_map, 1);
 		surface.bumpColor = surface.bumpColor * 2 - 1;
 		surface.bumpColor.rg *= material.GetNormalMapStrength();
 	}
@@ -783,6 +840,11 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	if (any(surface.emissiveColor) && material.textures[EMISSIVEMAP].IsValid())
 	{
 		half4 emissiveMap = material.textures[EMISSIVEMAP].Sample(sampler_objectshader, uvsets);
+		[branch]
+		if (material.IsFlow())
+		{
+			emissiveMap = max(emissiveMap, material.textures[EMISSIVEMAP].Sample(sampler_objectshader, GetFlowUVSets(material, uvsets)));
+		}
 		if (material.IsSparkle())
 		{
 			surface.emissiveColor *= SparkleEmissive(emissiveMap, surface.V);
@@ -924,11 +986,22 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		surface.N = normalize(lerp(surface.N, input.nor, wet)); // blend to vertex normal when wet
 	}
 
+	// Under water (MaterialComponent::SetRainWetness() with 32768 added to the code in the atlas uv y): the x is how much of
+	//	the light of the sun reaches the vertex through the water, it gets the caustics below, and no rain:
+	half caustics_weight = 0;
+	bool under_water = false;
+	[branch]
+	if (material.IsRainWetness())
+	{
+		under_water = round(saturate(input.atl.y) * 65535.0) >= 32768;
+		caustics_weight = under_water ? (half)saturate(input.atl.x) : 0;
+	}
+
 	// Rain on the surface (MaterialComponent::SetRainWetness()): the atlas uv tells how much rain reaches the vertex (x)
 	//	and how the surface reacts to it (y, a 16 bit code: film * 100 + darkening, both in percent). It gets darker, and
 	//	the water film makes it smooth and fills the small bumps:
 	[branch]
-	if (material.IsRainWetness() && GetWeather().rain_wetness > 0)
+	if (material.IsRainWetness() && GetWeather().rain_wetness > 0 && !under_water)
 	{
 		const half rain_wet = (half)saturate(input.atl.x) * (half)GetWeather().rain_wetness;
 		const uint code = (uint)round(saturate(input.atl.y) * 65535.0);
@@ -1171,7 +1244,20 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #endif
 
 #ifdef TILEDFORWARD
+#ifdef OBJECTSHADER_USE_COMMON
+	const half3 diffuse_before_lights = lighting.direct.diffuse;
+#endif // OBJECTSHADER_USE_COMMON
 	TiledLighting(surface, lighting, flat_tile_index, camera);
+#ifdef OBJECTSHADER_USE_COMMON
+	// The caustics of the water: the direct light of the sun and lamps is gathered into wandering lines (brighter on them,
+	//	darker between them), only where it reaches, so not in the shadows:
+	[branch]
+	if (caustics_weight > 0)
+	{
+		const half caustics = WaterCaustics(surface.P.xz + surface.P.y * 0.25, GetTime());
+		lighting.direct.diffuse += (lighting.direct.diffuse - diffuse_before_lights) * caustics_weight * (caustics * 2.4 - 0.35);
+	}
+#endif // OBJECTSHADER_USE_COMMON
 #endif // TILEDFORWARD
 
 
