@@ -916,6 +916,7 @@ namespace wi::scene
 		shaderscene.weather.rain_splash_scale = weather.rain_splash_scale;
 		shaderscene.weather.rain_wetness = weather.rain_wetness;
 		shaderscene.weather.rain_color = weather.rain_color;
+		shaderscene.weather.block_light_color = weather.block_light_color;
 
 		shaderscene.ddgi.grid_dimensions = ddgi.grid_dimensions;
 		shaderscene.ddgi.probe_count = ddgi.grid_dimensions.x * ddgi.grid_dimensions.y * ddgi.grid_dimensions.z;

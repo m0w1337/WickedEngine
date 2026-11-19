@@ -259,6 +259,7 @@ struct VertexSurface
 	float4 tangent;
 	half ao;
 	half wet;
+	half block_light;
 
 	inline void create(in ShaderMaterial material, in VertexInput input)
 	{
@@ -267,10 +268,23 @@ struct VertexSurface
 		position = float4(pos_wind.xyz, 1);
 		color = half4(material.GetBaseColor() * inst.GetColor());
 
+		block_light = 0;
 		[branch]
-		if (material.IsUsingVertexColors())
+		if (material.IsUsingVertexColors() || material.IsBlockLight())
 		{
-			color *= input.GetVertexColor();
+			half4 vertex_color = input.GetVertexColor();
+			[branch]
+			if (material.IsBlockLight())
+			{
+				// The alpha is the light level of the vertex (MaterialComponent::SetBlockLight()):
+				block_light = vertex_color.a;
+				vertex_color.a = 1;
+			}
+			[branch]
+			if (material.IsUsingVertexColors())
+			{
+				color *= vertex_color;
+			}
 		}
 
 		[branch]
@@ -343,7 +357,7 @@ struct PixelInput
 
 #ifdef OBJECTSHADER_USE_COMMON
 	float2 atl : ATLAS;
-	half2 ao_wet : COMMON;
+	half3 ao_wet : COMMON; // z: the block light, see MaterialComponent::SetBlockLight()
 #endif // OBJECTSHADER_USE_COMMON
 
 #ifdef OBJECTSHADER_USE_UVSETS
@@ -470,7 +484,7 @@ PixelInput vertex_to_pixel_export(VertexInput input)
 
 #ifdef OBJECTSHADER_USE_COMMON
 	Out.atl = surface.atlas;
-	Out.ao_wet = half2(surface.ao, surface.wet);
+	Out.ao_wet = half3(surface.ao, surface.wet, surface.block_light);
 #endif // OBJECTSHADER_USE_COMMON
 
 #ifdef OBJECTSHADER_USE_TANGENT
@@ -1137,6 +1151,19 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 
 #ifdef OBJECTSHADER_USE_COMMON
 	LightMapping(meshinstance.lightmap, input.atl, lighting, surface);
+
+	// The light of glowing blocks (MaterialComponent::SetBlockLight()): the level in the vertex, linear from block to block,
+	//	gets the falloff of a light here, each level 75 % of the one above, and 0 at level 0. Added to the direct light, so the
+	//	ambient occlusion (the sky visibility of the voxel world) doesn't take it away in caves:
+	[branch]
+	if (material.IsBlockLight() && input.ao_wet.z > 0)
+	{
+		static const half levels = 15;
+		static const half falloff = 0.75; // per level
+		static const half floor_light = 0.0134; // pow(falloff, levels)
+		const half intensity = saturate(((half)pow(falloff, levels * (1 - input.ao_wet.z)) - floor_light) / (1 - floor_light));
+		lighting.direct.diffuse += (half3)GetWeather().block_light_color.rgb * intensity * PI;
+	}
 #endif // OBJECTSHADER_USE_COMMON
 
 #ifdef PLANARREFLECTION

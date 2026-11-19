@@ -97,6 +97,7 @@ enum SHADERMATERIAL_OPTIONS
 	SHADERMATERIAL_OPTION_BIT_EDGE_BEVEL = 1 << 14,
 	SHADERMATERIAL_OPTION_BIT_THIN_SURFACE = 1 << 15,
 	SHADERMATERIAL_OPTION_BIT_RAIN_WETNESS = 1 << 16,
+	SHADERMATERIAL_OPTION_BIT_BLOCK_LIGHT = 1 << 17,
 };
 
 #ifndef __cplusplus
@@ -504,6 +505,7 @@ struct alignas(32) ShaderMaterial
 	inline bool IsReceiveShadow() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_RECEIVE_SHADOW; }
 	inline bool IsThinSurface() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_THIN_SURFACE; }
 	inline bool IsRainWetness() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_RAIN_WETNESS; }
+	inline bool IsBlockLight() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_BLOCK_LIGHT; }
 	inline bool IsCastingShadow() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_CAST_SHADOW; }
 	inline bool IsTransparent() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_TRANSPARENT; }
 	inline bool IsAdditive() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_ADDITIVE; }

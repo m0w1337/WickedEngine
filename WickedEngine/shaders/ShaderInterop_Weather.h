@@ -379,6 +379,8 @@ struct alignas(16) ShaderWeather
 
 	float4 rain_color;
 
+	float4 block_light_color; // rgb: the light of a vertex with full block light, see WeatherComponent::block_light_color
+
 	ShaderFog fog;
 	ShaderWind wind;
 	ShaderOcean ocean;

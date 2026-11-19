@@ -142,6 +142,7 @@ namespace wi::scene
 			SPARKLE = 1 << 20, // the emissive map holds glitter points, see SetSparkle()
 			THIN_SURFACE = 1 << 21, // symmetric diffuse lighting for thin foliage/cutout cards
 			RAIN_WETNESS = 1 << 22, // gets wet in the rain, see SetRainWetness()
+			BLOCK_LIGHT = 1 << 23, // lit by the light level in the alpha of the vertex colors, see SetBlockLight()
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -296,6 +297,11 @@ namespace wi::scene
 		//	moment is WeatherComponent::rain_wetness. Meant for meshes that have no lightmap in the atlas uv.
 		constexpr void SetRainWetness(bool value = true) { SetDirty(); set_flag(_flags, RAIN_WETNESS, value); }
 		constexpr bool IsRainWetness() const { return _flags & RAIN_WETNESS; }
+		// Light of glowing blocks baked into the vertices, as in voxel worlds: the alpha of the vertex colors is the light level
+		//	(0 to 1), it is not the opacity then. The level is curved in the shader (each level 75 % of the one above) and lights
+		//	the surface with WeatherComponent::block_light_color, unaffected by the ambient occlusion.
+		constexpr void SetBlockLight(bool value = true) { SetDirty(); set_flag(_flags, BLOCK_LIGHT, value); }
+		constexpr bool IsBlockLight() const { return _flags & BLOCK_LIGHT; }
 		constexpr void SetOcclusionEnabled_Primary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_PRIMARY, value); }
 		constexpr void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_SECONDARY, value); }
 
@@ -2003,6 +2009,7 @@ namespace wi::scene
 		float rain_splash_scale = 0.1f;
 		float rain_wetness = 0; // 0 to 1, how wet the surfaces of MaterialComponent::SetRainWetness() are where the rain reaches them
 		XMFLOAT4 rain_color = XMFLOAT4(0.6f, 0.8f, 1, 0.5f);
+		XMFLOAT4 block_light_color = XMFLOAT4(0, 0, 0, 0); // rgb: the light at full level for MaterialComponent::SetBlockLight()
 
 		wi::Ocean::OceanParameters oceanParameters;
 		AtmosphereParameters atmosphereParameters;
