@@ -141,6 +141,7 @@ namespace wi::scene
 			PARALLAX_EDGE_FADE = 1 << 19, // parallax occlusion mapping fades out towards the edges, see SetParallaxEdgeFade()
 			SPARKLE = 1 << 20, // the emissive map holds glitter points, see SetSparkle()
 			THIN_SURFACE = 1 << 21, // symmetric diffuse lighting for thin foliage/cutout cards
+			RAIN_WETNESS = 1 << 22, // gets wet in the rain, see SetRainWetness()
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -290,6 +291,11 @@ namespace wi::scene
 		constexpr void SetCastShadow(bool value) { SetDirty(); set_flag(_flags, CAST_SHADOW, value); }
 		constexpr void SetReceiveShadow(bool value) { SetDirty(); set_flag(_flags, DISABLE_RECEIVE_SHADOW, !value); }
 		constexpr void SetThinSurface(bool value) { SetDirty(); set_flag(_flags, THIN_SURFACE, value); }
+		// The surface gets wet in the rain: darker, smoother, and the water film fills the small bumps of the normal map.
+		//	How much rain reaches a vertex is the x of its atlas uv (0 to 1); the y is how it reacts, a 16 bit code (film * 100 + darkening) / 65535, both in percent; how wet the world is at the
+		//	moment is WeatherComponent::rain_wetness. Meant for meshes that have no lightmap in the atlas uv.
+		constexpr void SetRainWetness(bool value = true) { SetDirty(); set_flag(_flags, RAIN_WETNESS, value); }
+		constexpr bool IsRainWetness() const { return _flags & RAIN_WETNESS; }
 		constexpr void SetOcclusionEnabled_Primary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_PRIMARY, value); }
 		constexpr void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_SECONDARY, value); }
 
@@ -1995,6 +2001,7 @@ namespace wi::scene
 		float rain_speed = 1;
 		float rain_scale = 0.005f;
 		float rain_splash_scale = 0.1f;
+		float rain_wetness = 0; // 0 to 1, how wet the surfaces of MaterialComponent::SetRainWetness() are where the rain reaches them
 		XMFLOAT4 rain_color = XMFLOAT4(0.6f, 0.8f, 1, 0.5f);
 
 		wi::Ocean::OceanParameters oceanParameters;

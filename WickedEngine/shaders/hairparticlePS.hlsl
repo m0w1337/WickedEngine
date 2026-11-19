@@ -15,7 +15,8 @@ PUSHCONSTANT(push, HairShadowPush);
 float4 main(VertexToPixel input STEREO_VIEWID_PARAM) : SV_Target
 {
 	STEREO_VIEWID_APPLY(stereo_view_id);
-	ShaderCamera camera = GetCameraIndexed(push.camera_index);
+	// Multiview supplies the eye. Shadow passes supply the cascade in the push constant.
+	ShaderCamera camera = GetCameraIndexed(push.camera_index + g_xCameraIndex);
 	ShaderMaterial material = HairGetMaterial();
 	ShaderMeshInstance meshinstance = HairGetInstance();
 	

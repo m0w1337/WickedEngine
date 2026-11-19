@@ -369,6 +369,10 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_THIN_SURFACE;
 		}
+		if (IsRainWetness())
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_RAIN_WETNESS;
+		}
 		if (IsCastingShadow())
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_CAST_SHADOW;

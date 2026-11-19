@@ -14,7 +14,8 @@ VertexToPixel main(uint vid : SV_VertexID, out uint VPIndex : SV_ViewportArrayIn
 {
 	STEREO_VIEWID_APPLY(stereo_view_id);
 	VPIndex = push.camera_index;
-	ShaderCamera camera = GetCameraIndexed(push.camera_index);
+	// Multiview supplies the eye. Shadow passes supply the cascade in the push constant.
+	ShaderCamera camera = GetCameraIndexed(push.camera_index + g_xCameraIndex);
 	ShaderMeshInstance inst = HairGetInstance();
 	ShaderGeometry geometry = HairGetGeometry();
 

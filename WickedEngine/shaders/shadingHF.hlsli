@@ -549,6 +549,15 @@ inline void ApplyAerialPerspective(float2 uv, float3 P, inout half4 color)
 	}
 }
 
+// Filtered leaf masks must get fuller as small leaves merge into a distant
+// crown. Keep an actual cutout, including on the coarse outer crown mesh.
+inline half FoliageAlphaTest(half cutoff, float distance)
+{
+	float density = saturate(distance / 32.0);
+	density *= 2.0 - density;
+	return lerp(cutoff, min(cutoff, half(0.18)), density);
+}
+
 // Handle transparency effects in opaque render pass:
 //	alpha		: the transparency value of the surface
 //	alphaTest	: user specified alpha cutoff value
@@ -558,7 +567,18 @@ inline void ApplyAerialPerspective(float2 uv, float3 P, inout half4 color)
 //	returns bitmask that can be used for SV_Coverage output from pixel shader
 inline uint AlphaToCoverage(half alpha, half alphaTest, half dithering, float4 svposition)
 {
-	if (GetFrame().options & OPTION_BIT_TEMPORALAA_ENABLED)
+	const bool temporal = (GetFrame().options & OPTION_BIT_TEMPORALAA_ENABLED) != 0;
+	const uint samples = GetCamera().sample_count;
+#ifndef TRANSPARENT
+	if (alphaTest > 0 && (temporal || samples > 1))
+	{
+		// The material cutoff also defines the silhouette with MSAA/TAA. Using
+		// raw alpha here would keep faint atlas background and ignore alphaRef.
+		// Center a one-pixel coverage ramp on the same cutoff used by clip().
+		alpha = saturate((alpha - alphaTest) / max(fwidth(alpha), half(1e-4)) + half(0.5));
+	}
+#endif
+	if (temporal)
 	{
 		// When Temporal AA is enabled, dither the alpha mask with animated blue noise:
 		if (alphaTest > 0 || dithering > 0)
@@ -566,11 +586,9 @@ inline uint AlphaToCoverage(half alpha, half alphaTest, half dithering, float4 s
 			alpha -= dithering + blue_noise(svposition.xy, svposition.w).x / GetCamera().sample_count;
 		}
 	}
-	else if (GetCamera().sample_count > 1)
+	else if (samples > 1)
 	{
-		// Multisampled transparency:
-		//	alphaTest is not made, pure alpha is used for sample mask
-		//	dithering is modifying final alpha
+		// Multisampled coverage, after applying the material's silhouette cutoff:
 		alpha -= dithering;
 	}
 	else
@@ -593,7 +611,13 @@ inline uint AlphaToCoverage(half alpha, half alphaTest, half dithering, float4 s
 		//	otherwise the alpha would do blending and coverage which doubles the alpha effect in multisampling
 		return ~0u;
 #else
-		return ~0u >> (31u - uint(alpha * GetCamera().sample_count));
+		// Temporal noise already provides stochastic rounding. Plain MSAA uses
+		// nearest sample count; floor(alpha*samples)+1 biased every edge upward
+		// and gave even almost transparent texels a full covered sample.
+		const uint covered = temporal || samples == 1 ?
+			min(samples, uint(saturate(alpha) * samples) + 1u) :
+			min(samples, uint(saturate(alpha) * samples + half(0.5)));
+		return covered == 0 ? 0u : (~0u >> (32u - covered));
 #endif // TRANSPARENT
 	}
 	return 0;

@@ -359,7 +359,7 @@ struct alignas(16) ShaderWeather
 	uint2 sun_color; // packed half3
 
 	uint2 ambient; // packed half3
-	uint padding0;
+	float rain_wetness; // 0 to 1, see WeatherComponent::rain_wetness
 	float stars; // number of stars (0: disable stars, >0: increase number of stars)
 
 	uint2 horizon; // packed half3

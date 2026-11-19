@@ -909,6 +909,39 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		surface.f0 = lerp(surface.f0, 0, wet); // decrease reflectance when wet (not shiny when fully underwater)
 		surface.N = normalize(lerp(surface.N, input.nor, wet)); // blend to vertex normal when wet
 	}
+
+	// Rain on the surface (MaterialComponent::SetRainWetness()): the atlas uv tells how much rain reaches the vertex (x)
+	//	and how the surface reacts to it (y, a 16 bit code: film * 100 + darkening, both in percent). It gets darker, and
+	//	the water film makes it smooth and fills the small bumps:
+	[branch]
+	if (material.IsRainWetness() && GetWeather().rain_wetness > 0)
+	{
+		const half rain_wet = (half)saturate(input.atl.x) * (half)GetWeather().rain_wetness;
+		const uint code = (uint)round(saturate(input.atl.y) * 65535.0);
+		const half darkening = (half)(code % 100) * 0.01;
+		const half film_strength = (half)min(code / 100, 100) * 0.01;
+		// Surfaces that soak up water (darkening over 30 %, earth and stone) are damp with a thin film, and in patches fixed
+		//	in the world on level tops the water stands in puddles with the full film. Leaves and grass have an even film.
+		//	A medium film everywhere made the ground pale from the sky:
+		half film = film_strength;
+		[branch]
+		if (darkening > 0.3)
+		{
+			const half patches = (half)saturate(noise_gradient_3D(surface.P * 0.7) * 1.2 + 0.5);
+			const half level = (half)saturate(input.nor.y * 4 - 3);
+			// A sharp border: between damp and puddle the roughness passes the medium range, which reflects the bright sky
+			//	widely and showed as light outlines around the puddles:
+			const half puddle = smoothstep(0.6, 0.62, patches) * level;
+			film = film_strength * lerp(0.4, 2.0, puddle);
+		}
+		film = saturate(film) * rain_wet;
+		surface.albedo *= 1.0 - darkening * rain_wet;
+		surface.roughness = lerp(surface.roughness, 0.08, film);
+		// The vertex normal turned to the side that is seen (double sided leaves and grass flip the shading normal):
+		float3 flat_normal = input.nor;
+		flat_normal = dot(flat_normal, surface.N) < 0 ? -flat_normal : flat_normal;
+		surface.N = normalize(lerp(surface.N, flat_normal, film * 0.3));
+	}
 #endif // OBJECTSHADER_USE_COMMON
 
 
@@ -1208,6 +1241,12 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	color = saturateMediump(color);
 
 	half alphatest = material.GetAlphaTest() + meshinstance.GetAlphaTest();
+	if (material.IsThinSurface())
+	{
+		// Material density changes smoothly, independently of mesh LOD. Instance
+		// alpha/dithering still controls visibility of the whole object.
+		alphatest = FoliageAlphaTest(material.GetAlphaTest(), dist) + meshinstance.GetAlphaTest();
+	}
 
 	half dithering = 0;
 #ifndef DISABLE_ALPHATEST
