@@ -998,6 +998,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_IMPOSTOR_PREPASS], "impostorPS_prepass.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_IMPOSTOR_PREPASS_DEPTHONLY], "impostorPS_prepass_depthonly.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_IMPOSTOR_SIMPLE], "impostorPS_simple.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_IMPOSTOR_SHADOW], "impostorPS_shadow.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_LIGHTVISUALIZER_RECTLIGHT], "vRectLightPS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_VOLUMETRICLIGHT_DIRECTIONAL], "volumetricLight_DirectionalPS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_VOLUMETRICLIGHT_POINT], "volumetricLight_PointPS.cso"); });
@@ -1398,7 +1399,6 @@ void LoadShaders()
 	wi::jobsystem::Dispatch(ctx, RENDERPASS_COUNT, 1, [](wi::jobsystem::JobArgs args) {
 		const bool impostorRequest =
 			args.jobIndex != RENDERPASS_VOXELIZE &&
-			args.jobIndex != RENDERPASS_SHADOW &&
 			args.jobIndex != RENDERPASS_ENVMAPCAPTURE;
 		if (!impostorRequest)
 		{
@@ -1425,6 +1425,13 @@ void LoadShaders()
 		case RENDERPASS_PREPASS_DEPTHONLY:
 			desc.vs = &shaders[VSTYPE_IMPOSTOR];
 			desc.ps = &shaders[PSTYPE_IMPOSTOR_PREPASS_DEPTHONLY];
+			break;
+		case RENDERPASS_SHADOW:
+			desc.vs = &shaders[VSTYPE_IMPOSTOR];
+			desc.ps = &shaders[PSTYPE_IMPOSTOR_SHADOW];
+			desc.rs = &rasterizers[RSTYPE_SHADOW_DOUBLESIDED];
+			desc.bs = &blendStates[BSTYPE_COLORWRITEDISABLE];
+			desc.dss = &depthStencils[DSSTYPE_SHADOW];
 			break;
 		default:
 			desc.vs = &shaders[VSTYPE_IMPOSTOR];
@@ -3501,7 +3508,8 @@ void RenderMeshes(
 void RenderImpostors(
 	const Visibility& vis,
 	RENDERPASS renderPass,
-	CommandList cmd
+	CommandList cmd,
+	uint32_t camera_mask = 1
 )
 {
 	const PipelineState* pso = &PSO_impostor[renderPass];
@@ -3534,7 +3542,15 @@ void RenderImpostors(
 		device->BindResource(&vis.scene->impostorBuffer, 2, cmd, vis.scene->impostor_data.subresource_srv);
 		device->BindResource(&vis.scene->impostorArray, 1, cmd);
 
-		device->DrawIndexedInstancedIndirect(&vis.scene->impostorBuffer, vis.scene->impostor_indirect.offset, cmd);
+		uint push[2] = {}; // camera_index, shadow (impostorVS)
+		push[1] = renderPass == RENDERPASS_SHADOW ? 1 : 0;
+		while (camera_mask != 0)
+		{
+			push[0] = firstbitlow(camera_mask);
+			camera_mask ^= 1u << push[0];
+			device->PushConstants(push, sizeof(push), cmd);
+			device->DrawIndexedInstancedIndirect(&vis.scene->impostorBuffer, vis.scene->impostor_indirect.offset, cmd);
+		}
 
 		device->EventEnd(cmd);
 	}
@@ -3653,7 +3669,7 @@ void UpdateVisibility(Visibility& vis)
 	// Initialize visible indices:
 	vis.Clear();
 
-	vis.meshlet_counter.fetch_add(vis.scene->impostorMeshletCount);
+	vis.meshlet_counter.fetch_add(vis.scene->impostorMeshletCount, std::memory_order_relaxed);
 
 	if (!GetFreezeCullingCameraEnabled())
 	{
@@ -3777,8 +3793,6 @@ void UpdateVisibility(Visibility& vis)
 					// Local stream compaction:
 					stream_compaction.list[stream_compaction.count++] = args.groupIndex;
 
-					vis.meshlet_counter.fetch_add(object.meshletCount);
-
 					if ((vis.flags & Visibility::ALLOW_REQUEST_REFLECTION) && object.IsRequestPlanarReflection())
 					{
 						// Planar reflection priority request:
@@ -3787,7 +3801,12 @@ void UpdateVisibility(Visibility& vis)
 						AtomicMin((volatile int64_t*)&vis.closest_ref, packed_ref);
 					}
 
-					if (object.GetFilterMask() & FILTER_TRANSPARENT)
+					const uint32_t filterMask = object.GetFilterMask();
+					if (filterMask & FILTER_OPAQUE)
+					{
+						vis.meshlet_counter.fetch_add(object.meshletCount, std::memory_order_relaxed);
+					}
+					if (filterMask & FILTER_TRANSPARENT)
 					{
 						vis.transparents_visible.store(true);
 					}
@@ -3957,7 +3976,7 @@ void UpdateVisibility(Visibility& vis)
 				if (!occluded)
 				{
 					vis.visibleHairs.push_back((uint32_t)i);
-					vis.meshlet_counter.fetch_add(hair.meshletCount);
+					vis.meshlet_counter.fetch_add(hair.meshletCount, std::memory_order_relaxed);
 				}
 			}
 		});
@@ -4477,7 +4496,7 @@ void UpdatePerFrameData(
 	frameCB.texture_wind_index = device->GetDescriptorIndex(&textures[TEXTYPE_3D_WIND], SubresourceType::SRV);
 	frameCB.cluster_lod_threshold = CLUSTER_LOD_ERROR_THRESHOLD;
 
-	const uint32_t meshletCount = vis.meshlet_counter.load();
+	const uint32_t meshletCount = vis.meshlet_counter.load(std::memory_order_acquire);
 	if (buffers[BUFFERTYPE_MESHLET].desc.size < meshletCount * sizeof(ShaderMeshlet))
 	{
 		GPUBufferDesc desc;
@@ -4491,6 +4510,14 @@ void UpdatePerFrameData(
 		wilog("meshlet buffer resized: %s", wi::helper::GetMemorySizeText(desc.size).c_str());
 	}
 	frameCB.meshletbuffer = device->GetDescriptorIndex(&buffers[BUFFERTYPE_MESHLET], SubresourceType::SRV);
+
+	wi::profiler::AddStat("visible meshlets", meshletCount);
+	wi::profiler::AddStat("visible objects", vis.visibleObjects.size());
+	wi::profiler::AddStat("visible lights", vis.visibleLights.size());
+	wi::profiler::AddStat("visible decals", vis.visibleDecals.size());
+	wi::profiler::AddStat("visible probes", vis.visibleEnvProbes.size());
+	wi::profiler::AddStat("visible hairs", vis.visibleHairs.size());
+	wi::profiler::AddStat("visible emitters", vis.visibleEmitters.size());
 
 	// See if indirect debug buffer needs to be resized:
 	if (indirectDebugStatsReadback_available[device->GetBufferIndex()] && indirectDebugStatsReadback[device->GetBufferIndex()].mapped_data != nullptr)
@@ -5414,9 +5441,10 @@ void UpdateRenderData(
 
 	// Hair particle systems GPU simulation:
 	//	(This must be non-async too, as prepass will render hairs!)
-	static thread_local wi::vector<HairParticleSystem::UpdateGPUItem> hair_updates;
 	if (!vis.visibleHairs.empty())
 	{
+		static thread_local wi::vector<HairParticleSystem::UpdateGPUItem> hair_updates;
+		hair_updates.clear();
 		auto range = wi::profiler::BeginRangeGPU("HairParticles - Simulate", cmd);
 		for (uint32_t hairIndex : vis.visibleHairs)
 		{
@@ -5439,12 +5467,11 @@ void UpdateRenderData(
 			}
 		}
 		HairParticleSystem::UpdateGPU(hair_updates.data(), (uint32_t)hair_updates.size(), cmd);
-		hair_updates.clear();
 		wi::profiler::EndRange(range);
 	}
 
 	// Impostor prepare:
-	if (vis.scene->impostors.GetCount() > 0 && vis.scene->objects.GetCount() > 0 && vis.scene->impostorBuffer.IsValid())
+	if (vis.scene->impostors.GetCount() > 0 && (vis.scene->objects.GetCount() > 0 || vis.scene->impostorStaticCount > 0) && vis.scene->impostorBuffer.IsValid())
 	{
 		device->EventBegin("Impostor prepare", cmd);
 		auto range = wi::profiler::BeginRangeGPU("Impostor prepare", cmd);
@@ -5468,10 +5495,33 @@ void UpdateRenderData(
 		device->BindUAV(&vis.scene->impostorBuffer, 3, cmd, vis.scene->impostor_data.subresource_uav);
 		device->BindUAV(&vis.scene->impostorBuffer, 4, cmd, vis.scene->impostor_indirect.subresource_uav);
 
-		uint object_count = (uint)vis.scene->objects.GetCount();
-		device->PushConstants(&object_count, sizeof(object_count), cmd);
+		ImpostorPreparePush push = {};
+		push.count = (uint)vis.scene->objects.GetCount();
+		push.static_impostors = -1;
+		if (push.count > 0)
+		{
+			device->PushConstants(&push, sizeof(push), cmd);
+			device->Dispatch((push.count + 63u) / 64u, 1, 1, cmd);
+		}
 
-		device->Dispatch((object_count + 63u) / 64u, 1, 1, cmd);
+		// Static impostors:
+		for (size_t i = 0; i < vis.scene->impostors.GetCount(); ++i)
+		{
+			const ImpostorComponent& impostor = vis.scene->impostors[i];
+			push.count = impostor.GetStaticImpostorCount();
+			if (push.count == 0 || impostor.textureIndex < 0)
+				continue;
+			const MeshComponent* mesh = vis.scene->meshes.GetComponent(vis.scene->impostors.GetEntity(i));
+			if (mesh == nullptr)
+				continue;
+			const Sphere sphere = mesh->GetBoundingSphere();
+			push.static_impostors = device->GetDescriptorIndex(&impostor.static_impostors, SubresourceType::SRV);
+			push.slice_offset = impostor.textureIndex * impostorCaptureAngles * 3;
+			push.radius = sphere.radius;
+			push.center = sphere.center;
+			device->PushConstants(&push, sizeof(push), cmd);
+			device->Dispatch((push.count + 63u) / 64u, 1, 1, cmd);
+		}
 
 		PushBarrier(GPUBarrier::Buffer(&vis.scene->impostorBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT));
 		FlushBarriers(cmd);
@@ -5479,7 +5529,7 @@ void UpdateRenderData(
 		wi::profiler::EndRange(range);
 		device->EventEnd(cmd);
 	}
-	else if(vis.scene->impostors.GetCount() > 0 && vis.scene->objects.GetCount() == 0 && vis.scene->impostorBuffer.IsValid())
+	else if(vis.scene->impostors.GetCount() > 0 && vis.scene->impostorBuffer.IsValid())
 	{
 		device->ClearUAV(&vis.scene->impostorBuffer, 0, cmd);
 		PushBarrier(GPUBarrier::Buffer(&vis.scene->impostorBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT));
@@ -6851,6 +6901,7 @@ void DrawShadowmaps(
 
 	uint32_t view_count = 0;
 	uint32_t light_group_count = 0;
+	uint32_t impostor_camera_mask = 0;
 
 	auto flush_shadows = [&] {
 		if (view_count == 0)
@@ -6900,6 +6951,10 @@ void DrawShadowmaps(
 							}
 						}
 					}
+					if (distanceSq > sqr(object.fadeDistance + object.radius))
+					{
+						camera_mask &= ~impostor_camera_mask; // replaced by its impostor
+					}
 					if (camera_mask == 0)
 						continue;
 
@@ -6929,6 +6984,11 @@ void DrawShadowmaps(
 			renderQueue_transparent.sort_transparent();
 			RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd, 0, view_count);
 			RenderMeshes(vis, renderQueue_transparent, RENDERPASS_SHADOW, FILTER_TRANSPARENT | FILTER_WATER, cmd, 0, view_count);
+		}
+
+		if (impostor_camera_mask != 0)
+		{
+			RenderImpostors(vis, RENDERPASS_SHADOW, cmd, impostor_camera_mask);
 		}
 
 		if (!vis.visibleHairs.empty())
@@ -7017,6 +7077,7 @@ void DrawShadowmaps(
 		// New view count batch is started after flushing current:
 		view_count = 0;
 		light_group_count = 0;
+		impostor_camera_mask = 0;
 
 		device->EventEnd(cmd);
 	};
@@ -7085,6 +7146,11 @@ void DrawShadowmaps(
 				wi::graphics::Rect& scissor = scissors[output_index];
 				cascade_indices[output_index] = cascade;
 				cascade_counts[output_index] = cascade_count;
+				if (cascade > 0 || cascade == cascade_count - 1)
+				{
+					// skip first cascade
+					impostor_camera_mask |= 1u << output_index;
+				}
 
 				cbcam.position = vis.camera->Eye;
 				cbcam.internal_resolution = uint2(shadow_rect.w, shadow_rect.h);
