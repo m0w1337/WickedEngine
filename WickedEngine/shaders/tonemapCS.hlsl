@@ -124,7 +124,50 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	[branch]
 	if (tonemap_push.texture_input >= 0)
 	{
-		result = bindless_textures_half4[descriptor_index(tonemap_push.texture_input)].SampleLevel(sampler_linear_clamp, uv, 0);
+		Texture2D<half4> tex_input = bindless_textures_half4[descriptor_index(tonemap_push.texture_input)];
+		result = tex_input.SampleLevel(sampler_linear_clamp, uv, 0);
+
+		// Depth-gated bilateral distant softener: suppresses sub-pixel block-edge shimmer in the distance
+		// while keeping near/mid-range geometry (< 26 m) completely untouched at zero extra texture taps:
+		[branch]
+		if (GetCamera().texture_depth_index >= 0)
+		{
+			const float center_depth = texture_depth.SampleLevel(sampler_point_clamp, uv, 0);
+			const float center_lin = (center_depth > 0.0) ? compute_lineardepth(center_depth) : 0.0;
+			const float dist_blur = (center_depth > 0.0) ? smoothstep(26.0, 110.0, center_lin) : 0.0;
+			[branch]
+			if (dist_blur > 0.001)
+			{
+				const float2 off = tonemap_push.resolution_rcp * lerp(0.55, 1.45, dist_blur);
+				const float2 diag[4] = {
+					float2(-1.0, -1.0),
+					float2( 1.0, -1.0),
+					float2(-1.0,  1.0),
+					float2( 1.0,  1.0)
+				};
+				const half3 center_c = max(result.rgb, 0.0h);
+				half3 accum_rw = center_c / (1.0h + (half)max3(center_c));
+				half weight_sum = 1.0h;
+
+				[unroll]
+				for (int k = 0; k < 4; ++k)
+				{
+					const float2 tap_uv = uv + off * diag[k];
+					const float tap_depth = texture_depth.SampleLevel(sampler_point_clamp, tap_uv, 0);
+					const float tap_lin = (tap_depth > 0.0) ? compute_lineardepth(tap_depth) : 10000.0;
+					if (tap_lin >= center_lin * 0.72)
+					{
+						const half3 tap_c = max(tex_input.SampleLevel(sampler_linear_clamp, tap_uv, 0).rgb, 0.0h);
+						accum_rw += (tap_c / (1.0h + (half)max3(tap_c))) * 0.75h;
+						weight_sum += 0.75h;
+					}
+				}
+
+				const half3 avg_rw = accum_rw / weight_sum;
+				const half3 blurred = avg_rw / max(1.0h - (half)max3(avg_rw), 0.002h);
+				result.rgb = lerp(result.rgb, blurred, (half)(dist_blur * 0.72));
+			}
+		}
 	}
 
 	[branch]

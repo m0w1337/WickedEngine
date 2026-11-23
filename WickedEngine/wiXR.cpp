@@ -33,6 +33,7 @@ namespace wi::xr
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <cstring>
@@ -54,33 +55,48 @@ namespace wi::xr
 			const char* primary[2] = {}; // left, right
 			const char* secondary[2] = {}; // left, right
 			const char* menu[2] = {}; // left, right
+			const char* trigger_touch = nullptr;
+			const char* thumb_touch[2][5] = {}; // capacitive thumb surfaces per hand
 		};
 		// New controller types can be supported by extending this table:
 		const InteractionProfile interaction_profiles[] = {
 			{
 				"/interaction_profiles/khr/simple_controller",
 				"input/select/click", nullptr, nullptr, nullptr,
-				{}, {}, { "input/menu/click", "input/menu/click" }
+				{}, {}, { "input/menu/click", "input/menu/click" },
+				nullptr, {}
 			},
 			{
 				"/interaction_profiles/oculus/touch_controller",
 				"input/trigger/value", "input/squeeze/value", "input/thumbstick", "input/thumbstick/click",
-				{ "input/x/click", "input/a/click" }, { "input/y/click", "input/b/click" }, { "input/menu/click", nullptr }
+				{ "input/x/click", "input/a/click" }, { "input/y/click", "input/b/click" }, { "input/menu/click", nullptr },
+				"input/trigger/touch",
+				{
+					{ "input/thumbstick/touch", "input/thumbrest/touch", "input/x/touch", "input/y/touch", nullptr },
+					{ "input/thumbstick/touch", "input/thumbrest/touch", "input/a/touch", "input/b/touch", nullptr }
+				}
 			},
 			{
 				"/interaction_profiles/valve/index_controller",
 				"input/trigger/value", "input/squeeze/value", "input/thumbstick", "input/thumbstick/click",
-				{ "input/a/click", "input/a/click" }, { "input/b/click", "input/b/click" }, {}
+				{ "input/a/click", "input/a/click" }, { "input/b/click", "input/b/click" }, {},
+				"input/trigger/touch",
+				{
+					{ "input/thumbstick/touch", "input/trackpad/touch", "input/a/touch", "input/b/touch", nullptr },
+					{ "input/thumbstick/touch", "input/trackpad/touch", "input/a/touch", "input/b/touch", nullptr }
+				}
 			},
 			{
 				"/interaction_profiles/htc/vive_controller",
 				"input/trigger/value", "input/squeeze/click", "input/trackpad", "input/trackpad/click",
-				{}, {}, { "input/menu/click", "input/menu/click" }
+				{}, {}, { "input/menu/click", "input/menu/click" },
+				nullptr, {}
 			},
 			{
 				"/interaction_profiles/microsoft/motion_controller",
 				"input/trigger/value", "input/squeeze/click", "input/thumbstick", "input/thumbstick/click",
-				{}, {}, { "input/menu/click", "input/menu/click" }
+				{}, {}, { "input/menu/click", "input/menu/click" },
+				nullptr, {}
 			},
 		};
 
@@ -127,6 +143,15 @@ namespace wi::xr
 			EyeView eyes[EYE_COUNT];
 			Pose head;
 			ControllerState controllers[size_t(Hand::Count)];
+			HandTrackingState hand_tracking[size_t(Hand::Count)];
+
+			// Hand tracking (XR_EXT_hand_tracking + XR_EXT_hand_tracking_data_source):
+			bool hand_tracking_supported = false;
+			bool hand_tracking_data_source_enabled = false;
+			PFN_xrCreateHandTrackerEXT create_hand_tracker = nullptr;
+			PFN_xrDestroyHandTrackerEXT destroy_hand_tracker = nullptr;
+			PFN_xrLocateHandJointsEXT locate_hand_joints = nullptr;
+			XrHandTrackerEXT hand_trackers[size_t(Hand::Count)] = {};
 
 			// Input:
 			XrActionSet action_set = XR_NULL_HANDLE;
@@ -140,6 +165,8 @@ namespace wi::xr
 			XrAction action_primary = XR_NULL_HANDLE;
 			XrAction action_secondary = XR_NULL_HANDLE;
 			XrAction action_menu = XR_NULL_HANDLE;
+			XrAction action_trigger_touch = XR_NULL_HANDLE;
+			XrAction action_thumb_touch = XR_NULL_HANDLE;
 			XrAction action_haptic = XR_NULL_HANDLE;
 			XrSpace space_grip[size_t(Hand::Count)] = {};
 			XrSpace space_aim[size_t(Hand::Count)] = {};
@@ -255,6 +282,8 @@ namespace wi::xr
 			state.action_primary = CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_primary", "Primary Button");
 			state.action_secondary = CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_secondary", "Secondary Button");
 			state.action_menu = CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_menu", "Menu Button");
+			state.action_trigger_touch = CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "trigger_touch", "Trigger Touch");
+			state.action_thumb_touch = CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_touch", "Thumb Touch");
 			state.action_haptic = CreateAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic", "Haptic");
 
 			// Suggest bindings for every known interaction profile, the runtime will select the one that matches the hardware:
@@ -278,6 +307,9 @@ namespace wi::xr
 					bind(state.action_primary, hand, profile.primary[hand]);
 					bind(state.action_secondary, hand, profile.secondary[hand]);
 					bind(state.action_menu, hand, profile.menu[hand]);
+					bind(state.action_trigger_touch, hand, profile.trigger_touch);
+					for (const char* thumb_path : profile.thumb_touch[hand])
+						bind(state.action_thumb_touch, hand, thumb_path);
 				}
 				XrInteractionProfileSuggestedBinding suggested = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
 				suggested.interactionProfile = StringToPath(profile.path);
@@ -366,6 +398,129 @@ namespace wi::xr
 				controller.button_primary = GetActionBool(state.action_primary, hand);
 				controller.button_secondary = GetActionBool(state.action_secondary, hand);
 				controller.button_menu = GetActionBool(state.action_menu, hand);
+				controller.trigger_touch = GetActionBool(state.action_trigger_touch, hand);
+				controller.thumb_touch = GetActionBool(state.action_thumb_touch, hand);
+			}
+		}
+
+		void UpdateHandTracking(XrTime time)
+		{
+			State& state = GetState();
+			if (!state.hand_tracking_supported || state.locate_hand_joints == nullptr)
+				return;
+
+			static_assert(HAND_JOINT_COUNT == XR_HAND_JOINT_COUNT_EXT, "OpenXR hand joint count mismatch");
+			auto joint_bend = [](const HandTrackingState& ht, int a, int b, int c, float max_rad) -> float {
+				if (!ht.joints[a].valid || !ht.joints[b].valid || !ht.joints[c].valid)
+					return 0.0f;
+				const XMVECTOR pa = XMLoadFloat3(&ht.joints[a].position);
+				const XMVECTOR pb = XMLoadFloat3(&ht.joints[b].position);
+				const XMVECTOR pc = XMLoadFloat3(&ht.joints[c].position);
+				const XMVECTOR v1 = XMVector3Normalize(pb - pa);
+				const XMVECTOR v2 = XMVector3Normalize(pc - pb);
+				const float d = std::clamp(XMVectorGetX(XMVector3Dot(v1, v2)), -1.0f, 1.0f);
+				return std::clamp(std::acos(d) / max_rad, 0.0f, 1.0f);
+			};
+
+			for (size_t hand = 0; hand < size_t(Hand::Count); ++hand)
+			{
+				HandTrackingState& ht = state.hand_tracking[hand];
+				ht.active = false;
+				ht.source = HandTrackingSource::None;
+				if (state.hand_trackers[hand] == XR_NULL_HANDLE)
+					continue;
+
+				XrHandJointLocationEXT raw_joints[XR_HAND_JOINT_COUNT_EXT] = {};
+				XrHandJointLocationsEXT locations = { XR_TYPE_HAND_JOINT_LOCATIONS_EXT };
+				locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+				locations.jointLocations = raw_joints;
+
+				XrHandTrackingDataSourceStateEXT source_state = { XR_TYPE_HAND_TRACKING_DATA_SOURCE_STATE_EXT };
+				if (state.hand_tracking_data_source_enabled)
+					locations.next = &source_state;
+
+				XrHandJointsLocateInfoEXT locate_info = { XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT };
+				locate_info.baseSpace = state.space_app;
+				locate_info.time = time;
+
+				if (XR_FAILED(state.locate_hand_joints(state.hand_trackers[hand], &locate_info, &locations)) || locations.isActive != XR_TRUE)
+					continue;
+
+				ht.active = true;
+				constexpr XrSpaceLocationFlags required = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+				for (uint32_t j = 0; j < HAND_JOINT_COUNT; ++j)
+				{
+					ht.joints[j] = ConvertPose(raw_joints[j].pose, (raw_joints[j].locationFlags & required) == required);
+					ht.radii[j] = raw_joints[j].radius;
+				}
+
+				if (state.hand_tracking_data_source_enabled && source_state.isActive == XR_TRUE)
+				{
+					ht.source = (source_state.dataSource == XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT)
+						? HandTrackingSource::Controller
+						: HandTrackingSource::Optical;
+				}
+				else
+				{
+					ht.source = state.controllers[hand].grip.valid ? HandTrackingSource::Controller : HandTrackingSource::Optical;
+				}
+
+				// Compute invariant 3D flexion curls per phalanx from joint segment directions:
+				ht.finger_curl[0][0] = joint_bend(ht, XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_THUMB_METACARPAL_EXT, XR_HAND_JOINT_THUMB_PROXIMAL_EXT, 0.85f);
+				ht.finger_curl[0][1] = joint_bend(ht, XR_HAND_JOINT_THUMB_METACARPAL_EXT, XR_HAND_JOINT_THUMB_PROXIMAL_EXT, XR_HAND_JOINT_THUMB_DISTAL_EXT, 0.95f);
+				ht.finger_curl[0][2] = joint_bend(ht, XR_HAND_JOINT_THUMB_PROXIMAL_EXT, XR_HAND_JOINT_THUMB_DISTAL_EXT, XR_HAND_JOINT_THUMB_TIP_EXT, 1.15f);
+
+				static constexpr int FINGER_JOINTS[4][5] = {
+					{ XR_HAND_JOINT_INDEX_METACARPAL_EXT,  XR_HAND_JOINT_INDEX_PROXIMAL_EXT,  XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT,  XR_HAND_JOINT_INDEX_DISTAL_EXT,  XR_HAND_JOINT_INDEX_TIP_EXT },
+					{ XR_HAND_JOINT_MIDDLE_METACARPAL_EXT, XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT, XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT, XR_HAND_JOINT_MIDDLE_DISTAL_EXT, XR_HAND_JOINT_MIDDLE_TIP_EXT },
+					{ XR_HAND_JOINT_RING_METACARPAL_EXT,   XR_HAND_JOINT_RING_PROXIMAL_EXT,   XR_HAND_JOINT_RING_INTERMEDIATE_EXT,   XR_HAND_JOINT_RING_DISTAL_EXT,   XR_HAND_JOINT_RING_TIP_EXT },
+					{ XR_HAND_JOINT_LITTLE_METACARPAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT, XR_HAND_JOINT_LITTLE_DISTAL_EXT, XR_HAND_JOINT_LITTLE_TIP_EXT },
+				};
+				for (int f = 0; f < 4; ++f)
+				{
+					ht.finger_curl[f + 1][0] = joint_bend(ht, FINGER_JOINTS[f][0], FINGER_JOINTS[f][1], FINGER_JOINTS[f][2], 1.45f);
+					ht.finger_curl[f + 1][1] = joint_bend(ht, FINGER_JOINTS[f][1], FINGER_JOINTS[f][2], FINGER_JOINTS[f][3], 1.65f);
+					ht.finger_curl[f + 1][2] = joint_bend(ht, FINGER_JOINTS[f][2], FINGER_JOINTS[f][3], FINGER_JOINTS[f][4], 1.25f);
+				}
+
+				if (ht.joints[XR_HAND_JOINT_THUMB_TIP_EXT].valid && ht.joints[XR_HAND_JOINT_INDEX_TIP_EXT].valid)
+				{
+					const float dist = XMVectorGetX(XMVector3Length(
+						XMLoadFloat3(&ht.joints[XR_HAND_JOINT_THUMB_TIP_EXT].position) -
+						XMLoadFloat3(&ht.joints[XR_HAND_JOINT_INDEX_TIP_EXT].position)));
+					ht.pinch_strength = std::clamp((0.055f - dist) / 0.035f, 0.0f, 1.0f);
+				}
+				else
+				{
+					ht.pinch_strength = 0.0f;
+				}
+
+				// Bare-hand Meta Quest / Quest Link support when no physical controller is active:
+				ControllerState& ctrl = state.controllers[hand];
+				if (ht.source == HandTrackingSource::Optical && !ctrl.grip.valid && ht.joints[XR_HAND_JOINT_PALM_EXT].valid)
+				{
+					const Pose& palm = ht.joints[XR_HAND_JOINT_PALM_EXT];
+					const XMVECTOR Q_palm = XMLoadFloat4(&palm.orientation);
+					// Match OpenXR input/grip/pose convention (+Z = pinky->thumb, -Y = fingers, +X = right dorsal / left palm):
+					const XMVECTOR Q_pitch = XMQuaternionRotationAxis(XMVectorSet(1, 0, 0, 0), -XM_PIDIV2);
+					const XMVECTOR Q_roll = XMQuaternionRotationAxis(XMVectorSet(0, 0, 1, 0), hand == 0 ? -XM_PIDIV2 : XM_PIDIV2);
+					const XMVECTOR Q_local = XMQuaternionMultiply(Q_pitch, Q_roll);
+					ctrl.grip.valid = true;
+					ctrl.grip.position = palm.position;
+					XMStoreFloat4(&ctrl.grip.orientation, XMQuaternionNormalize(XMQuaternionMultiply(Q_local, Q_palm)));
+
+					if (!ctrl.aim.valid)
+					{
+						ctrl.aim.valid = true;
+						ctrl.aim.position = ht.joints[XR_HAND_JOINT_INDEX_PROXIMAL_EXT].valid
+							? ht.joints[XR_HAND_JOINT_INDEX_PROXIMAL_EXT].position
+							: palm.position;
+						ctrl.aim.orientation = palm.orientation;
+					}
+					ctrl.trigger = ht.pinch_strength;
+					ctrl.trigger_touch = ht.pinch_strength > 0.12f;
+					ctrl.squeeze = std::clamp((ht.finger_curl[2][1] + ht.finger_curl[3][1] + ht.finger_curl[4][1]) / 3.0f, 0.0f, 1.0f);
+				}
 			}
 		}
 
@@ -409,6 +564,7 @@ namespace wi::xr
 			}
 
 			UpdateInput(time);
+			UpdateHandTracking(time);
 		}
 
 		void HandleSessionStateChange(XrSessionState new_state)
@@ -578,13 +734,16 @@ namespace wi::xr
 		wi::vector<XrExtensionProperties> extensions(extension_count, { XR_TYPE_EXTENSION_PROPERTIES });
 		xrEnumerateInstanceExtensionProperties(nullptr, extension_count, &extension_count, extensions.data());
 		bool vulkan_supported = false;
+		bool hand_tracking_ext = false;
+		bool hand_data_source_ext = false;
 		for (const XrExtensionProperties& extension : extensions)
 		{
 			if (strcmp(extension.extensionName, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME) == 0)
-			{
 				vulkan_supported = true;
-				break;
-			}
+			else if (strcmp(extension.extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0)
+				hand_tracking_ext = true;
+			else if (strcmp(extension.extensionName, XR_EXT_HAND_TRACKING_DATA_SOURCE_EXTENSION_NAME) == 0)
+				hand_data_source_ext = true;
 		}
 		if (!vulkan_supported)
 		{
@@ -592,21 +751,35 @@ namespace wi::xr
 			return false;
 		}
 
-		const char* enabled_extensions[] = {
+		wi::vector<const char*> enabled_extensions = {
 			XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
 		};
+		if (hand_tracking_ext)
+		{
+			enabled_extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+			if (hand_data_source_ext)
+				enabled_extensions.push_back(XR_EXT_HAND_TRACKING_DATA_SOURCE_EXTENSION_NAME);
+		}
 		XrInstanceCreateInfo instance_info = { XR_TYPE_INSTANCE_CREATE_INFO };
 		strncpy(instance_info.applicationInfo.applicationName, "Wicked Engine Application", sizeof(instance_info.applicationInfo.applicationName) - 1);
 		strncpy(instance_info.applicationInfo.engineName, "Wicked Engine", sizeof(instance_info.applicationInfo.engineName) - 1);
 		instance_info.applicationInfo.applicationVersion = 1;
 		instance_info.applicationInfo.engineVersion = 1;
 		instance_info.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0); // compatible with OpenXR 1.0 and 1.1 runtimes
-		instance_info.enabledExtensionCount = arraysize(enabled_extensions);
-		instance_info.enabledExtensionNames = enabled_extensions;
+		instance_info.enabledExtensionCount = (uint32_t)enabled_extensions.size();
+		instance_info.enabledExtensionNames = enabled_extensions.data();
 		if (!xr_check(xrCreateInstance(&instance_info, &state.instance), "xrCreateInstance"))
 		{
 			state.instance = XR_NULL_HANDLE;
 			return false;
+		}
+
+		if (hand_tracking_ext)
+		{
+			xrGetInstanceProcAddr(state.instance, "xrCreateHandTrackerEXT", (PFN_xrVoidFunction*)&state.create_hand_tracker);
+			xrGetInstanceProcAddr(state.instance, "xrDestroyHandTrackerEXT", (PFN_xrVoidFunction*)&state.destroy_hand_tracker);
+			xrGetInstanceProcAddr(state.instance, "xrLocateHandJointsEXT", (PFN_xrVoidFunction*)&state.locate_hand_joints);
+			state.hand_tracking_data_source_enabled = hand_data_source_ext;
 		}
 
 		xrGetInstanceProcAddr(state.instance, "xrGetVulkanGraphicsRequirements2KHR", (PFN_xrVoidFunction*)&state.get_vulkan_graphics_requirements);
@@ -637,9 +810,15 @@ namespace wi::xr
 			return false;
 		}
 
+		XrSystemHandTrackingPropertiesEXT hand_props = { XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT };
 		XrSystemProperties system_properties = { XR_TYPE_SYSTEM_PROPERTIES };
+		if (hand_tracking_ext)
+			system_properties.next = &hand_props;
 		xrGetSystemProperties(state.instance, state.system, &system_properties);
-		wilog("[wi::xr] initialized, runtime: %s, system: %s", instance_properties.runtimeName, system_properties.systemName);
+		state.hand_tracking_supported = hand_tracking_ext && hand_props.supportsHandTracking == XR_TRUE &&
+			state.create_hand_tracker != nullptr && state.destroy_hand_tracker != nullptr && state.locate_hand_joints != nullptr;
+		wilog("[wi::xr] initialized, runtime: %s, system: %s, hand_tracking: %s", instance_properties.runtimeName, system_properties.systemName,
+			state.hand_tracking_supported ? "yes" : "no");
 
 		return true;
 	}
@@ -650,6 +829,17 @@ namespace wi::xr
 		if (state.device != nullptr)
 		{
 			state.device->WaitForGPU();
+		}
+		if (state.destroy_hand_tracker != nullptr)
+		{
+			for (size_t hand = 0; hand < size_t(Hand::Count); ++hand)
+			{
+				if (state.hand_trackers[hand] != XR_NULL_HANDLE)
+				{
+					state.destroy_hand_tracker(state.hand_trackers[hand]);
+					state.hand_trackers[hand] = XR_NULL_HANDLE;
+				}
+			}
 		}
 		state.swapchain_images.clear();
 		if (state.swapchain != XR_NULL_HANDLE)
@@ -805,6 +995,33 @@ namespace wi::xr
 			wilog_warning("[wi::xr] input could not be initialized, controllers will not be available");
 		}
 
+		if (state.hand_tracking_supported && state.create_hand_tracker != nullptr)
+		{
+			XrHandTrackingDataSourceEXT data_sources[] = {
+				XR_HAND_TRACKING_DATA_SOURCE_UNOBSTRUCTED_EXT,
+				XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT,
+			};
+			XrHandTrackingDataSourceInfoEXT source_info = { XR_TYPE_HAND_TRACKING_DATA_SOURCE_INFO_EXT };
+			source_info.requestedDataSourceCount = arraysize(data_sources);
+			source_info.requestedDataSources = data_sources;
+
+			for (size_t hand = 0; hand < size_t(Hand::Count); ++hand)
+			{
+				XrHandTrackerCreateInfoEXT tracker_info = { XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT };
+				tracker_info.hand = hand == size_t(Hand::Left) ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+				tracker_info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+				if (state.hand_tracking_data_source_enabled)
+					tracker_info.next = &source_info;
+
+				if (XR_FAILED(state.create_hand_tracker(state.session, &tracker_info, &state.hand_trackers[hand])))
+				{
+					// Fallback if the runtime rejects XrHandTrackingDataSourceInfoEXT:
+					tracker_info.next = nullptr;
+					xr_check(state.create_hand_tracker(state.session, &tracker_info, &state.hand_trackers[hand]), "xrCreateHandTrackerEXT");
+				}
+			}
+		}
+
 		return true;
 	}
 
@@ -929,6 +1146,14 @@ namespace wi::xr
 	{
 		return GetState().controllers[std::min(size_t(hand), size_t(Hand::Count) - 1)];
 	}
+	const HandTrackingState& GetHandTrackingState(Hand hand)
+	{
+		return GetState().hand_tracking[std::min(size_t(hand), size_t(Hand::Count) - 1)];
+	}
+	bool IsHandTrackingSupported()
+	{
+		return GetState().hand_tracking_supported;
+	}
 
 	void Vibrate(Hand hand, float amplitude, float duration_seconds, float frequency)
 	{
@@ -956,6 +1181,7 @@ namespace wi::xr
 		const EyeView eye_view_dummy;
 		const Pose pose_dummy;
 		const ControllerState controller_dummy;
+		const HandTrackingState hand_tracking_dummy;
 	}
 	bool Initialize() { return false; }
 	void Shutdown() {}
@@ -972,6 +1198,8 @@ namespace wi::xr
 	const EyeView& GetEyeView(uint32_t eye) { return eye_view_dummy; }
 	const Pose& GetHeadPose() { return pose_dummy; }
 	const ControllerState& GetControllerState(Hand hand) { return controller_dummy; }
+	const HandTrackingState& GetHandTrackingState(Hand hand) { return hand_tracking_dummy; }
+	bool IsHandTrackingSupported() { return false; }
 	void Vibrate(Hand hand, float amplitude, float duration_seconds, float frequency) {}
 }
 

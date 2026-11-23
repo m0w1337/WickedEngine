@@ -548,6 +548,8 @@ struct Surface
 				bumpColor = half3(material.textures[NORMALMAP].SampleLevel(sam, uvsets, lod).rg, 1);
 #endif // SURFACE_LOAD_QUAD_DERIVATIVES
 				bumpColor = bumpColor * 2 - 1;
+				// Normal maps use OpenGL convention (+G = up / -v), whereas TBN bitangent points along +dP/dv (down, required by POM):
+				bumpColor.g = -bumpColor.g;
 				bumpColor.rg *= material.GetNormalMapStrength();
 				
 #ifdef WATER
@@ -1048,6 +1050,7 @@ struct Surface
 #endif // SURFACE_LOAD_QUAD_DERIVATIVES
 
 			clearcoatNormalMap = clearcoatNormalMap * 2 - 1;
+			clearcoatNormalMap.g = -clearcoatNormalMap.g;
 			clearcoat.N = mul(clearcoatNormalMap, TBN);
 		}
 

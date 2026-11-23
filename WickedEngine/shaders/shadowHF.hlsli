@@ -239,7 +239,8 @@ inline half3 shadow_2D(in ShaderEntity light, in float z, in float2 shadow_uv, i
 {
 	shadow_uv.x += cascade;
 	shadow_uv = mad(shadow_uv, light.shadowAtlasMulAdd.xy, light.shadowAtlasMulAdd.zw);
-	return sample_shadow(shadow_uv, z, shadow_border_clamp(light, cascade), light.GetType() == ENTITY_TYPE_RECTLIGHT ? (half2(light.GetRadius(), light.GetLength()) * 0.025) : light.GetRadius(), pixel);
+	const half2 radius = (light.GetType() == ENTITY_TYPE_RECTLIGHT ? (half2(light.GetRadius(), light.GetLength()) * 0.025) : light.GetRadius().xx) / (1.0 + cascade * 1.5);
+	return sample_shadow(shadow_uv, z, shadow_border_clamp(light, cascade), radius, pixel);
 }
 
 inline half3 shadow_cube(in ShaderEntity light, in float3 Lunnormalized, min16uint2 pixel = 0)
@@ -336,7 +337,9 @@ inline half shadow_2D_volumetricclouds(float3 P)
 		half opticalDepth = cloudShadowData.g * (max(0.0, cloudShadowData.r - sampleDepthKm) * SKY_UNIT_TO_M);
 		opticalDepth = min(cloudShadowData.b, opticalDepth);
 
-		half transmittance = saturate(exp(-opticalDepth));
+		// Thick clouds otherwise reach an optical depth where exp(-opticalDepth) drops to zero right behind the cloud edge.
+		//	Scale the falloff and keep a scattered direct light floor so passing clouds dim the world smoothly:
+		half transmittance = lerp(0.45, 1.0, saturate(exp(-opticalDepth * 0.06)));
 		return transmittance;
 	}
 

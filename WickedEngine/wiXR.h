@@ -64,6 +64,27 @@ namespace wi::xr
 		bool button_primary = false; // A or X
 		bool button_secondary = false; // B or Y
 		bool button_menu = false;
+		bool trigger_touch = false;
+		bool thumb_touch = false;
+	};
+
+	static constexpr uint32_t HAND_JOINT_COUNT = 26;
+
+	enum class HandTrackingSource : uint8_t
+	{
+		None = 0,
+		Optical,    // bare hand tracking (e.g. Meta Quest via Quest Link or Ultraleap)
+		Controller  // finger tracking synthesized from a held controller (e.g. Valve Index)
+	};
+
+	struct HandTrackingState
+	{
+		bool active = false;
+		HandTrackingSource source = HandTrackingSource::None;
+		Pose joints[HAND_JOINT_COUNT];
+		float radii[HAND_JOINT_COUNT] = {};
+		float finger_curl[5][3] = {}; // [thumb..little][proximal/intermediate/distal], 0 = open, 1 = bent
+		float pinch_strength = 0;     // [0..1] thumb tip to index tip proximity
 	};
 
 	// Creates the OpenXR instance and looks for a head mounted display
@@ -108,6 +129,8 @@ namespace wi::xr
 	const EyeView& GetEyeView(uint32_t eye);
 	const Pose& GetHeadPose();
 	const ControllerState& GetControllerState(Hand hand);
+	const HandTrackingState& GetHandTrackingState(Hand hand);
+	bool IsHandTrackingSupported();
 
 	// Starts a vibration on the controller. amplitude: [0, 1], frequency in Hz (0 = runtime default)
 	void Vibrate(Hand hand, float amplitude, float duration_seconds, float frequency = 0);

@@ -629,14 +629,19 @@ inline float CausticCellBorder(float2 p, float t)
 	return second - nearest;
 }
 
-// The light of the sun focused by the waves on the ground under water: a net of bright lines that wander and change
-//	their shape. p in meters along the ground, t in seconds; two layers of cells (about 30 and 45 cm) moving against
-//	each other, 0 to 1
+// The light of the sun focused by the waves on the ground under water: organic wandering light filaments generated from
+//	domain-warped wave interference across two drifting scales, 0 to 1
 inline half WaterCaustics(float2 p, float t)
 {
-	const float a = CausticCellBorder(p * 3.3, t * 1.1);
-	const float b = CausticCellBorder(float2(p.y, -p.x) * 2.2 + 7.3, t * 0.8);
-	return (half)saturate(pow(saturate(1 - a * 3.5), 4) + 0.7 * pow(saturate(1 - b * 3.5), 4));
+	const float2 warp =
+		float2(sin(p.y * 2.3 + t * 1.15), cos(p.x * 2.1 - t * 0.95)) * 0.14 +
+		float2(cos((p.x + p.y) * 3.6 - t * 1.7), sin((p.x - p.y) * 3.4 + t * 1.5)) * 0.06;
+	const float2 wp = p + warp;
+	const float a = CausticCellBorder(wp * 2.9, t * 0.95);
+	const float b = CausticCellBorder(float2(wp.y, -wp.x) * 2.1 + 7.3 - warp * 0.6, t * 0.72);
+	const float filA = pow(smoothstep(0.32, 0.0, a), 2.2);
+	const float filB = pow(smoothstep(0.34, 0.0, b), 2.2);
+	return (half)saturate(filA * 0.78 + filB * 0.58 + filA * filB * 0.35);
 }
 
 #if defined(__PSSL__) && defined(PREPASS) && !defined(DEPTHONLY)
@@ -735,13 +740,15 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		float2 uv_dy = ddy_coarse(uv);
 
 		half parallax_strength = material.GetParallaxOcclusionMapping();
-		if (material.IsParallaxEdgeFade())
+		if (material.IsParallaxEdgeFade() && material.IsEdgeBevel())
 		{
-			// The second uv set holds the distances to the edges of the flat surface instead of texture coordinates.
-			//	The texture is not shifted at an edge, because the outline of the mesh can't follow it:
+			// Unchamfered blocks (IsEdgeBevel) fade parallax over 12 cm from sharp 90-degree edges so the shifted
+			//	texture doesn't clash across a razor edge. Chamfered blocks (!IsEdgeBevel) keep full parallax relief
+			//	all the way across the smooth bevel:
 			static const half PARALLAX_EDGE_FADE_DISTANCE = 0.12;
 			const float2 edge_distance = DecodeEdgeDistance(edge_encoded);
-			parallax_strength *= smoothstep(0, 1, saturate(min(edge_distance.x, edge_distance.y) / PARALLAX_EDGE_FADE_DISTANCE));
+			const float edge_min = min(edge_distance.x, edge_distance.y);
+			parallax_strength *= smoothstep(0, 1, saturate(edge_min / PARALLAX_EDGE_FADE_DISTANCE));
 		}
 		// Far away the relief is smaller than a pixel, there the steps through the height map are left out (a large part
 		//	of the cost of the parallax mapping in a big resolution, like the eyes of a headset):
@@ -814,6 +821,8 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		}
 		surface.bumpColor = half3(bump_map, 1);
 		surface.bumpColor = surface.bumpColor * 2 - 1;
+		// Normal maps use OpenGL convention (+G = up / -v), whereas TBN bitangent points along +dP/dv (down, required by POM):
+		surface.bumpColor.g = -surface.bumpColor.g;
 		surface.bumpColor.rg *= material.GetNormalMapStrength();
 	}
 #endif // OBJECTSHADER_USE_TANGENT
@@ -1102,6 +1111,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	{
 		half3 clearcoatNormalMap = half3(material.textures[CLEARCOATNORMALMAP].Sample(sampler_objectshader, uvsets).rg, 1);
 		clearcoatNormalMap = clearcoatNormalMap * 2 - 1;
+		clearcoatNormalMap.g = -clearcoatNormalMap.g;
 		surface.clearcoat.N = mul(clearcoatNormalMap, TBN);
 	}
 #endif // OBJECTSHADER_USE_TANGENT
@@ -1121,6 +1131,17 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	surface.pixel = pixel;
 	surface.screenUV = ScreenCoord;
 
+#if !defined(WATER) && !defined(PREPASS) && !defined(DEPTHONLY)
+	{
+		// Geometric specular AA: widen roughness on sub-pixel chamfers and distant block edges to eliminate shimmer:
+		const float3 dndu = ddx_coarse(surface.N);
+		const float3 dndv = ddy_coarse(surface.N);
+		const float variance = dot(dndu, dndu) + dot(dndv, dndv);
+		const float kernelRoughness2 = min(2.0 * variance, 0.18);
+		surface.roughness = (half)sqrt(saturate((float)surface.roughness * (float)surface.roughness + kernelRoughness2));
+	}
+#endif
+
 	surface.update();
 
 	// Use the sky hemisphere for thin cards, independent of which face the
@@ -1139,47 +1160,149 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	half2 bumpColor0 = 0;
 	half2 bumpColor1 = 0;
 	half2 bumpColor2 = 0;
+	const float water_cam_dist = distance(surface.P, camera.position);
+	const float water_wave_fade = saturate(1.0 - (water_cam_dist - 18.0) / 90.0);
+	const float water_normal_strength = material.GetNormalMapStrength() * lerp(0.22, 1.0, water_wave_fade);
+	float2 water_wave_xy = surface.P.xz * 0.25;
 	[branch]
 	if (material.textures[NORMALMAP].IsValid())
 	{
 		Texture2D<half4> texture_normalmap = bindless_textures_half4[descriptor_index(material.textures[NORMALMAP].texture_descriptor)];
 		const float2 UV_normalMap = material.textures[NORMALMAP].GetUVSet() == 0 ? uvsets.xy : uvsets.zw;
-		bumpColor0 = 2 * texture_normalmap.Sample(sampler_objectshader, UV_normalMap - material.texMulAdd.ww).rg - 1;
-		bumpColor1 = 2 * texture_normalmap.Sample(sampler_objectshader, UV_normalMap + material.texMulAdd.zw).rg - 1;
+		water_wave_xy = UV_normalMap;
+		// Two scrolling octaves (broad swells + counter-moving rotated capillary ripples), NormalGL green negated for TBN:
+		const float2 uv0 = UV_normalMap - material.texMulAdd.ww;
+		const float2 raw_uv1 = UV_normalMap * 2.13 + float2(material.texMulAdd.z * 1.35, -material.texMulAdd.w * 1.15);
+		const float2 uv1 = float2(raw_uv1.x * 0.80 - raw_uv1.y * 0.60, raw_uv1.x * 0.60 + raw_uv1.y * 0.80);
+		bumpColor0 = (2 * texture_normalmap.Sample(sampler_objectshader, uv0).rg - 1) * half2(1, -1);
+		bumpColor1 = (2 * texture_normalmap.Sample(sampler_objectshader, uv1).rg - 1) * half2(1, -1) * 0.65h;
 	}
 	[branch]
 	if (camera.texture_waterriples_index >= 0)
 	{
 		bumpColor2 = bindless_textures_half4[descriptor_index(camera.texture_waterriples_index)].SampleLevel(sampler_linear_clamp, ScreenCoord, 0).rg;
 	}
-	surface.bumpColor = half3(bumpColor0 + bumpColor1 + bumpColor2, 1)  * material.GetRefraction();
-	surface.N = normalize(lerp(surface.N, mul(normalize(surface.bumpColor), TBN), material.GetNormalMapStrength()));
-	surface.bumpColor.rg *= material.GetNormalMapStrength();
+	surface.bumpColor = half3(bumpColor0 + bumpColor1 + bumpColor2, 1) * material.GetRefraction();
+	surface.N = normalize(lerp(surface.N, mul(normalize(surface.bumpColor), TBN), water_normal_strength));
+	surface.bumpColor.rg *= water_normal_strength;
+	// Recompute Fresnel and reflection vectors from the perturbed wave normal:
+	surface.update();
 
+	const bool valid_planar_reflection =
+		camera.texture_reflection_index >= 0 &&
+		is_frontface &&
+		camera.reflection_plane.y > 0.5 &&
+		abs(dot(float4(surface.P, 1), camera.reflection_plane)) < 0.2 &&
+		dot(float4(camera.position, 1), camera.reflection_plane) > 0;
 	[branch]
-	if (camera.texture_reflection_index >= 0)
+	if (valid_planar_reflection)
 	{
 		//REFLECTION
 		float4 reflectionUV = mul(camera.reflection_view_projection, float4(surface.P, 1));
-		reflectionUV.xy /= reflectionUV.w;
-		reflectionUV.xy = clipspace_to_uv(reflectionUV.xy) + surface.bumpColor.rg;
+		reflectionUV.xy /= max(abs(reflectionUV.w), 1e-4) * (reflectionUV.w < 0 ? -1.0 : 1.0);
+		reflectionUV.xy = clamp(clipspace_to_uv(reflectionUV.xy) + surface.bumpColor.rg, 0.001, 0.999);
 		half3 reflectiveColor = bindless_textures_half4[descriptor_index(camera.texture_reflection_index)].SampleLevel(sampler_linear_mirror, reflectionUV.xy, 0).rgb;
 		[branch]
-		if(camera.texture_reflection_depth_index >= 0)
+		if (camera.texture_reflection_depth_index >= 0)
 		{
 			float reflectiveDepth = bindless_textures[descriptor_index(camera.texture_reflection_depth_index)].SampleLevel(sampler_point_clamp, reflectionUV.xy, 0).r;
-			float3 reflectivePosition = reconstruct_position(reflectionUV.xy, reflectiveDepth, camera.reflection_inverse_view_projection);
-			float4 water_plane = camera.reflection_plane;
-			float water_depth = -dot(float4(reflectivePosition, 1), water_plane);
-			reflectiveColor.rgb = lerp(color.rgb, reflectiveColor.rgb, saturate(exp(-water_depth * color.a)));
+			if (reflectiveDepth > 0)
+			{
+				float3 reflectivePosition = reconstruct_position(reflectionUV.xy, reflectiveDepth, camera.reflection_inverse_view_projection);
+				float4 water_plane = camera.reflection_plane;
+				float water_depth = max(0.0, -dot(float4(reflectivePosition, 1), water_plane));
+				reflectiveColor.rgb = lerp(color.rgb, reflectiveColor.rgb, saturate(exp(-water_depth * color.a)));
+			}
 		}
 		lighting.indirect.specular += reflectiveColor * surface.F;
 	}
 	else
 	{
-		// Without planar reflections (they are off in stereo rendering), the water reflects the sky and the surroundings
-		//	from the global environment probe:
-		lighting.indirect.specular += EnvironmentReflection_Global(surface);
+		// Without matching planar reflections (stereo rendering, different water elevations, or underwater),
+		// start from the global sky cubemap and layer fast per-eye SSR of trees, banks, and cliffs:
+		half3 water_refl = EnvironmentReflection_Global(surface);
+		[branch]
+		if (is_frontface && camera.texture_refraction_index >= 0)
+		{
+			const float surface_lin_depth = compute_lineardepth(input.pos.z);
+			float3 refl_dir = normalize(lerp(reflect(-surface.V, surface.facenormal), (float3)surface.R, 0.32));
+			refl_dir.y = max(refl_dir.y, 0.01);
+
+			bool ssr_hit = false;
+			float t_lo = 0.0;
+			float t_hi = 0.0;
+			float2 hit_uv = 0.0;
+
+			[loop]
+			for (int i = 1; i <= 14; ++i)
+			{
+				const float fi = float(i);
+				const float prev_fi = fi - 1.0;
+				const float cur_t = 0.25 * fi * fi + 0.35 * fi;
+				const float prev_t = 0.25 * prev_fi * prev_fi + 0.35 * prev_fi;
+				const float step_len = cur_t - prev_t;
+
+				const float3 sample_pos = surface.P + refl_dir * cur_t;
+				float4 clip = mul(camera.view_projection, float4(sample_pos, 1));
+				if (clip.w <= 1e-4)
+					break;
+				clip.xyz /= clip.w;
+				const float2 uv = clipspace_to_uv(clip.xy);
+				if (any(uv < 0.0) || any(uv > 1.0))
+					break;
+
+				const float scene_depth = texture_depth.SampleLevel(sampler_point_clamp, uv, 0);
+				if (scene_depth > 0.0 && scene_depth > clip.z)
+				{
+					const float scene_lin = compute_lineardepth(scene_depth);
+					const float ray_lin = compute_lineardepth(clip.z);
+					if (scene_lin > surface_lin_depth + 0.05 && (ray_lin - scene_lin) < max(1.4, step_len * 2.2))
+					{
+						ssr_hit = true;
+						t_lo = prev_t;
+						t_hi = cur_t;
+						hit_uv = uv;
+						break;
+					}
+				}
+			}
+
+			if (ssr_hit)
+			{
+				[unroll]
+				for (int j = 0; j < 3; ++j)
+				{
+					const float mid_t = 0.5 * (t_lo + t_hi);
+					const float3 mid_pos = surface.P + refl_dir * mid_t;
+					float4 mid_clip = mul(camera.view_projection, float4(mid_pos, 1));
+					if (mid_clip.w <= 1e-4)
+						break;
+					mid_clip.xyz /= mid_clip.w;
+					const float2 mid_uv = clipspace_to_uv(mid_clip.xy);
+					if (any(mid_uv < 0.0) || any(mid_uv > 1.0))
+						break;
+					const float mid_scene = texture_depth.SampleLevel(sampler_point_clamp, mid_uv, 0);
+					const float mid_scene_lin = compute_lineardepth(mid_scene);
+					if (mid_scene > 0.0 && mid_scene > mid_clip.z && mid_scene_lin > surface_lin_depth + 0.05)
+					{
+						t_hi = mid_t;
+						hit_uv = mid_uv;
+					}
+					else
+					{
+						t_lo = mid_t;
+					}
+				}
+
+				const float edge_dist = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
+				const half border_fade = (half)smoothstep(0.0, 0.10, edge_dist);
+				const half dist_fade = (half)smoothstep(54.0, 28.0, t_hi);
+				const half ssr_weight = border_fade * dist_fade;
+				const half3 ssr_color = bindless_textures_half4[descriptor_index(camera.texture_refraction_index)].SampleLevel(sampler_linear_clamp, hit_uv, 0).rgb;
+				water_refl = lerp(water_refl, ssr_color * surface.F, ssr_weight);
+			}
+		}
+		lighting.indirect.specular += water_refl;
 	}
 #endif // WATER
 
@@ -1250,12 +1373,16 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	TiledLighting(surface, lighting, flat_tile_index, camera);
 #ifdef OBJECTSHADER_USE_COMMON
 	// The caustics of the water: the direct light of the sun and lamps is gathered into wandering lines (brighter on them,
-	//	darker between them), only where it reaches, so not in the shadows:
+	//	darker between them), only where it reaches, so not in the shadows, fading out cleanly with distance:
 	[branch]
 	if (caustics_weight > 0)
 	{
-		const half caustics = WaterCaustics(surface.P.xz + surface.P.y * 0.25, GetTime());
-		lighting.direct.diffuse += (lighting.direct.diffuse - diffuse_before_lights) * caustics_weight * (caustics * 2.4 - 0.35);
+		const half caustics_fade = (half)saturate(1.0 - (distance(surface.P, camera.position) - 12.0) / 28.0);
+		if (caustics_fade > 0.001h)
+		{
+			const half caustics = WaterCaustics(surface.P.xz + surface.P.y * 0.25, GetTime());
+			lighting.direct.diffuse += (lighting.direct.diffuse - diffuse_before_lights) * caustics_weight * caustics_fade * (caustics * 2.1 - 0.25);
+		}
 	}
 #endif // OBJECTSHADER_USE_COMMON
 #endif // TILEDFORWARD
@@ -1290,41 +1417,79 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	[branch]
 	if (camera.texture_refraction_index >= 0)
 	{
-		// Water refraction. Without planar reflections there is no reflection plane, then the water lies in the horizontal
-		//	plane of this pixel (a flat surface, like the water of a voxel world). Its normal points up like the one of the
-		//	reflection plane: the signs below depend on it, pointing down the water depth was always 0 and the water clear:
-		float4 water_plane = camera.texture_reflection_index >= 0 ? camera.reflection_plane : float4(0, 1, 0, -surface.P.y);
-		const float camera_above_water = dot(float4(camera.position, 1), water_plane) < 0; 
+		// Water refraction and Beer-Lambert optical absorption using outward surface plane and true path length:
+		const float3 water_out_normal = is_frontface ? surface.facenormal : -surface.facenormal;
+		const float4 water_plane = valid_planar_reflection ? camera.reflection_plane : float4(water_out_normal, -dot(surface.P, water_out_normal));
+		const bool camera_in_water = dot(float4(camera.position, 1), water_plane) < 0;
 		Texture2D<half4> texture_refraction = bindless_textures_half4[descriptor_index(camera.texture_refraction_index)];
-		// First sample using full perturbation:
-		float2 refraction_uv = ScreenCoord.xy + surface.bumpColor.rg;
+
+		// Unperturbed depth directly beneath this water pixel anchors shoreline contact feather & foam in both stereo eyes:
+		const float center_depth = texture_depth.SampleLevel(sampler_point_clamp, ScreenCoord.xy, 0);
+		const float3 center_pos = reconstruct_position(ScreenCoord.xy, center_depth);
+		float shore_depth = (center_depth > 0.0) ? -dot(float4(center_pos, 1), water_plane) : 8.0;
+		if (camera_in_water)
+			shore_depth = (center_depth > 0.0) ? -shore_depth : water_cam_dist;
+		shore_depth = max(0.0, shore_depth);
+
+		float2 refraction_uv = clamp(ScreenCoord.xy + surface.bumpColor.rg, 0.001, 0.999);
 		float refraction_depth = find_max_depth(refraction_uv, 2, 2);
 		float3 refraction_position = reconstruct_position(refraction_uv, refraction_depth);
-		float water_depth = -dot(float4(refraction_position, 1), water_plane);
-		if(camera_above_water)
-			water_depth = -water_depth;
-		if(water_depth <= 0)
+		float water_depth = (refraction_depth > 0.0) ? -dot(float4(refraction_position, 1), water_plane) : 8.0;
+		if (camera_in_water)
+			water_depth = (refraction_depth > 0.0) ? -water_depth : water_cam_dist;
+
+		if (water_depth <= 0)
 		{
-			// Above water, fill holes by taking unperturbed sample:
+			// Above water, fill shoreline holes cleanly with unperturbed background
 			refraction_uv = ScreenCoord.xy;
+		}
+		else if (camera_in_water)
+		{
+			refraction_uv = clamp(ScreenCoord.xy + surface.bumpColor.rg * saturate(1.0 - exp(-water_depth * 2.2)), 0.001, 0.999);
 		}
 		else
 		{
-			// Below water, compute perturbation according to first sample water depth:
-			refraction_uv = ScreenCoord.xy + surface.bumpColor.rg * saturate(1 - exp(-water_depth));
+			refraction_uv = clamp(ScreenCoord.xy + surface.bumpColor.rg * saturate(1.0 - exp(-min(water_depth, shore_depth) * 2.8)), 0.001, 0.999);
 		}
+
 		surface.refraction.rgb = (half3)texture_refraction.SampleLevel(sampler_linear_mirror, refraction_uv, 0).rgb;
-		// Recompute depth params again with actual perturbation:
 		refraction_depth = texture_depth.SampleLevel(sampler_point_clamp, refraction_uv, 0);
 		refraction_position = reconstruct_position(refraction_uv, refraction_depth);
-		water_depth = max(water_depth, -dot(float4(refraction_position, 1), water_plane));
-		if(camera_above_water)
-			water_depth = -water_depth;
-		// Water fog computation:
-		float waterfog = saturate(exp(-water_depth * color.a));
-		float3 transmittance = saturate(exp(-water_depth * surface.extinction * color.a));
+		float water_depth_sample = (refraction_depth > 0.0) ? -dot(float4(refraction_position, 1), water_plane) : 8.0;
+		if (camera_in_water)
+			water_depth_sample = (refraction_depth > 0.0) ? -water_depth_sample : water_cam_dist;
+		water_depth = max(0.0, max(water_depth, water_depth_sample));
+
+		const float raw_ray_depth = camera_in_water ? water_cam_dist : (refraction_depth > 0.0 ? distance(refraction_position, surface.P) : 48.0);
+		const float ray_depth = max(water_depth, min(raw_ray_depth, 48.0));
+
+		float waterfog = saturate(exp(-ray_depth * color.a));
+		float3 transmittance = saturate(exp(-ray_depth * surface.extinction * color.a));
 		surface.refraction.a = waterfog;
 		surface.refraction.rgb *= transmittance;
+
+		if (!is_frontface || camera_in_water)
+		{
+			// Underwater Snell's window (critical angle water->air ~48.6 deg -> cos_c = 0.6614)
+			const half snell = smoothstep(0.60h, 0.72h, surface.NdotV);
+			surface.F = lerp(half3(1.0h, 1.0h, 1.0h), max(surface.F, (half3)0.04h), snell);
+			const half3 tir_tint = surface.albedo * max(lighting.indirect.diffuse, (half3)0.12h);
+			lighting.indirect.specular += tir_tint * (1.0h - snell);
+		}
+		else
+		{
+			// Soft shoreline contact feather and subtle animated foam anchored on unperturbed shoreline depth
+			const half water_edge_fade = (half)smoothstep(0.0, 0.18, shore_depth);
+			lighting.direct.specular *= water_edge_fade;
+			lighting.indirect.specular *= water_edge_fade;
+			surface.F *= water_edge_fade;
+
+			const float foam_band = smoothstep(0.22, 0.015, shore_depth) * smoothstep(0.0, 0.025, shore_depth);
+			const float foam_noise = 0.5 + 0.5 * sin(water_wave_xy.x * 18.0 + GetTime() * 1.9 + sin(water_wave_xy.y * 14.0 - GetTime() * 1.3));
+			const half water_shore_foam = (half)(foam_band * smoothstep(0.32, 0.92, foam_noise) * 0.42);
+			surface.albedo = lerp(surface.albedo, half3(0.84h, 0.90h, 0.92h), water_shore_foam);
+			surface.refraction.a *= (1.0h - water_shore_foam);
+		}
 		color.a = 1;
 	}
 #endif // WATER
