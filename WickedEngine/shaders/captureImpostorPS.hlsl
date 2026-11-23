@@ -25,7 +25,15 @@ ImpostorOutput main(PixelInput input)
 		color = 1;
 	}
 	color *= input.color;
+	// The base color of the material tints the texture also in the picture (leaves tinted per season, colored materials):
+	color *= material.GetBaseColor();
 	clip(color.a - material.GetAlphaTest());
+	// Without alpha test the surface is opaque, the alpha of its texture must not cut holes into the picture (the impostor
+	//	is alpha tested when it is drawn):
+	if (material.GetAlphaTest() <= 0)
+	{
+		color.a = 1;
+	}
 
 	float3 N = normalize(input.nor);
 	

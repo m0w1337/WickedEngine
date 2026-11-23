@@ -98,27 +98,33 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 		// We rotate the billboard to face camera, but unlike emitted particles,
 		//	they don't rotate according to camera rotation, but the camera position relative
-		//	to the impostor (at least for now)
+		//	to the impostor. The card faces the camera completely (also from above), its up is the world up as far as
+		//	it is perpendicular to the view, like the up of the capture camera of the ring (see impostorRingCount):
 		float3 origin = center;
-		float3 up = float3(0, 1, 0);
-		float3 face = GetCamera().position - origin;
-		face.y = 0; // only rotate around Y axis!
-		face = normalize(face);
+		const float3 to_camera = GetCamera().position - origin;
+		float3 face = normalize(to_camera);
+		const float elevation = asin(clamp(face.y, -1, 1));
+		const int ring = GetImpostorRing(max(0, elevation));
+		float3 up = float3(0, 1, 0) - face * face.y;
+		up = dot(up, up) > 0.000001 ? normalize(up) : float3(0, 0, 1); // straight above
 		float3 right = normalize(cross(face, up));
 
-		// Decide which slice to show according to billboard facing direction in the impostor's local space:
+		// Decide which slice to show according to the horizontal direction in the impostor's local space:
+		float3 face_level = float3(to_camera.x, 0, to_camera.z);
+		face_level = dot(face_level, face_level) > 0.000001 ? normalize(face_level) : float3(0, 0, 1);
 		float s, c;
 		sincos(rotationY, s, c);
-		const float3 face_local = float3(face.x * c - face.z * s, 0, face.x * s + face.z * c);
+		const float3 face_local = float3(face_level.x * c - face_level.z * s, 0, face_level.x * s + face_level.z * c);
 		uint slice = uint(sliceOffset);
-		float angle = acos(dot(face_local.xz, float2(0, 1))) / PI;
+		float angle = acos(clamp(dot(face_local.xz, float2(0, 1)), -1, 1)) / PI;
 		if (cross(face_local, float3(0, 0, 1)).y < 0)
 		{
 			angle = 2 - angle;
 		}
 		angle *= 0.5f;
 		angle = saturate(angle - 0.0001);
-		slice += uint(angle * impostorCaptureAngles) * 3;
+		const int views = GetImpostorRingViews(ring);
+		slice += uint(GetImpostorRingOffset(ring) + min(views - 1, int(angle * views))) * 3;
 
 		const float dither = max(0, fadeDistance - dist) / radius;
 

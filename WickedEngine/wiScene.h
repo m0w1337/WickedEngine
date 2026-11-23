@@ -231,7 +231,7 @@ namespace wi::scene
 		EnvironmentProbeComponent global_dynamic_probe; // when no envprobes are placed, this will be the fallback
 
 		// Impostor state:
-		static constexpr uint32_t maxImpostorCount = 8;
+		static constexpr uint32_t maxImpostorCount = 16; // the texture array has maxImpostorCount * impostorCaptureAngles * 3 slices, at most 2048 are allowed
 		static constexpr uint32_t impostorTextureDim = 128;
 		wi::graphics::Texture impostorDepthStencil;
 		wi::graphics::Texture impostorRenderTarget_Albedo_MSAA;

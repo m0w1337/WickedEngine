@@ -1269,6 +1269,14 @@ static const uint VISIBILITY_BLOCKSIZE = 8;
 static const uint VISIBILITY_TILED_CULLING_GRANULARITY = TILED_CULLING_BLOCKSIZE / VISIBILITY_BLOCKSIZE;
 
 static const int impostorCaptureAngles = 36;
+// The views of an impostor are in rings of elevation, so that it can also be seen from above (looking down from a mountain
+//	the vertical cards were thin lines): 16 directions around it level with it, 12 from 35 degrees above, 8 from 70 degrees
+//	above; together impostorCaptureAngles. The ring of a view direction is the nearest elevation.
+static const int impostorRingCount = 3;
+inline int GetImpostorRingViews(int ring) { return ring == 0 ? 16 : ring == 1 ? 12 : 8; }
+inline int GetImpostorRingOffset(int ring) { return ring == 0 ? 0 : ring == 1 ? 16 : 28; }
+inline float GetImpostorRingElevation(int ring) { return ring == 0 ? 0.0f : ring == 1 ? 0.61086524f : 1.2217305f; } // radians
+inline int GetImpostorRing(float elevation) { return elevation < 0.30543262f ? 0 : elevation < 0.91629786f ? 1 : 2; } // halfway between
 
 // These option bits can be read from options constant buffer value:
 enum FRAME_OPTIONS

@@ -9862,7 +9862,14 @@ void RefreshImpostors(const Scene& scene, CommandList cmd)
 
 			XMMATRIX P = XMMatrixOrthographicOffCenterLH(-boundingsphere.radius, boundingsphere.radius, -boundingsphere.radius, boundingsphere.radius, -boundingsphere.radius, boundingsphere.radius);
 			XMStoreFloat4x4(&impostorcamera.Projection, P);
-			XMVECTOR Q = XMQuaternionNormalize(XMQuaternionRotationAxis(XMVectorSet(0, 1, 0, 0), XM_2PI * (float)i / (float)impostorCaptureAngles));
+			// The view i in its ring of elevation (impostorRingCount): pitched down by the elevation, then turned around Y
+			int ring = 0;
+			while (ring + 1 < impostorRingCount && (int)i >= GetImpostorRingOffset(ring + 1))
+				ring++;
+			const int view = (int)i - GetImpostorRingOffset(ring);
+			const XMVECTOR yaw = XMQuaternionRotationAxis(XMVectorSet(0, 1, 0, 0), XM_2PI * (float)view / (float)GetImpostorRingViews(ring));
+			const XMVECTOR pitch = XMQuaternionRotationAxis(XMVectorSet(1, 0, 0, 0), GetImpostorRingElevation(ring));
+			XMVECTOR Q = XMQuaternionNormalize(XMQuaternionMultiply(pitch, yaw));
 			XMStoreFloat4(&camera_transform.rotation_local, Q);
 
 			camera_transform.UpdateTransform();
