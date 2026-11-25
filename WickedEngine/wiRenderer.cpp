@@ -2308,7 +2308,7 @@ void LoadBuffers()
 		desc.type = TextureDesc::Type::TEXTURE_3D;
 		desc.format = Format::R16G16_FLOAT;
 		desc.width = 32;
-		desc.height = 32;
+		desc.height = 8; // Horizontally varying wind, one thread group along Y.
 		desc.depth = 32;
 		desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
 		device->CreateTexture(&desc, nullptr, &textures[TEXTYPE_3D_WIND]);

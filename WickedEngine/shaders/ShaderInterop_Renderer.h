@@ -99,6 +99,8 @@ enum SHADERMATERIAL_OPTIONS
 	SHADERMATERIAL_OPTION_BIT_RAIN_WETNESS = 1 << 16,
 	SHADERMATERIAL_OPTION_BIT_BLOCK_LIGHT = 1 << 17,
 	SHADERMATERIAL_OPTION_BIT_FLOW = 1 << 18,
+	SHADERMATERIAL_OPTION_BIT_ORE_OVERLAY = 1 << 19,
+	SHADERMATERIAL_OPTION_BIT_VERTEX_FLOW = 1 << 20,
 };
 
 #ifndef __cplusplus
@@ -509,6 +511,8 @@ struct alignas(32) ShaderMaterial
 	inline bool IsRainWetness() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_RAIN_WETNESS; }
 	inline bool IsBlockLight() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_BLOCK_LIGHT; }
 	inline bool IsFlow() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_FLOW; }
+	inline bool IsOreOverlay() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_ORE_OVERLAY; }
+	inline bool IsVertexFlow() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_VERTEX_FLOW; }
 	inline bool IsCastingShadow() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_CAST_SHADOW; }
 	inline bool IsTransparent() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_TRANSPARENT; }
 	inline bool IsAdditive() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_ADDITIVE; }

@@ -899,6 +899,17 @@ namespace wi::scene
 		shaderscene.weather.wind.randomness = weather.windRandomness;
 		shaderscene.weather.wind.wavesize = weather.windWaveSize;
 		shaderscene.weather.wind.direction = weather.windDirection;
+		// Advance the field instead of multiplying total time by the latest direction.
+		// A gradual weather change then turns the gusts without moving their origin abruptly.
+		const float2 wind_horizontal(weather.windDirection.x, weather.windDirection.z);
+		const float wind_length = std::hypot(wind_horizontal.x, wind_horizontal.y);
+		const float wind_travel = dt * WIND_TRAVEL_SPEED * weather.windSpeed * WIND_FIELD_SCALE *
+			std::max(.01f, weather.windWaveSize) / std::max(.00001f, wind_length);
+		float2& gust_offset = shaderscene.weather.wind.gust_offset;
+		gust_offset.x += wind_horizontal.x * wind_travel;
+		gust_offset.y += wind_horizontal.y * wind_travel;
+		gust_offset.x -= std::floor(gust_offset.x);
+		gust_offset.y -= std::floor(gust_offset.y);
 		shaderscene.weather.atmosphere = weather.atmosphereParameters;
 		shaderscene.weather.volumetric_clouds = weather.volumetricCloudParameters;
 		shaderscene.weather.ocean.water_color = weather.oceanParameters.waterColor;
@@ -1051,6 +1062,7 @@ namespace wi::scene
 		TLAS = RaytracingAccelerationStructure();
 		BVH.Clear();
 		waterRipples.clear();
+		shaderscene.weather.wind.gust_offset = {};
 
 		surfelgi = {};
 		ddgi = {};

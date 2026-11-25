@@ -330,6 +330,10 @@ struct alignas(16) ShaderFog
 	float height_end;
 };
 
+// The horizontal wind field tiles. Keep its origin in normalized texture coordinates.
+static const float WIND_FIELD_SCALE = 1.f / 44.8f;
+static const float WIND_TRAVEL_SPEED = 2.4f;
+
 struct alignas(16) ShaderWind
 {
 	float3 direction;
@@ -337,8 +341,11 @@ struct alignas(16) ShaderWind
 
 	float wavesize;
 	float randomness;
-	float padding0;
-	float padding1;
+	float2 gust_offset
+#ifdef __cplusplus
+		= {} // Runtime phase, kept across scene updates.
+#endif
+		;
 };
 
 struct alignas(16) ShaderOcean

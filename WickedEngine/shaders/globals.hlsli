@@ -2273,12 +2273,23 @@ RayCone pixel_ray_cone_from_image_height(float image_height)
 }
 
 
+float3 wind_displacement(float3 position, float weight, bool previous)
+{
+	float2 uv = position.xz * (WIND_FIELD_SCALE * max(.01f, GetWeather().wind.wavesize));
+	float2 gust = texture_wind.SampleLevel(sampler_linear_wrap, float3(uv.x,.25f,uv.y), 0).rg;
+	float2 local_uv = uv * 8.f + position.y * float2(.035f,-.021f);
+	float2 sway = texture_wind.SampleLevel(sampler_linear_wrap, float3(local_uv.x,.75f,local_uv.y), 0).rg;
+	float3 direction = GetWeather().wind.direction;
+	float3 across = float3(-direction.z, .45f * length(direction.xz), direction.x);
+	return weight * (direction * (previous ? gust.g : gust.r) + across * (previous ? sway.g : sway.r));
+}
+
 float3 sample_wind(float3 position, float weight)
 {
 	[branch]
 	if (weight > 0)
 	{
-		return texture_wind.SampleLevel(sampler_linear_mirror, position, 0).r * GetWeather().wind.direction * weight;
+		return wind_displacement(position, weight, false);
 	}
 	else
 	{
@@ -2290,7 +2301,7 @@ float3 sample_wind_prev(float3 position, float weight)
 	[branch]
 	if (weight > 0)
 	{
-		return texture_wind.SampleLevel(sampler_linear_mirror, position, 0).g * GetWeather().wind.direction * weight;
+		return wind_displacement(position, weight, true);
 	}
 	else
 	{

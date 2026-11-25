@@ -381,6 +381,14 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_FLOW;
 		}
+		if (IsOreOverlay())
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_ORE_OVERLAY;
+		}
+		if (IsVertexFlow())
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_VERTEX_FLOW;
+		}
 		if (IsCastingShadow())
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_CAST_SHADOW;

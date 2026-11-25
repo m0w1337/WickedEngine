@@ -144,6 +144,8 @@ namespace wi::scene
 			RAIN_WETNESS = 1 << 22, // gets wet in the rain, see SetRainWetness()
 			BLOCK_LIGHT = 1 << 23, // lit by the light level in the alpha of the vertex colors, see SetBlockLight()
 			FLOW = 1 << 24, // two layers of the maps move against each other, see SetFlow()
+			ORE_OVERLAY = 1 << 25, // procedural world-space ore veins blended over host rock from SHEENCOLORMAP/CLEARCOATNORMALMAP/CLEARCOATMAP using userdata
+			VERTEX_FLOW = 1 << 26, // the second uv set is a flow direction, see SetVertexFlow()
 		};
 		uint32_t _flags = CAST_SHADOW;
 
@@ -308,6 +310,13 @@ namespace wi::scene
 		//	the pattern changes its shape instead of sliding as a whole. Like the waves of the water shader.
 		constexpr void SetFlow(bool value = true) { SetDirty(); set_flag(_flags, FLOW, value); }
 		constexpr bool IsFlow() const { return _flags & FLOW; }
+		// Flowing liquid along its mesh: the second uv set of the vertices is the flow in uv units per second (0 where it stands
+		//	still). The maps are read twice, shifted along the flow in two phases half a cycle apart and crossfaded, so the
+		//	pattern moves with the flow without stretching. Where it stands still the material looks as without it.
+		constexpr void SetVertexFlow(bool value = true) { SetDirty(); set_flag(_flags, VERTEX_FLOW, value); }
+		constexpr bool IsVertexFlow() const { return _flags & VERTEX_FLOW; }
+		constexpr void SetOreOverlay(bool value = true) { SetDirty(); set_flag(_flags, ORE_OVERLAY, value); }
+		constexpr bool IsOreOverlay() const { return _flags & ORE_OVERLAY; }
 		constexpr void SetOcclusionEnabled_Primary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_PRIMARY, value); }
 		constexpr void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); set_flag(_flags, OCCLUSION_SECONDARY, value); }
 
