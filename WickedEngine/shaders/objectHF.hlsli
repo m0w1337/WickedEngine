@@ -2273,6 +2273,8 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	{
 		under_water = round(saturate(input.atl.y) * 65535.0) >= 32768;
 		caustics_weight = under_water ? (half)saturate(input.atl.x) : 0;
+		// The light comes from above: walls get none (stretched over them the pattern became fine stripes)
+		caustics_weight *= (half)saturate(input.nor.y * 2 - 0.5);
 	}
 
 	// Rain on the surface (MaterialComponent::SetRainWetness()): the atlas uv tells how much rain reaches the vertex (x)
